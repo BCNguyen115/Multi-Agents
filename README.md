@@ -433,5 +433,5 @@ Dự án được phát hành theo giấy phép mã nguồn mở [MIT License](L
 
 <div align="center">
   <b>Developed by <a href="https://github.com/BCNguyen115">BCNguyen115</a></b><br>
-  <i>Senior AI & Full-Stack Systems Architect</i>
+  <i>Fresher AI</i>
 </div>
