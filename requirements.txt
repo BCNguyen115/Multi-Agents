@@ -1,0 +1,56 @@
+# Multi-Agent Enterprise MVP - Dependencies
+# ==========================================
+
+# --- Web Framework & Server ---
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+sse-starlette>=2.0.0
+
+# --- Frontend Testing ---
+streamlit>=1.36.0
+
+# --- Database ---
+asyncpg>=0.29.0          # PostgreSQL async driver
+pgvector>=0.3.0          # pgvector Python support
+redis[hiredis]>=5.0.0    # Redis async client with C parser
+
+# --- Configuration ---
+pydantic-settings>=2.3.0
+
+# --- AI / LLM ---
+openai>=1.35.0           # OpenRouter-compatible client
+semantic-kernel>=1.5.0   # Microsoft Semantic Kernel
+litellm>=1.40.0          # Unified LLM proxy / routing
+langfuse[langchain]>=2.36.0,<3.0.0  # LLM observability & tracing (LiteLLM requires V2 SDK)
+langgraph>=0.1.5         # StateGraph orchestration & PEV loop
+langchain-core>=0.2.0    # LangChain core abstractions
+mem0ai[nlp,extras]>=0.1.0    # Long-term Memory Manager with NLP and search extras
+sqlalchemy>=2.0.0        # Database ORM for MCP tools
+tavily-python>=0.3.0     # Tavily Real-time Search API
+crawl4ai>=0.4.0          # Async web crawler & markdown extractor
+
+# --- HTTP Client ---
+httpx>=0.27.0            # Async HTTP (for Streamlit -> FastAPI)
+
+# --- Utilities ---
+python-dotenv>=1.0.0
+
+# --- Security & Data Quality ---
+sqlglot>=25.0.0              # AST-based SQL validation & guardrails
+chardet>=5.0.0               # Automatic CSV encoding detection
+
+# --- RAG Pipeline (Document Processing) ---
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-openai>=0.1.0
+langchain-text-splitters>=0.2.0
+pypdf>=4.0.0
+python-docx>=1.1.0
+tiktoken>=0.7.0
+numpy>=1.26.0
+
+# --- Data Analysis Agent ---
+pandas>=2.0.0
+plotly>=5.18.0
+streamlit-aggrid>=0.3.1
+python-multipart>=0.0.9     # Required for FastAPI UploadFile + Form

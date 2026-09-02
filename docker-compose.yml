@@ -1,0 +1,143 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL với pgvector extension (Tối ưu connection pool & shutdown sạch)
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: agent_postgres
+    command: postgres -c max_connections=250 -c shared_buffers=256MB -c idle_in_transaction_session_timeout=60000
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: adminpassword
+      POSTGRES_DB: agentdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d agentdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redis Cache & State Store (Database 0 cho cache, Database 1 cho Langfuse Queue - Không dùng Password)
+  redis:
+    image: redis:alpine
+    container_name: agent_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 3. FastAPI Backend Gateway & Orchestrator
+  backend:
+    build: .
+    container_name: agent_backend
+    command: uvicorn src.gateway.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 300 --limit-concurrency 100
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - POSTGRES_URL=postgresql://admin:adminpassword@postgres:5432/agentdb
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-true}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-lf-345be264-d4ff-4e7a-9da8-6277fb4fd3c1}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-sk-lf-f005fbbe-3bfe-49b3-abb5-7f5d5f53b544}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-http://langfuse-web:3000}
+      - LANGFUSE_DEBUG=${LANGFUSE_DEBUG:-true}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - RERANKER_ENDPOINT=${RERANKER_ENDPOINT:-http://tei-reranker:80/rerank}
+      - RERANK_TOP_K=${RERANK_TOP_K:-5}
+      - HYBRID_CANDIDATES_K=${HYBRID_CANDIDATES_K:-10}
+    volumes:
+      - ./dataset:/app/dataset
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # 4. Next.js 14 App Router UI (Layer 1 Frontend)
+  frontend:
+    build: ./frontend
+    container_name: agent_frontend
+    ports:
+      - "3001:3000"
+    environment:
+      - API_URL=http://backend:8000
+    depends_on:
+      - backend
+
+  # 5. Langfuse Web — LLM Observability & Tracing (Layer 4)
+  langfuse-web:
+    image: langfuse/langfuse:2
+    container_name: agent_langfuse_web
+    ports:
+      - "3005:3000"
+    environment:
+      DATABASE_URL: postgresql://admin:adminpassword@postgres:5432/agentdb?schema=langfuse&connection_limit=25
+      DIRECT_URL: postgresql://admin:adminpassword@postgres:5432/agentdb?schema=langfuse
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
+      REDIS_CONNECTION_STRING: redis://redis:6379
+      REDIS_AUTH: ""
+      NEXTAUTH_URL: http://localhost:3005
+      NEXTAUTH_SECRET: my-langfuse-secret-key-change-me
+      SALT: my-langfuse-salt-change-me
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+    stop_grace_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # 5b. Langfuse Worker — Async Queue & Background Processing
+  langfuse-worker:
+    image: langfuse/langfuse-worker:2
+    container_name: agent_langfuse_worker
+    environment:
+      DATABASE_URL: postgresql://admin:adminpassword@postgres:5432/agentdb?schema=langfuse&connection_limit=25
+      DIRECT_URL: postgresql://admin:adminpassword@postgres:5432/agentdb?schema=langfuse
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
+      REDIS_CONNECTION_STRING: redis://redis:6379
+      REDIS_AUTH: ""
+      NEXT_MANUAL_SIGHANDLE: "true"
+      NEXTAUTH_SECRET: my-langfuse-secret-key-change-me
+      SALT: my-langfuse-salt-change-me
+      TELEMETRY_ENABLED: "false"
+    stop_grace_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # 6. TEI Reranker Service (Text Embeddings Inference)
+  tei-reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.2
+    container_name: agent_reranker
+    ports:
+      - "8080:80"
+    volumes:
+      - reranker_data:/data
+    command: --model-id BAAI/bge-reranker-base --auto-truncate
+
+volumes:
+  postgres_data:
+  redis_data:
+  reranker_data:

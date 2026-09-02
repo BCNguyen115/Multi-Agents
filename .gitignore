@@ -1,0 +1,173 @@
+# ==============================================================================
+# Multi-Agent Enterprise System — Production .gitignore
+# ==============================================================================
+# This file specifies intentionally untracked files that Git should ignore.
+# Categorized clearly by Security, Runtime, Virtual Environments, Cache & Build.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. 🛡️ SECURITY, CREDENTIALS & ENVIRONMENT VARIABLES
+# ------------------------------------------------------------------------------
+# NEVER commit raw environment files, API keys, JWT secrets, or certificates!
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+*.pem
+*.key
+*.crt
+*.pfx
+*.secret
+*.token
+credentials.json
+jwt_secret*
+service_account*.json
+
+# Allow .env.example template to be tracked
+!.env.example
+
+# ------------------------------------------------------------------------------
+# 2. 🐍 PYTHON ARTIFACTS & BYTECODE
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ------------------------------------------------------------------------------
+# 3. 🌐 VIRTUAL ENVIRONMENTS
+# ------------------------------------------------------------------------------
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+bin/
+include/
+Lib/
+Scripts/
+pyvenv.cfg
+
+# ------------------------------------------------------------------------------
+# 4. ⚡ TESTING, COVERAGE & PROFILING
+# ------------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+htmlcov/
+.tox/
+.nox/
+test-results/
+frontend/test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# ------------------------------------------------------------------------------
+# 5. 🎨 FRONTEND & NODE.JS ARTIFACTS (Next.js 14)
+# ------------------------------------------------------------------------------
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+frontend/out/
+.pnp
+.pnp.js
+frontend/.pnp
+frontend/.pnp.js
+tsconfig.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.turbo/
+
+# ------------------------------------------------------------------------------
+# 6. 🗄️ PERSISTENT DATA, VOLUMES & DATABASE STORAGE
+# ------------------------------------------------------------------------------
+postgres_data/
+redis_data/
+reranker_data/
+*.sqlite
+*.sqlite3
+*.db
+*.rdb
+dump.rdb
+
+# ------------------------------------------------------------------------------
+# 7. 🤖 MODEL WEIGHTS, EMBEDDINGS & MODEL CACHES
+# ------------------------------------------------------------------------------
+model_cache/*
+!model_cache/.gitkeep
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+*.h5
+*.tflite
+
+# ------------------------------------------------------------------------------
+# 8. 📝 LOGS & TEMPORARY FILES
+# ------------------------------------------------------------------------------
+*.log
+logs/
+*.tmp
+*.temp
+scratch/tmp*
+.system_generated/
+
+# ------------------------------------------------------------------------------
+# 9. 💻 IDE & OPERATING SYSTEM META FILES
+# ------------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# Editors & IDEs
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.sublime-workspace
+*.sublime-project
+*.swp
+*.swo
+*~
+.gemini/

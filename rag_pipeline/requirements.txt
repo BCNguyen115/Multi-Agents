@@ -1,0 +1,26 @@
+# RAG Pipeline & HyDE — Dependencies
+# ====================================
+
+# --- LangChain Core ---
+langchain>=0.2.0
+langchain-openai>=0.1.0
+langchain-community>=0.2.0
+
+# --- Document Parsing ---
+pypdf>=4.0.0
+python-docx>=1.1.0
+
+# --- Vector Store ---
+faiss-cpu>=1.8.0
+
+# --- Tokenisation ---
+tiktoken>=0.7.0
+
+# --- Numerical ---
+numpy>=1.26.0
+
+# --- AI / LLM ---
+openai>=1.35.0
+
+# --- Configuration ---
+python-dotenv>=1.0.0

@@ -1,0 +1,72 @@
+[
+  {
+    "id": "eval_001",
+    "intent": "rag",
+    "query": "Điều khoản bảo mật thông tin trong hợp đồng NDA quy định như thế nào?",
+    "expected_target_agent": "rag_agent",
+    "expected_keywords": ["bảo mật", "NDA", "thông tin"]
+  },
+  {
+    "id": "eval_002",
+    "intent": "rag",
+    "query": "Thời hạn hiệu lực của thỏa thuận bảo mật NDA là bao lâu và điều kiện gia hạn là gì?",
+    "expected_target_agent": "rag_agent",
+    "expected_keywords": ["thời hạn", "gia hạn"]
+  },
+  {
+    "id": "eval_003",
+    "intent": "data",
+    "query": "Hãy phân tích tổng quan doanh thu và số lượng bán theo từng khu vực trong file CSV này.",
+    "expected_target_agent": "data_agent",
+    "expected_keywords": ["doanh thu", "khu vực", "biểu đồ"]
+  },
+  {
+    "id": "eval_004",
+    "intent": "data",
+    "query": "Vẽ biểu đồ cột thể hiện top 5 sản phẩm bán chạy nhất.",
+    "expected_target_agent": "data_agent",
+    "expected_keywords": ["biểu đồ", "top 5"]
+  },
+  {
+    "id": "eval_005",
+    "intent": "search",
+    "query": "Các xu hướng phát triển Multi-Agent System và LangGraph trong năm 2026 là gì?",
+    "expected_target_agent": "search_agent",
+    "expected_keywords": ["Multi-Agent", "LangGraph", "2026"]
+  },
+  {
+    "id": "eval_006",
+    "intent": "search",
+    "query": "Tổng hợp tin tức kinh tế tài chính mới nhất hôm nay trên internet.",
+    "expected_target_agent": "search_agent",
+    "expected_keywords": ["tin tức", "kinh tế"]
+  },
+  {
+    "id": "eval_007",
+    "intent": "db",
+    "query": "Truy vấn danh sách 10 người dùng mới nhất từ bảng users trong database.",
+    "expected_target_agent": "db_agent",
+    "expected_keywords": ["users", "SELECT"]
+  },
+  {
+    "id": "eval_008",
+    "intent": "db",
+    "query": "Đếm tổng số bản ghi giao dịch trong cơ sở dữ liệu.",
+    "expected_target_agent": "db_agent",
+    "expected_keywords": ["COUNT", "bản ghi"]
+  },
+  {
+    "id": "eval_009",
+    "intent": "integration",
+    "query": "Gửi HTTP GET request kiểm tra health check của endpoint dịch vụ ngoài.",
+    "expected_target_agent": "integration_agent",
+    "expected_keywords": ["HTTP", "GET"]
+  },
+  {
+    "id": "eval_010",
+    "intent": "integration",
+    "query": "Tạo HTTP POST request đến webhook đối tác với payload JSON.",
+    "expected_target_agent": "integration_agent",
+    "expected_keywords": ["POST", "webhook"]
+  }
+]
