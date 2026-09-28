@@ -12,10 +12,12 @@ import re
 from typing import Any, Optional
 
 from src.agents.base_agent import BaseAgent
-from src.agents.db_agent.validator import validate_sql
+from src.agents.db_agent.rls_transformer import inject_row_level_security
+from src.agents.db_agent.validator import parameterize_sql, validate_sql
 from src.shared.llm_client import LLMClient
-from src.shared.mcp_client import MCPClient
 from src.shared.logger import get_logger
+from src.shared.mcp_client import MCPClient
+from src.shared.security import unwrap_user_input
 
 logger: logging.Logger = get_logger(__name__)
 
@@ -99,8 +101,11 @@ class DatabaseAgent(BaseAgent):
             extra={"session_id": session_id},
         )
 
+        # Unwrap clean query for SQL generation
+        clean_query, _ = unwrap_user_input(query)
+
         # Step 1: Generate SQL from query
-        sql_statement, explanation = await self._generate_sql(query, session_id)
+        sql_statement, explanation = await self._generate_sql(clean_query, session_id)
 
         if not sql_statement:
             return json.dumps(
@@ -126,7 +131,7 @@ class DatabaseAgent(BaseAgent):
             )
             return json.dumps(
                 {
-                    "answer": f"⛔ Truy vấn SQL bị từ chối bởi hệ thống bảo mật: {validation_error}",
+                    "answer": f"Truy vấn SQL bị từ chối bởi hệ thống bảo mật: {validation_error}",
                     "sql": sql_statement,
                     "data": [],
                 },
@@ -136,9 +141,28 @@ class DatabaseAgent(BaseAgent):
         # Use sanitized SQL (with auto-injected LIMIT if needed)
         sql_statement = sanitized_sql
 
-        # Step 2: Execute SQL via MCP
+        # Step 1c: AST Row-Level Security (RLS) Injection via sqlglot
+        try:
+            sql_statement = inject_row_level_security(
+                sql=sql_statement,
+                tenant_id="tenant_enterprise",
+                department_id="dept_general",
+            )
+            logger.info(
+                "DatabaseAgent: Successfully applied Row-Level Security (RLS) AST policy",
+                extra={"session_id": session_id},
+            )
+        except Exception as rls_err:
+            logger.warning("RLS AST injection failed: %s, falling back to sanitized SQL", rls_err)
+
+        # Step 1d: Parameterize SQL (AST Literal Extraction into $1, $2, ...)
+        parameterized_sql, query_params = parameterize_sql(sql_statement)
+
+        # Step 2: Execute Parameterized SQL via MCP
         mcp_res_raw: str = await self.mcp_client.execute_sql_query(
-            query_sql=sql_statement, session_id=session_id
+            query_sql=parameterized_sql,
+            params=query_params,
+            session_id=session_id,
         )
 
         try:
@@ -168,7 +192,7 @@ class DatabaseAgent(BaseAgent):
             err_msg: str = mcp_res.get("message", "Lỗi truy vấn không xác định.")
             return json.dumps(
                 {
-                    "answer": f"❌ Lỗi truy vấn Database: {err_msg}",
+                    "answer": f"Lỗi truy vấn Database: {err_msg}",
                     "sql": sql_statement,
                     "data": [],
                 },
@@ -185,6 +209,20 @@ class DatabaseAgent(BaseAgent):
                 "hoặc thống kê cấu trúc dữ liệu lưu trữ."
             ),
         }
+
+    async def generate_sql(self, query: str, session_id: str) -> tuple[str, str]:
+        """Public accessor to generate SQL and explanation without executing."""
+        return await self._generate_sql(query, session_id)
+
+    def is_sensitive_sql(self, sql: str, query: str = "") -> bool:
+        """Check if SQL or query accesses sensitive enterprise assets."""
+        sensitive_pattern = r"\b(salary|salaries|employee_pii|financial_records|credentials|password|users|accounts|payroll|payment)\b"
+        if re.search(sensitive_pattern, sql, re.IGNORECASE):
+            return True
+        sensitive_vi_pattern = r"(bảng lương|tiền lương|lương nhân viên|mật khẩu|tài khoản ngân hàng|chế độ lương|dữ liệu pii)"
+        if re.search(sensitive_vi_pattern, query, re.IGNORECASE) or re.search(sensitive_pattern, query, re.IGNORECASE):
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Private helpers

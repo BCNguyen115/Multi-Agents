@@ -67,6 +67,18 @@ export default function HomePage() {
     }
   }, [messagesMap]);
 
+  // Global Cmd+K / Ctrl+K keyboard shortcut for Command Palette
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setViewMode((prev) => (prev === 'search' ? 'chat' : 'search'));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const activeMessages = messagesMap[activeSessionId] || [];
 
   const handleSelectSession = (id: string) => {
@@ -134,6 +146,31 @@ export default function HomePage() {
     );
   };
 
+  const fetchSmartTitle = async (queryText: string, targetSessionId: string) => {
+    try {
+      const res = await fetch('/api/chat/title', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: queryText, session_id: targetSessionId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.title && typeof data.title === 'string' && data.title.trim()) {
+          const smartTitle = data.title.trim().replace(/^["']|["']$/g, '');
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === targetSessionId
+                ? { ...s, title: smartTitle, updatedAt: new Date().toISOString() }
+                : s
+            )
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('Smart title request error, keeping full query:', err);
+    }
+  };
+
   const handleSendMessage = (msg: ChatMessage) => {
     setMessagesMap((prev) => {
       const current = prev[activeSessionId] || [];
@@ -145,17 +182,31 @@ export default function HomePage() {
 
     // Auto update session title if it's the default title and user just sent a message
     if (msg.role === 'user') {
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id === activeSessionId && (s.title === 'Cuộc trò chuyện mới' || s.title === 'New chat')) {
-            const shortTitle = msg.content.length > 28 ? msg.content.substring(0, 28) + '...' : msg.content;
-            return { ...s, title: shortTitle, updatedAt: new Date().toISOString() };
-          }
-          return s;
-        })
-      );
+      const targetSessionId = activeSessionId;
+      const fullQuery = msg.content.trim();
+
+      setSessions((prev) => {
+        const currentSession = prev.find((s) => s.id === targetSessionId);
+        const isDefaultTitle =
+          !currentSession ||
+          currentSession.title === 'Cuộc trò chuyện mới' ||
+          currentSession.title === 'New chat';
+
+        if (isDefaultTitle && fullQuery) {
+          // Asynchronously fetch smart title from LLM backend
+          fetchSmartTitle(fullQuery, targetSessionId);
+
+          return prev.map((s) =>
+            s.id === targetSessionId
+              ? { ...s, title: fullQuery, updatedAt: new Date().toISOString() }
+              : s
+          );
+        }
+        return prev;
+      });
     }
   };
+
 
   const handleUpdateLastMessage = (updater: (prev: ChatMessage) => ChatMessage) => {
     setMessagesMap((prev) => {
@@ -173,27 +224,30 @@ export default function HomePage() {
   };
 
   const handleAgentSelect = (agentId: string) => {
-    if (agentId === 'rag_agent' || agentId === 'RAG Agent') {
+    if (agentId === 'rag_agent' || agentId.includes('RAG')) {
       setCurrentAgentMode('RAG Agent');
-    } else if (agentId === 'data_agent' || agentId === 'Data Agent') {
-      setCurrentAgentMode('📊 Data Agent');
-    } else if (agentId === 'search_agent' || agentId === 'Search Agent') {
-      setCurrentAgentMode('🌐 Search Agent');
+    } else if (agentId === 'data_agent' || agentId.includes('Data')) {
+      setCurrentAgentMode('Data Agent');
+    } else if (agentId === 'search_agent' || agentId.includes('Search')) {
+      setCurrentAgentMode('Search Agent');
     } else {
-      setCurrentAgentMode(agentId);
+      setCurrentAgentMode(agentId.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{2B50}\u{2B55}\u{231A}\u{231B}\u{23E9}-\u{23EC}\u{23F0}\u{23F3}]/gu, '').trim());
     }
   };
 
   if (!isMounted) {
     return (
-      <div className="flex h-screen w-screen bg-[#F8F9FA] items-center justify-center">
-        <div className="animate-pulse text-slate-400 text-sm font-medium">Đang tải giao diện...</div>
+      <div className="flex h-screen w-screen bg-background items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-2 border-accent-primary border-t-transparent rounded-full animate-spin" />
+          <span className="text-foreground-muted text-sm font-medium">Đang tải giao diện...</span>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#F8F9FA]">
+    <div className="flex h-screen w-screen overflow-hidden bg-background">
       {/* Left Navigation Sidebar */}
       <Sidebar
         sessions={sessions}
@@ -206,24 +260,26 @@ export default function HomePage() {
         onOpenSearch={() => setViewMode('search')}
       />
 
-      {/* Main Workspace Area (BẮT BUỘC có min-h-0 flex-col min-w-0 overflow-x-hidden) */}
-      <main className="flex-1 flex flex-col h-full min-h-0 min-w-0 w-full max-w-full overflow-x-hidden relative bg-white overflow-y-hidden">
-        <Header />
-        
-        {viewMode === 'search' ? (
+      {/* Main Workspace Area */}
+      <main className="flex-1 flex flex-col h-full min-h-0 min-w-0 w-full max-w-full overflow-x-hidden relative bg-background overflow-y-hidden">
+        <Header
+          currentAgent={currentAgentMode}
+        />
+
+        <ChatInterface
+          currentAgentMode={currentAgentMode}
+          onSelectAgentMode={handleAgentSelect}
+          sessionId={activeSessionId}
+          messages={activeMessages}
+          onSendMessage={handleSendMessage}
+          onUpdateLastMessage={handleUpdateLastMessage}
+        />
+
+        {viewMode === 'search' && (
           <SearchView
             sessions={sessions}
             onSelectSession={handleSelectSession}
             onClose={() => setViewMode('chat')}
-          />
-        ) : (
-          <ChatInterface
-            currentAgentMode={currentAgentMode}
-            onSelectAgentMode={handleAgentSelect}
-            sessionId={activeSessionId}
-            messages={activeMessages}
-            onSendMessage={handleSendMessage}
-            onUpdateLastMessage={handleUpdateLastMessage}
           />
         )}
       </main>

@@ -24,9 +24,11 @@ import math
 import re
 from typing import Any, Optional
 
+import numpy as np
 import pandas as pd
 
 from src.agents.base_agent import BaseAgent
+from src.agents.data_agent.sandbox import SafePythonSandbox, SandboxResult
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
 from src.shared.csv_sanitizer import sanitize_column_names
@@ -55,14 +57,32 @@ _FORBIDDEN_RE: re.Pattern[str] = re.compile(
     "|".join(_FORBIDDEN_PATTERNS), re.IGNORECASE
 )
 
+def strip_emojis(text: str) -> str:
+    """Xóa sạch mọi ký tự emoji thừa khỏi chuỗi văn bản."""
+    if not text:
+        return ""
+    emoji_pattern = re.compile(
+        "[\U00010000-\U0010ffff"
+        "\uD800-\uDBFF\uDC00-\uDFFF"
+        "\u2600-\u26FF\u2700-\u27BF"
+        "\u2B50\u2B55\u231A\u231B\u23E9-\u23EC\u23F0\u23F3]+",
+        flags=re.UNICODE,
+    )
+    cleaned = emoji_pattern.sub("", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 # Maximum CSV size to accept (10 MB)
 _MAX_CSV_BYTES: int = 10 * 1024 * 1024
 _MAX_PREVIEW_ROWS: int = 5
 _DEFAULT_MAX_RETRIES: int = 3
 
 
-def safe_read_csv(csv_content: str | bytes) -> pd.DataFrame:
-    """Read CSV content safely handling encoding and delimiter variations."""
+def safe_read_csv(csv_content: str | bytes, max_rows: int = 50000) -> pd.DataFrame:
+    """Read CSV content safely handling encoding and delimiter variations.
+
+    Limits max rows to 50,000 by default to prevent Out-Of-Memory (OOM) on large files.
+    """
     if isinstance(csv_content, str):
         buffer: io.StringIO | io.BytesIO = io.StringIO(csv_content)
     else:
@@ -91,81 +111,370 @@ def safe_read_csv(csv_content: str | bytes) -> pd.DataFrame:
 
     # Standardize column names via centralised sanitiser
     df = sanitize_column_names(df)
+
+    # Protect against memory exhaustion / OOM on large datasets
+    if len(df) > max_rows:
+        logger.warning(
+            "Dataset row count (%d) exceeds max_rows limit (%d). Sampling top %d rows for safe processing.",
+            len(df),
+            max_rows,
+            max_rows,
+        )
+        df = df.iloc[:max_rows].copy()
+
     return df
 
 
-def get_revenue_series(df: pd.DataFrame) -> pd.Series:
-    """Extract or calculate sales/revenue series from DataFrame."""
-    cols_lower = {str(col).lower().strip(): col for col in df.columns}
+def get_primary_metric_series(df: pd.DataFrame) -> tuple[pd.Series, str, str]:
+    """Dynamically determine and extract the primary continuous business metric series.
 
-    # 1. Direct revenue columns
-    for target in ["revenue", "total_amount", "total_revenue", "total", "doanh_thu", "thanh_tien"]:
-        if target in cols_lower:
-            return pd.to_numeric(df[cols_lower[target]], errors="coerce").fillna(0.0)
+    Returns:
+        tuple[pd.Series, str, str]: (Series, column_name, display_unit)
+    """
+    total_rows = len(df)
+    if total_rows == 0:
+        return pd.Series(dtype=float), "", ""
 
-    # 2. Calculated revenue from quantity * price
-    if ("quantity" in cols_lower or "qty" in cols_lower) and ("unit_price" in cols_lower or "price" in cols_lower):
-        q_col = cols_lower.get("quantity") or cols_lower.get("qty")
-        p_col = cols_lower.get("unit_price") or cols_lower.get("price")
-        qty = pd.to_numeric(df[q_col], errors="coerce").fillna(0.0)
-        price = pd.to_numeric(df[p_col], errors="coerce").fillna(0.0)
-
-        if "discount" in cols_lower:
-            disc = pd.to_numeric(df[cols_lower["discount"]], errors="coerce").fillna(0.0)
-            disc = disc.apply(lambda x: x / 100.0 if x > 1.0 else x)
-            return qty * price * (1.0 - disc)
-        return qty * price
-
-    # 3. Numeric metric fallback
+    # Exclude technical IDs
     numeric_cols = [
-        c for c in df.select_dtypes(include=["number"]).columns
-        if not str(c).lower().endswith("_id") and str(c).lower() != "id"
+        c for c in df.select_dtypes(include=[np.number]).columns
+        if not str(c).lower().strip() in ["id", "_id", "stt", "index", "guid", "uuid", "row_id", "pk"]
+        and not str(c).lower().endswith("_id")
     ]
-    non_unit_price_cols = [c for c in numeric_cols if "unit_price" not in str(c).lower() and "price" not in str(c).lower()]
-    if non_unit_price_cols:
-        return pd.to_numeric(df[non_unit_price_cols[-1]], errors="coerce").fillna(0.0)
-    elif numeric_cols:
-        return pd.to_numeric(df[numeric_cols[-1]], errors="coerce").fillna(0.0)
 
-    return pd.Series(0.0, index=df.index)
+    continuous_candidates: list[str] = []
+    for col in numeric_cols:
+        col_lower = str(col).lower()
+        if any(pct in col_lower for pct in ["%", "percent", "pct", "ratio", "rate", "share", "margin", "ty_le"]):
+            continue
+        ser = pd.to_numeric(df[col], errors="coerce").dropna()
+        if ser.empty:
+            continue
+        # Check if year (integers between 1900 and 2050)
+        if (ser % 1 == 0).all() and (ser >= 1900).all() and (ser <= 2050).all():
+            continue
+        continuous_candidates.append(col)
+
+    if not continuous_candidates:
+        if numeric_cols:
+            best_col = numeric_cols[0]
+            return pd.to_numeric(df[best_col], errors="coerce").fillna(0.0), str(best_col), ""
+        return pd.Series(0.0, index=df.index), "", ""
+
+    # Rank continuous candidates by total absolute sum and standard deviation
+    def candidate_score(c: str) -> float:
+        ser = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+        total_sum = float(abs(ser).sum())
+        std_val = float(ser.std()) if len(ser) > 1 else 0.0
+        return total_sum + std_val
+
+    continuous_candidates.sort(key=candidate_score, reverse=True)
+    best_col = continuous_candidates[0]
+    ser = pd.to_numeric(df[best_col], errors="coerce").fillna(0.0)
+    return ser, str(best_col), ""
+
+
+def get_revenue_series(df: pd.DataFrame) -> pd.Series:
+    """Backward compatibility wrapper: returns primary continuous metric series."""
+    ser, _, _ = get_primary_metric_series(df)
+    return ser
 
 
 def classify_columns_advanced(df: pd.DataFrame) -> dict[str, Any]:
-    """Classify DataFrame columns based on statistical cardinality ratio."""
+    """Pure Statistical Profiler for Domain-Agnostic Dataset Characterization.
+
+    Classifies columns purely based on statistical cardinality, mathematical properties,
+    and data types without hardcoding specific business domain column names:
+      - temporal_cols: Datetime, integer years (1900-2050), or date string patterns.
+      - donut_pie_cat_cols: Low-cardinality categorical (2 <= nunique <= 7), unique ratio < 15%.
+      - valid_category_cols: Categorical columns suitable for slicers (2 <= nunique <= 25).
+      - entity_cols: Non-numeric text columns with high cardinality (nunique >= 5), ranked by diversity.
+      - numeric_metrics: Continuous numeric measures with std > 0 and sum > 0, ranked by variance/scale.
+      - ratio_metrics: Proportional metrics in [0, 1] or [0, 100] or containing ratio/rate/%.
+      - cardinality: Full column -> nunique mapping.
+    """
     total_rows = len(df)
-    high_cardinality_cols = []
-    low_cardinality_cat_cols = []
-    numeric_metrics = []
+    cardinality: dict[str, int] = {str(c): int(df[c].nunique()) for c in df.columns}
+
+    temporal_cols: list[str] = []
+    donut_pie_cat_cols: list[str] = []
+    valid_category_cols: list[str] = []
+    high_cardinality_cols: list[str] = []
+    numeric_metrics: list[str] = []
+    ratio_metrics: list[str] = []
+    entity_cols: list[str] = []
+
+    def is_technical_id_col(col_name: str, ser: pd.Series) -> bool:
+        cn = str(col_name).lower().strip()
+        if cn in ["id", "_id", "guid", "uuid", "row_id", "index", "stt", "pk", "uid"]:
+            return True
+        if pd.api.types.is_numeric_dtype(ser) and ser.nunique() == total_rows and total_rows > 10:
+            if cn.endswith("_num") or cn.endswith("number") or "code" in cn or cn.endswith("_id") or cn.startswith("id_"):
+                return True
+        return False
 
     for col in df.columns:
-        n_unique = df[col].nunique()
+        n_unique = cardinality[str(col)]
         col_name_lower = str(col).lower()
+        ser = df[col]
 
-        if "id" in col_name_lower or "code" in col_name_lower or n_unique == total_rows:
+        if is_technical_id_col(col, ser):
             continue
 
-        if pd.api.types.is_numeric_dtype(df[col]):
-            if any(k in col_name_lower for k in ["year", "nam", "date", "month", "day", "id", "code"]):
-                if 2 <= n_unique <= 50:
-                    low_cardinality_cat_cols.append(col)
-                else:
-                    high_cardinality_cols.append(col)
-            elif n_unique <= 10 and not any(k in col_name_lower for k in ["price", "amount", "revenue", "cost", "quantity", "sales", "salary", "fee", "tien", "gia"]):
-                low_cardinality_cat_cols.append(col)
+        # 1. Temporal Detection
+        is_temporal = False
+        if pd.api.types.is_datetime64_any_dtype(ser):
+            is_temporal = True
+        elif pd.api.types.is_numeric_dtype(ser):
+            try:
+                num_ser = pd.to_numeric(ser, errors="coerce").dropna()
+                if not num_ser.empty and (num_ser % 1 == 0).all() and (num_ser >= 1900).all() and (num_ser <= 2050).all():
+                    is_temporal = True
+            except Exception:
+                pass
+        else:
+            # Check string date pattern or keywords (excluding entity/name columns)
+            is_name_col = any(k in col_name_lower for k in ["name", "title", "artist", "user", "customer", "employee"])
+            if not is_name_col:
+                date_patterns = [r"^\d{4}$", r"^\d{4}[-/]\d{1,2}", r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", r"^q[1-4]"]
+                sample_vals = [str(x).strip().lower() for x in ser.dropna().head(10)]
+                if sample_vals and any(all(re.match(pat, v) for v in sample_vals) for pat in date_patterns):
+                    is_temporal = True
+                elif any(re.search(rf"(?:^|[_\s]){re.escape(k)}(?:$|[_\s])", col_name_lower) for k in ["date", "year", "month", "quarter", "ngay", "thang", "nam", "quy", "debut"]):
+                    is_temporal = True
+
+        if is_temporal:
+            temporal_cols.append(col)
+            if 2 <= n_unique <= 7:
+                donut_pie_cat_cols.append(col)
+            if 2 <= n_unique <= 25:
+                valid_category_cols.append(col)
+            continue
+
+        # 2. Percentage / Ratio Metric Detection
+        is_ratio = False
+        if any(pct in col_name_lower for pct in ["%", "percent", "pct", "ratio", "rate", "share", "margin", "ty_le"]):
+            is_ratio = True
+        elif pd.api.types.is_numeric_dtype(ser):
+            num_ser = pd.to_numeric(ser, errors="coerce").dropna()
+            if not num_ser.empty and (num_ser >= 0).all() and (num_ser <= 1.0).all() and n_unique > 2:
+                is_ratio = True
+
+        if is_ratio:
+            ratio_metrics.append(col)
+            continue
+
+        # 3. Numeric Continuous Metrics
+        if pd.api.types.is_numeric_dtype(ser):
+            if n_unique <= 7 and total_rows > 20:
+                donut_pie_cat_cols.append(col)
+                valid_category_cols.append(col)
+            elif n_unique <= 20 and total_rows > 50:
+                valid_category_cols.append(col)
             else:
                 numeric_metrics.append(col)
         else:
-            if 2 <= n_unique <= 20:
-                low_cardinality_cat_cols.append(col)
+            # 4. Text / Categorical Column
+            unique_ratio = (n_unique / total_rows) if total_rows > 0 else 0
+            if 2 <= n_unique <= 7:
+                donut_pie_cat_cols.append(col)
+            if 2 <= n_unique <= 25:
+                valid_category_cols.append(col)
             else:
                 high_cardinality_cols.append(col)
 
+            # High-Cardinality Entity candidate (nunique >= 5, not a low-cardinality category)
+            if n_unique >= 5:
+                entity_cols.append(col)
+
+    # Rank continuous metrics by standard deviation and total sum magnitude
+    def metric_score(m: str) -> float:
+        ser = pd.to_numeric(df[m], errors="coerce").fillna(0.0)
+        tot = float(abs(ser).sum())
+        std_val = float(ser.std()) if len(ser) > 1 else 0.0
+        return tot + std_val
+
+    numeric_metrics.sort(key=metric_score, reverse=True)
+
+    # Rank entity candidates by unique cardinality (higher diversity represents primary entity)
+    def entity_score(e: str) -> float:
+        card = cardinality.get(str(e), 0)
+        return float(card)
+
+    entity_cols.sort(key=entity_score, reverse=True)
+
+    if not entity_cols:
+        entity_cols = high_cardinality_cols or [c for c in df.columns if c not in numeric_metrics] or [df.columns[0]]
+    if not donut_pie_cat_cols:
+        donut_pie_cat_cols = [c for c, cnt in cardinality.items() if 2 <= cnt <= 7 and c not in numeric_metrics]
+        if not donut_pie_cat_cols:
+            donut_pie_cat_cols = [c for c, cnt in cardinality.items() if 2 <= cnt <= 10]
+
     return {
         "total_rows": total_rows,
-        "valid_category_cols": low_cardinality_cat_cols,
+        "cardinality": cardinality,
+        "temporal_cols": temporal_cols,
+        "donut_pie_cat_cols": donut_pie_cat_cols,
+        "valid_category_cols": valid_category_cols,
         "high_cardinality_cols": high_cardinality_cols,
         "numeric_metrics": numeric_metrics,
+        "ratio_metrics": ratio_metrics,
+        "entity_cols": entity_cols,
+        "slicers": donut_pie_cat_cols[:3],
     }
+
+
+def validate_and_correct_chart_specs(
+    dashboard_spec: dict[str, Any],
+    df_summary: dict[str, Any],
+    df: Optional[pd.DataFrame] = None,
+) -> dict[str, Any]:
+    """Tự động tráo đổi hoặc sửa chart nếu LLM gán nhầm cột high-cardinality vào pie/donut.
+
+    Đồng thời đảm bảo Bar Chart chính là biểu đồ xếp hạng Top Entity theo KPI chính.
+    """
+    if not isinstance(dashboard_spec, dict):
+        return dashboard_spec
+
+    charts = dashboard_spec.get("charts", [])
+    if not isinstance(charts, list):
+        return dashboard_spec
+
+    cardinality = df_summary.get("cardinality", {})
+    donut_candidates = df_summary.get("donut_pie_cat_cols", [])
+    entity_cols = df_summary.get("entity_cols", [])
+    numeric_metrics = df_summary.get("numeric_metrics", [])
+    valid_cat_cols = df_summary.get("valid_category_cols", [])
+
+    if df is None and "df" in df_summary and isinstance(df_summary["df"], pd.DataFrame):
+        df = df_summary["df"]
+
+    # Valid categorical column (nunique between 2 and 6)
+    valid_cat_col = (
+        donut_candidates[0] if donut_candidates
+        else next((col for col, count in cardinality.items() if 2 <= count <= 6), None)
+    )
+    if not valid_cat_col and valid_cat_cols:
+        valid_cat_col = valid_cat_cols[0]
+
+    best_entity_col = entity_cols[0] if entity_cols else next((col for col, count in cardinality.items() if count >= 7), None)
+    primary_metric = numeric_metrics[0] if numeric_metrics else None
+
+    for chart in charts:
+        if not isinstance(chart, dict):
+            continue
+        c_type = str(chart.get("type", "")).lower()
+        dim = (
+            chart.get("dimension")
+            or chart.get("category_col")
+            or chart.get("name_key")
+            or chart.get("x_axis_key")
+            or chart.get("xAxisKey")
+        )
+
+        # -------------------------------------------------------------
+        # QUY TẮC A: Donut / Pie Chart (Tỷ Trọng & Thị Phần)
+        # Bắt buộc: 2 <= nunique <= 6. Cấm nunique > 7 hoặc entity/ID
+        # -------------------------------------------------------------
+        if c_type in ["pie", "donut"]:
+            dim_str = str(dim) if dim else ""
+            unique_count = cardinality.get(dim_str, len(chart.get("data", [])))
+
+            data_items = [d for d in chart.get("data", []) if isinstance(d, dict) and d.get("name") != "Khác"]
+            if unique_count > 6 or len(data_items) > 6 or len(chart.get("data", [])) > 7 or (dim_str and dim_str in entity_cols and unique_count > 6):
+                logger.warning(
+                    "validate_and_correct_chart_specs: Correcting Pie/Donut chart '%s' (dim='%s', unique=%d) -> valid_cat_col='%s'",
+                    chart.get("title"), dim_str, unique_count, valid_cat_col
+                )
+                if valid_cat_col:
+                    chart["dimension"] = valid_cat_col
+                    chart["name_key"] = "name"
+                    chart["value_key"] = "value"
+                    chart["avoidLabelOverlap"] = True
+                    chart["minAngle"] = 5
+
+                    # Metric Source Transparency & Safe Numeric Formatting
+                    if primary_metric and df is not None and primary_metric in df.columns:
+                        chart["measure"] = primary_metric
+                        chart["aggregation"] = "SUM"
+                        chart["title"] = f"Tỷ Trọng {primary_metric.replace('_', ' ').title()} theo {valid_cat_col.replace('_', ' ').title()}"
+                        chart["subtitle"] = f"Phân bổ dựa trên cột '{primary_metric}' theo từng '{valid_cat_col}'"
+                        try:
+                            grp = df.groupby(valid_cat_col)[primary_metric].sum().sort_values(ascending=False)
+                            top5 = grp.head(5)
+                            other_sum = round(float(grp.iloc[5:].sum()), 2) if len(grp) > 5 else 0.0
+                            new_data = [{"name": str(k), "value": round(float(v), 2)} for k, v in top5.items()]
+                            if other_sum > 0:
+                                new_data.append({"name": "Khác", "value": other_sum})
+                            chart["data"] = new_data
+                        except Exception:
+                            vc = df[valid_cat_col].value_counts()
+                            top5 = vc.head(5)
+                            other_sum = int(vc.iloc[5:].sum()) if len(vc) > 5 else 0
+                            new_data = [{"name": str(k), "value": int(v)} for k, v in top5.items()]
+                            if other_sum > 0:
+                                new_data.append({"name": "Khác", "value": other_sum})
+                            chart["data"] = new_data
+                    else:
+                        chart["measure"] = "count"
+                        chart["aggregation"] = "COUNT"
+                        chart["title"] = f"Tỷ Trọng theo {valid_cat_col.replace('_', ' ').title()}"
+                        chart["subtitle"] = f"Số lượng giao dịch (Đếm số dòng theo '{valid_cat_col}')"
+                        if df is not None and valid_cat_col in df.columns:
+                            vc = df[valid_cat_col].value_counts()
+                            top5 = vc.head(5)
+                            other_sum = int(vc.iloc[5:].sum()) if len(vc) > 5 else 0
+                            new_data = [{"name": str(k), "value": int(v)} for k, v in top5.items()]
+                            if other_sum > 0:
+                                new_data.append({"name": "Khác", "value": other_sum})
+                            chart["data"] = new_data
+            else:
+                # Ensure metadata exists for valid Pie/Donut
+                if not chart.get("dimension") and dim_str:
+                    chart["dimension"] = dim_str
+                if not chart.get("measure"):
+                    chart["measure"] = chart.get("value_key") or "count"
+                if not chart.get("aggregation"):
+                    chart["aggregation"] = "SUM" if chart.get("measure") and chart.get("measure") not in ["count", "value", "y"] else "COUNT"
+                if not chart.get("subtitle"):
+                    meas = chart.get("measure")
+                    dim_label = chart.get("dimension") or dim_str
+                    if meas and meas not in ["count", "value", "y"]:
+                        chart["subtitle"] = f"Phân bổ dựa trên cột '{meas}' theo từng '{dim_label}'"
+                    else:
+                        chart["subtitle"] = f"Số lượng giao dịch (Đếm số dòng theo '{dim_label}')"
+
+        # -------------------------------------------------------------
+        # QUY TẮC B: Bar Chart chính (Biểu Đồ Phân Tích Chính)
+        # Bắt buộc: Xếp hạng Top 10-15 Entity theo KPI liên tục.
+        # Cấm: count(*) trên cột có cardinality <= 3 khi có entity & metrics.
+        # -------------------------------------------------------------
+        if c_type in ["bar", "ranking_bar"]:
+            dim_str = str(dim) if dim else ""
+            unique_count = cardinality.get(dim_str, len(chart.get("data", [])))
+
+            if unique_count <= 3 and best_entity_col and best_entity_col != dim_str and primary_metric:
+                logger.warning(
+                    "validate_and_correct_chart_specs: Elevating Bar chart from low-cardinality '%s' to entity '%s' ranked by '%s'",
+                    dim_str, best_entity_col, primary_metric
+                )
+                chart["dimension"] = best_entity_col
+                chart["x_axis_key"] = "x"
+                chart["y_axis_key"] = "y"
+                chart["xAxisKey"] = "x"
+                chart["yAxisKey"] = "y"
+                chart["series_keys"] = ["y"]
+                metric_label = primary_metric.replace("_", " ").title()
+                entity_label = best_entity_col.replace("_", " ").title()
+                chart["title"] = f"Top 15 {entity_label} Theo {metric_label}"
+
+                if df is not None and best_entity_col in df.columns and primary_metric in df.columns:
+                    grp = df.groupby(best_entity_col)[primary_metric].sum().sort_values(ascending=False).head(15).reset_index()
+                    grp.columns = ["x", "y"]
+                    chart["data"] = [{"x": str(r["x"]), "y": round(float(r["y"]), 2) if not pd.isna(r["y"]) else 0.0} for _, r in grp.iterrows()]
+                    chart["x_data"] = [str(r["x"]) for _, r in grp.iterrows()]
+
+    return dashboard_spec
 
 
 def sanitize_json_value(val: Any) -> Any:
@@ -200,6 +509,15 @@ class DataAnalystAgent(BaseAgent):
         self.model: str = model
         self.mcp_client: Optional[Any] = mcp_client
         self.redis_client: Optional[Any] = redis_client
+        self.sandbox: SafePythonSandbox = SafePythonSandbox(timeout_seconds=5.0)
+
+    async def execute_sandbox_code(
+        self,
+        code: str,
+        df: Optional[pd.DataFrame] = None,
+    ) -> SandboxResult:
+        """Safely execute custom statistical/regression Python code in isolated sandbox."""
+        return await self.sandbox.execute_async(code=code, df=df)
 
     def get_metadata(self) -> dict[str, str]:
         """Return metadata describing this agent."""
@@ -248,7 +566,7 @@ class DataAnalystAgent(BaseAgent):
             "status": "success",
             "type": "text",
             "explanation": (
-                "Để phân tích dữ liệu, vui lòng tải lên file CSV/Excel thông qua nút 📊 "
+                "Để phân tích dữ liệu, vui lòng tải lên file CSV/Excel thông qua nút đính kèm tệp "
                 "trên giao diện, sau đó nhập câu hỏi phân tích của bạn."
             ),
             "generated_code": "",
@@ -346,6 +664,7 @@ class DataAnalystAgent(BaseAgent):
             user_query=query,
             columns=df.columns.tolist(),
             session_id=session_id,
+            df=df,
         )
         chart_intent["user_query"] = query
         chart_intent["layout_type"] = layout_type
@@ -470,6 +789,13 @@ class DataAnalystAgent(BaseAgent):
             "error_feedback": error_feedback,
         }
 
+        # Apply Heuristic Guardrail validate_and_correct_chart_specs before final output
+        dashboard_ast = validate_and_correct_chart_specs(
+            dashboard_ast,
+            exploration_data,
+            df,
+        )
+
         # Ensure table.rows and totalRows metadata contain full dataset records
         dashboard_ast = self._enrich_spec_with_full_dataset(dashboard_ast, df)
         dashboard_ast["table"]["title"] = f"Bảng Chi Tiết Dữ Liệu ({filename})"
@@ -481,7 +807,7 @@ class DataAnalystAgent(BaseAgent):
             {
                 "status": "success",
                 "type": "dashboard",
-                "explanation": clean_dashboard_spec.get("summaryText", story_text),
+                "explanation": strip_emojis(clean_dashboard_spec.get("summaryText", story_text)),
                 "dashboard_spec": clean_dashboard_spec,
                 "generated_code": "",
                 "pev_trace": pev_trace,
@@ -578,8 +904,9 @@ class DataAnalystAgent(BaseAgent):
             f"YÊU CẦU TRÌNH BÀY NỘI DUNG:\n"
             f"1. Trả lời trực tiếp câu hỏi người dùng bằng tiếng Việt, rõ ràng, mạch lạc.\n"
             f"2. BẮT BUỘC sử dụng BẢNG MARKDOWN (Markdown Table) trình bày các số liệu thống kê (Dòng, Cột, Mean, Min, Max, Median,...).\n"
-            f"3. Đưa ra nhận xét/tóm tắt ngắn gọn ở cuối câu trả lời.\n"
-            f"4. TUYỆT ĐỐI KHÔNG sinh cấu trúc JSON DashboardSpec hay thẻ HTML.\n"
+            f"3. CRITICAL FORMATTING RULE: Absolutely NEVER include any emojis (such as 📈, 🔍, 🎯, 📊, ⚠️, etc.) in titles or content. Output pure professional business Vietnamese text only.\n"
+            f"4. Đưa ra nhận xét/tóm tắt ngắn gọn ở cuối câu trả lời.\n"
+            f"5. TUYỆT ĐỐI KHÔNG sinh cấu trúc JSON DashboardSpec hay thẻ HTML.\n"
         )
 
         try:
@@ -592,20 +919,20 @@ class DataAnalystAgent(BaseAgent):
             )
             content = resp.choices[0].message.content or ""
             if content.strip():
-                return content.strip()
+                return strip_emojis(content.strip())
         except Exception as exc:
             logger.warning("LLM fallback for text summary: %s", exc, extra={"session_id": session_id})
 
         # Deterministic Markdown Fallback if LLM call fails
         summary_md = [
-            f"### 📊 Tóm Tắt Dữ Liệu `{filename}`",
+            f"### Tóm Tắt Dữ Liệu `{filename}`",
             "",
             "| Chỉ Số Tổng Quan | Giá Trị |",
             "| :--- | :--- |",
             f"| **Tổng số dòng (Rows)** | `{total_rows:,}` |",
             f"| **Tổng số cột (Columns)** | `{total_cols}` |",
             "",
-            "#### 📈 Thống Kê Các Cột Số",
+            "#### Thống Kê Các Cột Số",
             "| Cột | Trung Bình (Mean) | Nhỏ Nhất (Min) | Trung Vị (Median) | Lớn Nhất (Max) |",
             "| :--- | :--- | :--- | :--- | :--- |",
         ]
@@ -615,7 +942,7 @@ class DataAnalystAgent(BaseAgent):
         if cat_stats:
             summary_md.extend([
                 "",
-                "#### 🏷️ Thống Kê Các Cột Phân Loại",
+                "#### Thống Kê Các Cột Phân Loại",
                 "| Cột | Số Giá Trị Khác Nhau | Giá Trị Xuất Hiện Nhiều Nhất | Tần Suất |",
                 "| :--- | :--- | :--- | :--- |",
             ])
@@ -624,16 +951,16 @@ class DataAnalystAgent(BaseAgent):
 
         summary_md.extend([
             "",
-            "💡 **Nhận xét nhanh:** Tập dữ liệu có cấu trúc hoàn chỉnh với đầy đủ thông tin để tiến hành phân tích.",
+            "**Nhận xét nhanh:** Tập dữ liệu có cấu trúc hoàn chỉnh với đầy đủ thông tin để tiến hành phân tích.",
         ])
-        return "\n".join(summary_md)
+        return strip_emojis("\n".join(summary_md))
 
     # ---------------------------------------------------------------------------
     # REFACTORED SUB-AGENTS SWARM PIPELINE IMPLEMENTATION
     # ---------------------------------------------------------------------------
 
     async def _parse_user_chart_intent(
-        self, user_query: str, columns: list[str], session_id: str = ""
+        self, user_query: str, columns: list[str], session_id: str = "", df: Optional[pd.DataFrame] = None
     ) -> dict[str, Any]:
         """Sub-Agent 1: Prompt Intent & Chart Requirement Parser.
 
@@ -646,6 +973,14 @@ class DataAnalystAgent(BaseAgent):
             "Nhiệm vụ: Trích xuất cấu trúc biểu đồ chính xác từ yêu cầu của người dùng.\n\n"
             f"Danh sách các cột sẵn có trong file dữ liệu: [{cols_str}]\n"
             f"Yêu cầu của người dùng: \"{user_query}\"\n\n"
+            "CARDINALITY & CHART SELECTION RULES:\n"
+            "1. 'donut' or 'pie' chart (Tỷ Trọng & Cơ Cấu):\n"
+            "   - MUST select a low-cardinality categorical column (<Low_Cardinality_Categorical_Column>) with nunique between 2 and 7.\n"
+            "   - NEVER use high-cardinality entity columns like names or IDs with nunique > 7.\n"
+            "2. 'bar' chart (Ranking / Biểu Đồ Phân Tích Chính):\n"
+            "   - MUST select the primary business entity column (<Primary_Entity_Column>) as the dimension and the primary continuous metric (<Primary_Numeric_Metric>) as the measure.\n"
+            "   - Sort descending (Order By Metric DESC) and limit to Top 10 - 15 items.\n"
+            "   - NEVER use Bar Chart just to count 2-3 categories when continuous business metrics exist.\n\n"
             "Hãy trích xuất và trả về JSON chuẩn theo schema sau (không thêm văn bản ngoài JSON):\n"
             "```json\n"
             "{\n"
@@ -674,6 +1009,13 @@ class DataAnalystAgent(BaseAgent):
             json_str = match.group(1).strip() if match else raw.strip()
             parsed = json.loads(json_str)
             if isinstance(parsed, dict) and "primary_chart_type" in parsed:
+                # Ensure y_axis_metric is actually a continuous numeric column if df is provided
+                if df is not None:
+                    y_prop = str(parsed.get("y_axis_metric", ""))
+                    if y_prop not in df.columns or not pd.api.types.is_numeric_dtype(df[y_prop]):
+                        _, p_metric, _ = get_primary_metric_series(df)
+                        if p_metric:
+                            parsed["y_axis_metric"] = p_metric
                 return parsed
         except Exception as exc:
             logger.warning("LLM Intent Parser fallback: %s", exc, extra={"session_id": session_id})
@@ -695,6 +1037,11 @@ class DataAnalystAgent(BaseAgent):
         if any(w in query_lower for w in ["trendline", "đường xu hướng"]):
             extra_features.append("trendline")
 
+        classified = classify_columns_advanced(df) if df is not None else {}
+        numeric_candidates = classified.get("numeric_metrics", [])
+        entity_candidates = classified.get("entity_cols", [])
+        donut_candidates = classified.get("donut_pie_cat_cols", [])
+
         x_col = None
         group_by = "categorical"
         date_keywords = ["date", "time", "month", "year", "day", "ngay", "thang", "nam", "order_date", "created_at"]
@@ -710,19 +1057,19 @@ class DataAnalystAgent(BaseAgent):
                 break
 
         if not x_col:
-            cat_candidates = [c for c in columns if not str(c).lower().endswith("_id") and str(c).lower() != "id"]
-            x_col = cat_candidates[0] if cat_candidates else columns[0]
+            if primary_type in ["pie", "donut"]:
+                x_col = donut_candidates[0] if donut_candidates else columns[0]
+            else:
+                x_col = entity_candidates[0] if entity_candidates else columns[0]
 
         y_col = None
-        metric_keywords = ["revenue", "total", "amount", "sales", "doanh_thu", "thanh_tien", "quantity", "price", "unit_price", "cost"]
-        for k in metric_keywords:
-            if k in cols_lower:
-                y_col = cols_lower[k]
-                break
-
-        if not y_col:
-            numeric_cols = [c for c in columns if "id" not in str(c).lower()]
-            y_col = numeric_cols[0] if numeric_cols else (columns[1] if len(columns) > 1 else columns[0])
+        if numeric_candidates:
+            y_col = numeric_candidates[0]
+        elif df is not None:
+            _, p_metric, _ = get_primary_metric_series(df)
+            y_col = p_metric or columns[0]
+        else:
+            y_col = columns[0]
 
         return {
             "primary_chart_type": primary_type,
@@ -800,12 +1147,15 @@ class DataAnalystAgent(BaseAgent):
             x_col = df.columns[0]
 
         if y_col and str(y_col).lower().strip() in cols_map:
-            y_col = cols_map[str(y_col).lower().strip()]
+            actual_y = cols_map[str(y_col).lower().strip()]
+            if pd.api.types.is_numeric_dtype(df[actual_y]):
+                y_col = actual_y
+            else:
+                _, p_col, _ = get_primary_metric_series(df)
+                y_col = p_col or actual_y
         else:
-            rev_ser = get_revenue_series(df)
-            df = df.copy()
-            df["__calc_metric__"] = rev_ser
-            y_col = "__calc_metric__"
+            _, p_col, _ = get_primary_metric_series(df)
+            y_col = p_col or df.columns[0]
 
         work_df = df.copy()
         x_col_str = str(x_col)
@@ -833,7 +1183,10 @@ class DataAnalystAgent(BaseAgent):
                     break
 
                 try:
-                    parsed_ser = pd.to_datetime(work_df[candidate], errors="coerce")
+                    try:
+                        parsed_ser = pd.to_datetime(work_df[candidate], errors="coerce", format="mixed")
+                    except TypeError:
+                        parsed_ser = pd.to_datetime(work_df[candidate], errors="coerce")
                     if parsed_ser.notnull().sum() > 0:
                         is_date = True
                         date_target_col = candidate
@@ -901,7 +1254,7 @@ class DataAnalystAgent(BaseAgent):
         with native ECharts markLine for Average Line.
         """
         primary_type = intent.get("primary_chart_type", "line")
-        metric_label = intent.get("metric_label", "Doanh Thu")
+        metric_label = intent.get("metric_label", "Chỉ Số")
 
         # Dynamic title based on actual X-axis data type
         if chart_data.get("is_date"):
@@ -942,7 +1295,7 @@ class DataAnalystAgent(BaseAgent):
                 "symbol": ["none", "none"],
                 "label": {
                     "show": True,
-                    "formatter": f"Mức Trung Bình: ${avg_val:,.2f}" if is_monetary else f"Mức Trung Bình: {avg_val:,.2f}",
+                    "formatter": f"Mức Trung Bình: {avg_val:,.2f}" if not is_monetary else f"Mức Trung Bình: {avg_val:,.2f}",
                     "position": "end",
                     "fontSize": 11,
                     "fontWeight": "bold",
@@ -964,11 +1317,17 @@ class DataAnalystAgent(BaseAgent):
             "title": title,
             "x_axis_key": "x",
             "y_axis_key": "y",
+            "xAxisKey": "x",
+            "yAxisKey": "y",
+            "dimension": chart_data["x_col_name"],
+            "metric": chart_data["y_col_name"],
+            "measure": chart_data["y_col_name"],
+            "measure_col": chart_data["y_col_name"],
             "x_data": chart_data["x_values"],
             "series": series_list,
             "data": chart_data["data_records"],
             "isMonetary": is_monetary,
-            "unit": "USD" if is_monetary else "Đơn vị",
+            "unit": str(chart_data["y_col_name"]).replace("_", " ").title() if not is_monetary else "Đơn vị tiền tệ",
             "extra_features": intent.get("extra_features", []),
             "grid_span": 12 if intent.get("layout_type") == "single_chart" else 7,
             "average_val": chart_data.get("average_val"),
@@ -979,26 +1338,60 @@ class DataAnalystAgent(BaseAgent):
     ) -> dict[str, Any]:
         """Sub-Agent 3 Fallback/Secondary Chart Builder.
 
-        Generates a complementary Donut/Pie Chart based on top categorical column.
+        Generates a complementary Donut/Pie Chart based on low-cardinality categorical column (2 <= nunique <= 6).
+        NEVER uses high-cardinality entity columns.
         """
         classified = classify_columns_advanced(df)
-        valid_cat_cols = classified["valid_category_cols"]
-
-        target_col = valid_cat_cols[0] if valid_cat_cols else (df.columns[0] if len(df.columns) > 0 else "category")
-        vc_pie = df[target_col].value_counts() if target_col in df.columns else pd.Series()
-        top5 = vc_pie.head(5)
-        others_sum = int(vc_pie.iloc[5:].sum()) if len(vc_pie) > 5 else 0
-
-        pie_chart_data = [{"name": str(k), "value": int(v)} for k, v in top5.items()]
-        if others_sum > 0:
-            pie_chart_data.append({"name": "Khác", "value": others_sum})
+        donut_candidates = classified["donut_pie_cat_cols"]
+        target_col = donut_candidates[0] if donut_candidates else (
+            classified["valid_category_cols"][0] if classified["valid_category_cols"] else df.columns[0]
+        )
+        primary_metric = classified.get("numeric_metrics", [None])[0] if classified.get("numeric_metrics") else None
+        if primary_metric and primary_metric in df.columns:
+            try:
+                grp = df.groupby(target_col)[primary_metric].sum().sort_values(ascending=False)
+                top5 = grp.head(5)
+                others_sum = round(float(grp.iloc[5:].sum()), 2) if len(grp) > 5 else 0.0
+                pie_chart_data = [{"name": str(k), "value": round(float(v), 2)} for k, v in top5.items()]
+                if others_sum > 0:
+                    pie_chart_data.append({"name": "Khác", "value": others_sum})
+                measure_val = primary_metric
+                agg_val = "SUM"
+                subtitle_val = f"Phân bổ dựa trên cột '{primary_metric}' theo từng '{target_col}'"
+                title_val = f"Tỷ Trọng {primary_metric.replace('_', ' ').title()} theo {str(target_col).replace('_', ' ').title()}"
+            except Exception:
+                vc_pie = df[target_col].value_counts() if target_col in df.columns else pd.Series()
+                top5 = vc_pie.head(5)
+                others_sum = int(vc_pie.iloc[5:].sum()) if len(vc_pie) > 5 else 0
+                pie_chart_data = [{"name": str(k), "value": int(v)} for k, v in top5.items()]
+                if others_sum > 0:
+                    pie_chart_data.append({"name": "Khác", "value": others_sum})
+                measure_val = "count"
+                agg_val = "COUNT"
+                subtitle_val = f"Số lượng giao dịch (Đếm số dòng theo '{target_col}')"
+                title_val = f"Tỷ Trọng Cơ Cấu Theo {str(target_col).replace('_', ' ').title()}"
+        else:
+            vc_pie = df[target_col].value_counts() if target_col in df.columns else pd.Series()
+            top5 = vc_pie.head(5)
+            others_sum = int(vc_pie.iloc[5:].sum()) if len(vc_pie) > 5 else 0
+            pie_chart_data = [{"name": str(k), "value": int(v)} for k, v in top5.items()]
+            if others_sum > 0:
+                pie_chart_data.append({"name": "Khác", "value": others_sum})
+            measure_val = "count"
+            agg_val = "COUNT"
+            subtitle_val = f"Số lượng giao dịch (Đếm số dòng theo '{target_col}')"
+            title_val = f"Tỷ Trọng Cơ Cấu Theo {str(target_col).replace('_', ' ').title()}"
 
         return {
-            "chart_id": "secondary_chart_proportion",
-            "type": "pie",
-            "title": f"Tỷ Trọng Cơ Cấu Theo {str(target_col).replace('_', ' ').title()}",
+            "chart_id": "chart_pie_composition",
+            "type": "donut",
+            "title": title_val,
+            "subtitle": subtitle_val,
             "name_key": "name",
             "value_key": "value",
+            "dimension": str(target_col),
+            "measure": measure_val,
+            "aggregation": agg_val,
             "data": pie_chart_data,
             "grid_span": 5,
         }
@@ -1027,7 +1420,7 @@ class DataAnalystAgent(BaseAgent):
         rev_series = get_revenue_series(df)
         calculated_revenue = float(rev_series.sum()) if not rev_series.empty else None
 
-        # Build KPI Cards Primitives
+        # Build Executive KPI Cards (Top 3-4 Cards, purely data-driven)
         kpi_cards = []
         kpi_cards.append(
             {
@@ -1041,113 +1434,106 @@ class DataAnalystAgent(BaseAgent):
             }
         )
 
-        if calculated_revenue is not None and has_sales and calculated_revenue > 0:
+        # Primary Continuous Metric Sum & Average
+        if numeric_metrics:
+            p_col = numeric_metrics[0]
+            p_ser = pd.to_numeric(df[p_col], errors="coerce").dropna()
+            if not p_ser.empty:
+                total_val = float(p_ser.sum())
+                avg_val = float(p_ser.mean())
+                p_label = str(p_col).replace("_", " ").upper()
+                p_unit = str(p_col).replace("_", " ").title()
+                is_monetary = any(k in str(p_col).lower() for k in ["price", "cost", "revenue", "salary", "tien", "gia", "usd", "amount", "sales"])
+                p_type = "currency" if is_monetary else "number"
+                kpi_cards.append(
+                    {
+                        "id": f"kpi_total_{p_col}",
+                        "title": f"TỔNG {p_label}",
+                        "value": f"{total_val:,.2f}" if (total_val % 1 != 0) else f"{total_val:,.0f}",
+                        "unit": p_unit,
+                        "type": p_type,
+                        "subtitle": "Quy mô tổng hợp",
+                        "icon": "TrendingUp",
+                    }
+                )
+                kpi_cards.append(
+                    {
+                        "id": f"kpi_avg_{p_col}",
+                        "title": f"TRUNG BÌNH {p_label}",
+                        "value": f"{avg_val:,.2f}" if (avg_val % 1 != 0) else f"{avg_val:,.0f}",
+                        "unit": p_unit,
+                        "type": p_type,
+                        "subtitle": "Bình quân mỗi bản ghi",
+                        "icon": "TrendingUp",
+                    }
+                )
+
+        # Distinct Entity Count
+        entity_candidates = classified.get("entity_cols", [])
+        if entity_candidates and len(kpi_cards) < 4:
+            e_col = entity_candidates[0]
+            e_uniq = df[e_col].nunique()
+            e_label = str(e_col).replace("_", " ").upper()
             kpi_cards.append(
                 {
-                    "id": "kpi_total_revenue",
-                    "title": "TỔNG DOANH THU",
-                    "value": f"${calculated_revenue:,.2f}",
-                    "unit": "USD",
-                    "type": "currency",
-                    "subtitle": "Tổng doanh số tích lũy",
-                    "icon": "DollarSign",
+                    "id": f"kpi_uniq_{e_col}",
+                    "title": f"TỔNG SỐ {e_label}",
+                    "value": f"{e_uniq:,}",
+                    "unit": "Thực thể",
+                    "type": "count",
+                    "subtitle": f"Số lượng {str(e_col).replace('_', ' ')} khác nhau",
+                    "icon": "Layers",
                 }
             )
 
-        for col in numeric_metrics[:2]:
-            if len(kpi_cards) >= 4:
-                break
-            col_lower = str(col).lower()
-            is_unit_price = any(k in col_lower for k in ["price", "unit_price", "don_gia"])
-            is_currency = any(k in col_lower for k in monetary_keywords)
-
-            if is_unit_price:
-                avg_val = float(df[col].mean()) if total_rows > 0 else 0.0
+        # Secondary Continuous Metric fallback
+        if len(kpi_cards) < 4 and len(numeric_metrics) > 1:
+            s_col = numeric_metrics[1]
+            s_ser = pd.to_numeric(df[s_col], errors="coerce").dropna()
+            if not s_ser.empty:
+                s_total = float(s_ser.sum())
+                s_label = str(s_col).replace("_", " ").upper()
+                s_unit = str(s_col).replace("_", " ").title()
+                s_is_monetary = any(k in str(s_col).lower() for k in ["price", "cost", "revenue", "salary", "tien", "gia", "usd", "amount", "sales"])
                 kpi_cards.append(
                     {
-                        "id": f"kpi_avg_{col}",
-                        "title": f"ĐƠN GIÁ TRUNG BÌNH ({str(col).replace('_', ' ').upper()})",
-                        "value": f"${avg_val:,.2f}",
-                        "unit": "USD",
-                        "type": "currency",
-                        "subtitle": "Trung bình mỗi mục",
-                        "icon": "DollarSign",
-                    }
-                )
-            elif is_currency:
-                total_val = float(df[col].sum())
-                avg_val = float(df[col].mean())
-                kpi_cards.append(
-                    {
-                        "id": f"kpi_num_{col}",
-                        "title": f"TỔNG {str(col).replace('_', ' ').upper()}",
-                        "value": f"${total_val:,.2f}",
-                        "unit": "USD",
-                        "type": "currency",
-                        "subtitle": f"Trung bình: ${avg_val:,.2f}",
-                        "icon": "DollarSign",
-                    }
-                )
-            else:
-                total_val = float(df[col].sum())
-                avg_val = float(df[col].mean())
-                kpi_cards.append(
-                    {
-                        "id": f"kpi_num_{col}",
-                        "title": f"TỔNG {str(col).replace('_', ' ').upper()}",
-                        "value": f"{total_val:,.0f}",
-                        "unit": str(col).replace("_", " ").title(),
-                        "type": "number",
-                        "subtitle": f"Trung bình: {avg_val:,.1f}",
+                        "id": f"kpi_num_{s_col}",
+                        "title": f"TỔNG {s_label}",
+                        "value": f"{s_total:,.2f}" if (s_total % 1 != 0) else f"{s_total:,.0f}",
+                        "unit": s_unit,
+                        "type": "currency" if s_is_monetary else "number",
+                        "subtitle": "Chỉ số bổ trợ",
                         "icon": "Hash",
                     }
                 )
 
-        if len(kpi_cards) < 4:
-            for col in valid_cat_cols:
-                if len(kpi_cards) >= 4:
-                    break
-                unique_cnt = df[col].nunique()
-                mode_series = df[col].mode()
-                top_val = str(mode_series.iloc[0]) if not mode_series.empty else "N/A"
-                kpi_cards.append(
-                    {
-                        "id": f"kpi_cat_{col}",
-                        "title": f"PHÂN LOẠI {str(col).replace('_', ' ').upper()}",
-                        "value": f"{unique_cnt:,}",
-                        "unit": f"Top: {top_val}",
-                        "type": "category",
-                        "subtitle": f"Top: {top_val}",
-                        "icon": "Tag",
-                    }
-                )
+        # Compute Bar Group-By aggregation data (Ranking Bar: Top Entity by Primary Continuous KPI)
+        entity_candidates = classified.get("entity_cols", [])
+        target_bar_col = entity_candidates[0] if entity_candidates else (
+            high_card_cols[0] if high_card_cols else (valid_cat_cols[0] if valid_cat_cols else df.columns[0])
+        )
 
-        # Compute Bar Group-By aggregation data
-        target_bar_col = valid_cat_cols[0] if valid_cat_cols else (df.columns[0] if len(df.columns) > 0 else "category")
-        monetary_metric = None
-        if numeric_metrics:
-            for m in numeric_metrics:
-                m_lower = str(m).lower()
-                if any(k in m_lower for k in ["revenue", "price", "amount", "sales", "total", "tien", "gia", "cost"]):
-                    monetary_metric = m
-                    break
+        primary_metric = numeric_metrics[0] if numeric_metrics else None
 
         bar_chart_data = []
         is_bar_monetary = False
         if target_bar_col in df.columns:
-            if monetary_metric and monetary_metric in df.columns and has_sales:
-                grp = df.groupby(target_bar_col)[monetary_metric].sum().sort_values(ascending=False).head(10).reset_index()
+            if primary_metric and primary_metric in df.columns:
+                grp = df.groupby(target_bar_col)[primary_metric].sum().sort_values(ascending=False).head(15).reset_index()
                 grp.columns = ["x", "y"]
-                bar_chart_data = [{"x": str(row["x"]), "y": float(row["y"]) if not pd.isna(row["y"]) else 0.0} for _, row in grp.iterrows()]
-                is_bar_monetary = True
+                bar_chart_data = [{"x": str(row["x"]), "y": round(float(row["y"]), 2) if not pd.isna(row["y"]) else 0.0} for _, row in grp.iterrows()]
+                is_bar_monetary = any(k in str(primary_metric).lower() for k in ["revenue", "price", "amount", "sales", "tien", "gia", "cost"])
             else:
-                vc = df[target_bar_col].value_counts().head(10).reset_index()
+                vc = df[target_bar_col].value_counts().head(15).reset_index()
                 vc.columns = ["x", "y"]
                 bar_chart_data = [{"x": str(row["x"]), "y": int(row["y"]) if not pd.isna(row["y"]) else 0} for _, row in vc.iterrows()]
                 is_bar_monetary = False
 
-        # Compute Pie Group-By aggregation data (Top 5 + Khác)
-        target_pie_col = valid_cat_cols[1] if len(valid_cat_cols) > 1 else (valid_cat_cols[0] if valid_cat_cols else (df.columns[0] if len(df.columns) > 0 else "type"))
+        # Compute Pie Group-By aggregation data (STRICT CARDINALITY: 2 <= nunique <= 6)
+        donut_candidates = classified.get("donut_pie_cat_cols", [])
+        target_pie_col = donut_candidates[0] if donut_candidates else (
+            valid_cat_cols[0] if valid_cat_cols else df.columns[0]
+        )
         pie_chart_data = []
         if target_pie_col in df.columns:
             vc_pie = df[target_pie_col].value_counts()
@@ -1180,6 +1566,12 @@ class DataAnalystAgent(BaseAgent):
             "valid_category_cols": valid_cat_cols,
             "numeric_metrics": numeric_metrics,
             "high_cardinality_cols": high_card_cols,
+            "cardinality": classified["cardinality"],
+            "donut_pie_cat_cols": classified["donut_pie_cat_cols"],
+            "entity_cols": classified["entity_cols"],
+            "slicers": classified.get("slicers", []),
+            "primary_metric_name": str(primary_metric) if primary_metric else "",
+            "df": df,
             "kpi_cards": kpi_cards,
             "bar_chart_data": bar_chart_data,
             "target_bar_col": str(target_bar_col),
@@ -1205,7 +1597,7 @@ class DataAnalystAgent(BaseAgent):
         """
         feedback_prompt = ""
         if error_feedback:
-            feedback_prompt = f"\n\n⚠️ LỖI CẦN SỬA TỪ VÒNG KIỂM ĐỊNH TRƯỚC:\n- " + "\n- ".join(error_feedback)
+            feedback_prompt = f"\n\n[LỖI CẦN SỬA TỪ VÒNG KIỂM ĐỊNH TRƯỚC]:\n- " + "\n- ".join(error_feedback)
 
         prompt = (
             f"Bạn là Sub-Agent Dashboard Layout Architect chuyên quy hoạch hệ thống Grid 12 cột.\n"
@@ -1218,7 +1610,15 @@ class DataAnalystAgent(BaseAgent):
             f"2. Hàng 1: Hàng KPI Cards (`type`: 'kpi_grid', `col_span`: 12).\n"
             f"3. Hàng 2: Hàng Biểu Đồ (`type`: 'chart_grid', `col_span`: 12, bao gồm ô 1 `col_span`: 7 và ô 2 `col_span`: 5).\n"
             f"4. Hàng 3: Hàng Bảng Chi Tiết (`type`: 'data_table', `col_span`: 12).\n"
-            f"5. BẮT BUỘC CHỈ sử dụng tên cột THỰC TẾ có trong dataset. TUYỆT ĐỐI KHÔNG tự bịa tên cột không tồn tại (chẳng hạn như 'month', 'year') nếu không có trong dataset.\n\n"
+            f"5. BẮT BUỘC CHỈ sử dụng tên cột THỰC TẾ có trong dataset. TUYỆT ĐỐI KHÔNG tự bịa tên cột không tồn tại nếu không có trong dataset.\n\n"
+            f"CARDINALITY & CHART SELECTION RULES:\n"
+            f"1. 'donut' or 'pie' chart (Composition / Proportion):\n"
+            f"   - MUST select a low-cardinality categorical column (<Low_Cardinality_Categorical_Column>) with nunique between 2 and 7 (e.g. from {exploration_data.get('donut_pie_cat_cols', [])}).\n"
+            f"   - NEVER use high-cardinality entity columns like names or IDs with nunique > 7.\n"
+            f"2. 'bar' chart (Ranking / Main Analysis):\n"
+            f"   - MUST select the primary business entity column (<Primary_Entity_Column>, e.g. from {exploration_data.get('entity_cols', [])[:3]}) as the dimension and the primary continuous metric (<Primary_Numeric_Metric>, e.g. from {exploration_data.get('numeric_metrics', [])[:3]}) as the measure.\n"
+            f"   - Sort descending (Order By Metric DESC) and limit to Top 10 - 15 items.\n"
+            f"   - NEVER use Bar Chart just to count 2-3 categories when continuous business metrics exist.\n\n"
             f"Xuất ra định dạng JSON duy nhất:\n"
             f"```json\n"
             f"{{\n"
@@ -1318,25 +1718,30 @@ class DataAnalystAgent(BaseAgent):
         if exploration_data.get("primary_chart_spec"):
             p_spec = exploration_data["primary_chart_spec"]
             if exploration_data.get("layout_type") == "single_chart":
-                return [p_spec]
-            s_spec = exploration_data.get("secondary_chart_spec") or {
-                "chart_id": "secondary_chart_proportion",
-                "type": "pie",
-                "title": "Tỷ Trọng Cơ Cấu",
-                "name_key": "name",
-                "value_key": "value",
-                "data": exploration_data.get("pie_chart_data", []),
-                "grid_span": 5,
-            }
-            return [p_spec, s_spec]
+                res = [p_spec]
+            else:
+                s_spec = exploration_data.get("secondary_chart_spec") or {
+                    "chart_id": "secondary_chart_proportion",
+                    "type": "pie",
+                    "title": f"Tỷ Trọng Cơ Cấu Theo {exploration_data.get('target_pie_col', 'Phân Loại').replace('_', ' ').title()}",
+                    "name_key": "name",
+                    "value_key": "value",
+                    "dimension": exploration_data.get("target_pie_col"),
+                    "data": exploration_data.get("pie_chart_data", []),
+                    "grid_span": 5,
+                }
+                res = [p_spec, s_spec]
+            validated = validate_and_correct_chart_specs({"charts": res}, exploration_data, exploration_data.get("df"))
+            return validated.get("charts", res)
 
         # Standard Fallback Chart Specs
         bar_col_title = exploration_data["target_bar_col"].replace("_", " ").title()
+        primary_metric_title = exploration_data.get("primary_metric_name", "").replace("_", " ").title()
         is_monetary = exploration_data["is_bar_monetary"]
         chart_title = (
-            f"Tổng Doanh Thu Theo {bar_col_title}"
-            if is_monetary
-            else f"Phân Bổ Tần Suất Theo {bar_col_title}"
+            f"Top 15 {bar_col_title} Theo {primary_metric_title}"
+            if primary_metric_title
+            else f"Top 15 {bar_col_title} Xếp Hạng"
         )
 
         bar_spec = {
@@ -1348,8 +1753,12 @@ class DataAnalystAgent(BaseAgent):
             "xAxisKey": "x",
             "yAxisKey": "y",
             "series_keys": ["y"],
+            "dimension": exploration_data["target_bar_col"],
+            "metric": exploration_data.get("primary_metric_name"),
+            "measure": exploration_data.get("primary_metric_name"),
+            "measure_col": exploration_data.get("primary_metric_name"),
             "isMonetary": is_monetary,
-            "unit": "USD" if is_monetary else "Đơn vị",
+            "unit": str(exploration_data.get("primary_metric_name", "")).replace("_", " ").title() if is_monetary else "Đơn vị",
             "data": exploration_data["bar_chart_data"],
             "grid_span": 12 if exploration_data.get("layout_type") == "single_chart" else 7,
         }
@@ -1358,16 +1767,34 @@ class DataAnalystAgent(BaseAgent):
             return [bar_spec]
 
         pie_col_title = exploration_data["target_pie_col"].replace("_", " ").title()
+        primary_metric = exploration_data.get("primary_metric_name")
+        if primary_metric:
+            pie_measure = primary_metric
+            pie_agg = "SUM"
+            pie_subtitle = f"Phân bổ dựa trên cột '{primary_metric}' theo từng '{exploration_data['target_pie_col']}'"
+            pie_title = f"Tỷ Trọng {primary_metric.replace('_', ' ').title()} theo {pie_col_title}"
+        else:
+            pie_measure = "count"
+            pie_agg = "COUNT"
+            pie_subtitle = f"Số lượng giao dịch (Đếm số dòng theo '{exploration_data['target_pie_col']}')"
+            pie_title = f"Tỷ Trọng theo {pie_col_title}"
+
         pie_spec = {
-            "chart_id": "chart_proportion",
-            "type": "pie",
-            "title": f"Tỷ Trọng Theo {pie_col_title}",
+            "chart_id": "chart_pie_composition",
+            "type": "donut",
+            "title": pie_title,
+            "subtitle": pie_subtitle,
             "name_key": "name",
             "value_key": "value",
+            "dimension": exploration_data["target_pie_col"],
+            "measure": pie_measure,
+            "aggregation": pie_agg,
             "data": exploration_data["pie_chart_data"],
             "grid_span": 5,
         }
-        return [bar_spec, pie_spec]
+        res = [bar_spec, pie_spec]
+        validated = validate_and_correct_chart_specs({"charts": res}, exploration_data, exploration_data.get("df"))
+        return validated.get("charts", res)
 
     async def _run_business_storyteller(
         self, exploration_data: dict[str, Any], session_id: str
@@ -1407,10 +1834,11 @@ class DataAnalystAgent(BaseAgent):
             "QUY TẮC NGHIÊM NGẶT:\n"
             "1. Chỉ ra điểm đỉnh/đáy của xu hướng hoặc giá trị vượt/giảm so với mức trung bình.\n"
             "2. Mọi con số phải trích dẫn chính xác từ JSON.\n"
-            "3. Trả về đúng 3 dòng định dạng:\n"
-            "📈 Diễn biến: ...\n"
-            "🔍 Nguyên nhân: ...\n"
-            "🎯 Khuyến nghị: ...\n"
+            "3. CRITICAL FORMATTING RULE: Absolutely NEVER include any emojis (such as 📈, 🔍, 🎯, 📊, ⚠️, etc.) in the titles, subtitle badges, or body text of the executive analysis. Output pure professional business Vietnamese text only.\n"
+            "4. Trả về đúng 3 dòng định dạng:\n"
+            "Diễn biến: ...\n"
+            "Nguyên nhân: ...\n"
+            "Khuyến nghị: ...\n"
         )
 
         try:
@@ -1423,7 +1851,7 @@ class DataAnalystAgent(BaseAgent):
             )
             text = resp.choices[0].message.content or ""
             if "Diễn biến" in text and "Nguyên nhân" in text:
-                return text.strip()
+                return strip_emojis(text.strip())
         except Exception as exc:
             logger.warning("Sub-Agent 4 Storyteller LLM fallback: %s", exc, extra={"session_id": session_id})
 
@@ -1431,18 +1859,18 @@ class DataAnalystAgent(BaseAgent):
         if chart_data:
             avg_v = chart_data.get("average_val", 0)
             max_v = chart_data.get("max_val", 0)
-            return (
-                f"📈 Diễn biến: Xu hướng `{chart_data.get('y_col_name')}` ghi nhận mức cao nhất tại {max_v:,.2f} và đạt mức trung bình toàn kỳ là {avg_v:,.2f}.\n"
-                f"🔍 Nguyên nhân: Biến động xu hướng phản ánh sự tập trung ở các giai đoạn cao điểm vượt ngưỡng benchmark.\n"
-                f"🎯 Khuyến nghị: Tập trung duy trì đà tăng trưởng tại các giai đoạn đỉnh điểm và tối ưu chi phí vận hành ở các chu kỳ giảm."
+            return strip_emojis(
+                f"Diễn biến: Xu hướng `{chart_data.get('y_col_name')}` ghi nhận mức cao nhất tại {max_v:,.2f} và đạt mức trung bình toàn kỳ là {avg_v:,.2f}.\n"
+                f"Nguyên nhân: Biến động xu hướng phản ánh sự tập trung ở các giai đoạn cao điểm vượt ngưỡng benchmark.\n"
+                f"Khuyến nghị: Tập trung duy trì đà tăng trưởng tại các giai đoạn đỉnh điểm và tối ưu chi phí vận hành ở các chu kỳ giảm."
             )
         rows_cnt = exploration_data["total_rows"]
         cols_cnt = exploration_data["total_cols"]
         top_cat = exploration_data["bar_chart_data"][0]["x"] if exploration_data["bar_chart_data"] else "N/A"
-        return (
-            f"📈 Diễn biến: Tập dữ liệu ghi nhận tổng cộng {rows_cnt:,} bản ghi với {cols_cnt} thuộc tính phân tích chính.\n"
-            f"🔍 Nguyên nhân: Phân nhóm `{top_cat}` đóng góp tỷ trọng cao nhất trong các chỉ số nhóm chính.\n"
-            f"🎯 Khuyến nghị: Tập trung theo dõi diễn biến của phân nhóm chủ lực và duy trì giám sát các số liệu bất thường."
+        return strip_emojis(
+            f"Diễn biến: Tập dữ liệu ghi nhận tổng cộng {rows_cnt:,} bản ghi với {cols_cnt} thuộc tính phân tích chính.\n"
+            f"Nguyên nhân: Phân nhóm `{top_cat}` đóng góp tỷ trọng cao nhất trong các chỉ số nhóm chính.\n"
+            f"Khuyến nghị: Tập trung theo dõi diễn biến của phân nhóm chủ lực và duy trì giám sát các số liệu bất thường."
         )
 
     def _verify_dashboard_quality(
@@ -1508,6 +1936,16 @@ class DataAnalystAgent(BaseAgent):
                         error_feedback.append(f"Biểu đồ tròn '{c_title}' thiếu name_key '{n_key}' trong data.")
                     if v_key not in first_row:
                         error_feedback.append(f"Biểu đồ tròn '{c_title}' thiếu value_key '{v_key}' trong data.")
+                    dim = chart.get("dimension") or chart.get("category_col") or n_key
+                    cardinality_map = exploration_data.get("cardinality", {})
+                    dim_str = str(dim) if dim else ""
+                    uniq = cardinality_map.get(dim_str, len(c_data))
+                    non_other = [d for d in c_data if isinstance(d, dict) and d.get("name") != "Khác"]
+                    if uniq > 7 or len(c_data) > 7 or len(non_other) > 6:
+                        error_feedback.append(
+                            "Lỗi nghiêm trọng: Donut chart đang nhận cột có độ đa dạng quá lớn làm vỡ biểu đồ ('Khác: 99%'). "
+                            "Hãy đổi Donut chart sang nhóm phân loại hẹp (<Low_Cardinality_Category> có nunique 2-7) và gán thực thể chính vào Bar Chart."
+                        )
 
         # 3. Check KPIs & Summary completeness
         kpis = dashboard_ast.get("kpiCards", [])
@@ -1553,7 +1991,7 @@ class DataAnalystAgent(BaseAgent):
 
             if any("1970-01" in str(x) for x in x_data):
                 issues.append(
-                    f"Biểu đồ '{c_title}' phát hiện lỗi Epoch Date '1970-01'. Cột Debut Year phải giữ nguyên kiểu số nguyên, không dùng pd.to_datetime()."
+                    f"Biểu đồ '{c_title}' phát hiện lỗi Epoch Date '1970-01'. Cột năm (year) dạng số nguyên phải giữ nguyên kiểu int, không dùng pd.to_datetime()."
                 )
 
             for row in c_data:
@@ -1584,6 +2022,40 @@ class DataAnalystAgent(BaseAgent):
                             s["label"]["show"] = True
                             s["label"]["formatter"] = "{b}: {d}%"
 
+            # 4. Check Cardinality Rules
+            dim = (
+                chart.get("dimension")
+                or chart.get("category_col")
+                or chart.get("name_key")
+                or chart.get("x_axis_key")
+                or chart.get("xAxisKey")
+            )
+            dim_str = str(dim) if dim else ""
+            matched_col = None
+            if dim_str:
+                for c in df.columns:
+                    if str(c).lower().replace(" ", "").replace("_", "") == dim_str.lower().replace(" ", "").replace("_", ""):
+                        matched_col = c
+                        break
+
+            if c_type in ["pie", "donut"]:
+                unique_count = int(df[matched_col].nunique()) if matched_col else len(c_data)
+                non_other = [d for d in c_data if isinstance(d, dict) and d.get("name") != "Khác"]
+                if unique_count > 7 or len(c_data) > 7 or len(non_other) > 6:
+                    issues.append(
+                        "Lỗi nghiêm trọng: Donut chart đang nhận cột có độ đa dạng quá lớn làm vỡ biểu đồ ('Khác: 99%'). "
+                        "Hãy đổi Donut chart sang nhóm phân loại hẹp (<Low_Cardinality_Category> có nunique 2-7) và gán thực thể chính vào Bar Chart."
+                    )
+            elif c_type in ["bar", "ranking_bar"]:
+                unique_count = int(df[matched_col].nunique()) if matched_col else 999
+                has_entity = any(int(df[c].nunique()) >= 7 and not pd.api.types.is_numeric_dtype(df[c]) for c in df.columns)
+                has_continuous_metric = any(pd.api.types.is_numeric_dtype(df[c]) for c in df.columns if c != matched_col)
+                if unique_count <= 3 and has_entity and has_continuous_metric:
+                    issues.append(
+                        f"Biểu Đồ Phân Tích Chính (Bar Chart) đang dùng cột '{dim_str}' có Cardinality cực thấp ({unique_count} giá trị) với count(*). "
+                        "Phải xếp hạng Top 10-15 Entity theo KPI đo lường chính."
+                    )
+
         if issues:
             return False, " | ".join(issues)
         return True, ""
@@ -1599,12 +2071,12 @@ class DataAnalystAgent(BaseAgent):
         if not summary_text or len(summary_text.strip()) < 10:
             return False, "Nội dung nhận định (summaryText) quá ngắn hoặc rỗng."
 
-        has_dien_bien = any(w in summary_text for w in ["Diễn biến", "Diễn Biến", "📈"])
-        has_nguyen_nhan = any(w in summary_text for w in ["Nguyên nhân", "Nguyên Nhân", "🔍"])
-        has_khuyen_nghi = any(w in summary_text for w in ["Khuyến nghị", "Khuyến Nghị", "🎯"])
+        has_dien_bien = any(w in summary_text for w in ["Diễn biến", "Diễn Biến", "diễn biến"])
+        has_nguyen_nhan = any(w in summary_text for w in ["Nguyên nhân", "Nguyên Nhân", "nguyên nhân"])
+        has_khuyen_nghi = any(w in summary_text for w in ["Khuyến nghị", "Khuyến Nghị", "khuyến nghị"])
 
         if not (has_dien_bien and has_nguyen_nhan and has_khuyen_nghi):
-            return False, "Nội dung nhận định thiếu định dạng 3 khối: Diễn Biến 📈 -> Nguyên Nhân 🔍 -> Khuyến Nghị 🎯."
+            return False, "Nội dung nhận định thiếu định dạng 3 khối: Diễn Biến -> Nguyên Nhân -> Khuyến Nghị."
 
         return True, ""
 
@@ -1625,9 +2097,15 @@ class DataAnalystAgent(BaseAgent):
         spec["total_fields"] = total_cols
 
         import numpy as np
-        cleaned_df = df.head(5000).replace({np.nan: None, np.inf: None, -np.inf: None})
+        cleaned_df = df.head(10000).replace({np.nan: None, np.inf: None, -np.inf: None})
 
-        spec["table"]["rows"] = cleaned_df.to_dict(orient="records")
+        all_records = cleaned_df.to_dict(orient="records")
+        spec["table"]["rows"] = all_records
+        spec["raw_data"] = all_records
+        spec["rawData"] = all_records
+        spec["rawRows"] = all_records
+        spec["rows"] = all_records
+
         if "columns" not in spec["table"] or not spec["table"]["columns"]:
             spec["table"]["columns"] = [
                 {
@@ -1694,15 +2172,17 @@ class DataAnalystAgent(BaseAgent):
                         clean_data.append(clean_row)
                 chart["data"] = clean_data
 
-                # Fix title consistency: if date data is present, title must not contain "danh mục sản phẩm"
+                # Fix title consistency: if date data is present, title should reflect temporal trend
                 c_title = str(chart.get("title", "")).lower()
-                if has_date and any(term in c_title for term in ["danh mục sản phẩm", "product category", "phân loại sản phẩm"]):
-                    chart["title"] = "Xu Hướng Doanh Thu Theo Tháng"
+                if has_date and any(term in c_title for term in ["danh mục", "category", "phân loại"]) and not any(t in c_title for t in ["thời gian", "tháng", "năm", "quý", "trend", "time", "date"]):
+                    primary_col = str(chart.get("y_axis_key") or "Chỉ Số").replace("_", " ").title()
+                    chart["title"] = f"Xu Hướng {primary_col} Theo Thời Gian"
 
             if chart.get("type") in ["pie", "donut"]:
                 chart["avoidLabelOverlap"] = True
                 chart["minAngle"] = 5
 
+        spec = validate_and_correct_chart_specs(spec, {"cardinality": {str(c): int(df[c].nunique()) for c in df.columns}}, df)
         return self._enrich_spec_with_full_dataset(spec, df)
 
     def _assemble_dashboard_ast(
@@ -1734,9 +2214,15 @@ class DataAnalystAgent(BaseAgent):
             "has_sales": exploration_data["has_sales"],
             "kpiCards": exploration_data["kpi_cards"],
             "kpis": exploration_data["kpi_cards"],
+            "slicers": exploration_data.get("slicers", []),
+            "valid_category_cols": exploration_data.get("valid_category_cols", []),
+            "donut_pie_cat_cols": exploration_data.get("donut_pie_cat_cols", []),
             "charts": charts_spec,
             "layout": layout_ast,
-            "summaryText": story_text,
+            "summaryText": strip_emojis(story_text),
+            "raw_data": exploration_data["table_rows"],
+            "rawRows": exploration_data["table_rows"],
+            "rows": exploration_data["table_rows"],
             "table": {
                 "columns": exploration_data["table_cols"],
                 "rows": exploration_data["table_rows"],
@@ -1809,14 +2295,18 @@ class DataAnalystAgent(BaseAgent):
             p_spec = {
                 "chart_id": f"bar_{exploration_data['target_bar_col']}",
                 "type": "bar",
-                "title": f"Tổng Doanh Thu Theo {bar_col_title}" if is_monetary else f"Phân Bổ Tần Suất Theo {bar_col_title}",
+                "title": f"Tổng {primary_metric_title or bar_col_title} Theo {bar_col_title}" if is_monetary else f"Phân Bổ Tần Suất Theo {bar_col_title}",
                 "x_axis_key": "x",
                 "y_axis_key": "y",
                 "xAxisKey": "x",
                 "yAxisKey": "y",
                 "series_keys": ["y"],
+                "dimension": exploration_data["target_bar_col"],
+                "metric": exploration_data.get("primary_metric_name"),
+                "measure": exploration_data.get("primary_metric_name"),
+                "measure_col": exploration_data.get("primary_metric_name"),
                 "isMonetary": is_monetary,
-                "unit": "USD" if is_monetary else "Đơn vị",
+                "unit": str(exploration_data.get("primary_metric_name", "")).replace("_", " ").title() if is_monetary else "Đơn vị",
                 "data": exploration_data["bar_chart_data"],
                 "grid_span": 12 if layout_type == "single_chart" else 7,
             }
@@ -1826,11 +2316,15 @@ class DataAnalystAgent(BaseAgent):
                 charts = [
                     p_spec,
                     {
-                        "chart_id": "chart_proportion",
-                        "type": "pie",
+                        "chart_id": "chart_pie_composition",
+                        "type": "donut",
                         "title": f"Tỷ Trọng Theo {exploration_data['target_pie_col'].replace('_', ' ').title()}",
+                        "subtitle": f"Phân bổ dựa trên cột '{exploration_data.get('primary_metric_name') or 'count'}' theo từng '{exploration_data['target_pie_col']}'" if exploration_data.get('primary_metric_name') else f"Số lượng giao dịch (Đếm số dòng theo '{exploration_data['target_pie_col']}')",
                         "name_key": "name",
                         "value_key": "value",
+                        "dimension": exploration_data["target_pie_col"],
+                        "measure": exploration_data.get("primary_metric_name") or "count",
+                        "aggregation": "SUM" if exploration_data.get("primary_metric_name") else "COUNT",
                         "data": exploration_data["pie_chart_data"],
                         "grid_span": 5,
                     },
@@ -1841,6 +2335,12 @@ class DataAnalystAgent(BaseAgent):
         if not dashboard_ast.get("kpiCards"):
             dashboard_ast["kpiCards"] = exploration_data["kpi_cards"]
             dashboard_ast["kpis"] = exploration_data["kpi_cards"]
+
+        # Apply validate_and_correct_chart_specs
+        df_target = exploration_data.get("df")
+        dashboard_ast = validate_and_correct_chart_specs(dashboard_ast, exploration_data, df_target)
+        if df_target is not None:
+            dashboard_ast = self._enrich_spec_with_full_dataset(dashboard_ast, df_target)
 
         return dashboard_ast
 

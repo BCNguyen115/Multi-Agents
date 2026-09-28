@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. PostgreSQL với pgvector extension (Tối ưu connection pool & shutdown sạch)
   postgres:
@@ -49,6 +47,11 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openai/gpt-4o}
+      - FAST_LLM_MODEL=${FAST_LLM_MODEL:-openai/gpt-4o-mini}
+      - HEAVY_LLM_MODEL=${HEAVY_LLM_MODEL:-openai/gpt-4o}
+      - MEM0_LLM_MODEL=${MEM0_LLM_MODEL:-openai/gpt-4o-mini}
       - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-true}
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-lf-345be264-d4ff-4e7a-9da8-6277fb4fd3c1}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-sk-lf-f005fbbe-3bfe-49b3-abb5-7f5d5f53b544}
@@ -61,6 +64,7 @@ services:
     volumes:
       - ./dataset:/app/dataset
       - ./src:/app/src
+      - ./.env:/app/.env
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,6 +140,19 @@ services:
     volumes:
       - reranker_data:/data
     command: --model-id BAAI/bge-reranker-base --auto-truncate
+
+  # 7. Secure Python Sandbox Container (Option 2 - Self-hosted Fallback)
+  python-sandbox:
+    image: python:3.12-slim
+    container_name: agent_python_sandbox
+    command: python -c "import time; time.sleep(86400)"
+    network_mode: none
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+    restart: unless-stopped
 
 volumes:
   postgres_data:

@@ -48,6 +48,23 @@ logging.getLogger("LiteLLM Proxy").setLevel(logging.WARNING)
 logging.getLogger("LiteLLM Router").setLevel(logging.WARNING)
 logging.getLogger("langfuse").setLevel(logging.CRITICAL)
 
+DEFAULT_FALLBACK_MODEL: str = "openrouter/openai/gpt-4o-mini"
+DEFAULT_OPENROUTER_HEADERS: dict[str, str] = {
+    "HTTP-Referer": "https://github.com/enterprise-multi-agent",
+    "X-Title": "Multi-Agent Enterprise System",
+}
+
+
+def normalize_model_name(model_name: str | None) -> str:
+    """Đảm bảo mọi model định tuyến qua OpenRouter đều có tiền tố openrouter/"""
+    if not model_name or not str(model_name).strip():
+        return "openrouter/openai/gpt-4o-mini"
+    clean_name = str(model_name).strip()
+    if clean_name.startswith("openrouter/"):
+        return clean_name
+    # Nếu model là anthropic/..., openai/..., meta-llama/... thì thêm openrouter/
+    return f"openrouter/{clean_name}"
+
 
 class LLMClient:
     """Centralised async client for all LLM chat and embedding calls.
@@ -62,9 +79,12 @@ class LLMClient:
         langfuse_enabled: Whether Langfuse tracing is active.
         _langfuse_handler: The Langfuse callback handler (if enabled).
         raw_openai_client: Native AsyncOpenAI client for robust embeddings.
+        unavailable_models: Circuit Breaker registry of models returning 404.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    _global_unavailable_models: set[str] = set()
+
+    def __init__(self, settings: Optional[Settings] = None) -> None:
         """Initialise the LLM client.
 
         Configures LiteLLM with the OpenRouter credentials and optionally
@@ -72,8 +92,13 @@ class LLMClient:
 
         Args:
             settings: Application settings containing API keys and config.
+                If None, uses application singleton from src.config.
         """
         import os
+
+        if settings is None:
+            from src.config import settings as default_settings
+            settings = default_settings
 
         self.settings: Settings = settings
         self.api_key: str = settings.OPENROUTER_API_KEY
@@ -81,6 +106,7 @@ class LLMClient:
         self.default_model: str = settings.OPENROUTER_MODEL
         self.langfuse_enabled: bool = settings.LANGFUSE_ENABLED
         self._langfuse_handler: Any = None
+        self.unavailable_models: set[str] = LLMClient._global_unavailable_models
 
         from src.shared.telemetry import disable_telemetry
         disable_telemetry()
@@ -248,8 +274,9 @@ class LLMClient:
         max_tokens: int = 1024,
         metadata: dict[str, Any] | None = None,
         session_id: str = "N/A",
+        **kwargs: Any,
     ) -> Any:
-        """Send a chat completion request via LiteLLM.
+        """Send a chat completion request via LiteLLM with OpenRouter prefix normalization and smart fallback.
 
         Args:
             messages: List of message dicts (role/content).
@@ -258,16 +285,31 @@ class LLMClient:
             max_tokens: Maximum tokens in the response.
             metadata: Optional metadata dict passed to Langfuse trace.
             session_id: Correlation ID for logging.
+            **kwargs: Extra parameters passed to litellm.acompletion.
 
         Returns:
             The LiteLLM completion response (OpenAI-compatible format).
 
         Raises:
-            Exception: Propagates any LiteLLM / provider errors.
+            Exception: Propagates any LiteLLM / provider errors after retries and fallback fail.
         """
-        resolved_model: str = model or self.default_model
-        if not resolved_model.startswith("openai/") and not resolved_model.startswith("openrouter/"):
-            resolved_model = f"openai/{resolved_model}"
+        requested_model: str = model or self.default_model
+        resolved_model: str = normalize_model_name(requested_model)
+        fallback_model: str = DEFAULT_FALLBACK_MODEL
+
+        # Circuit Breaker: Zero-latency instant bypass if model has been blacklisted
+        if (
+            resolved_model in self.unavailable_models
+            or requested_model in self.unavailable_models
+        ) and resolved_model != fallback_model:
+            logger.debug(
+                "[LLMClient] Instant bypass for blacklisted model '%s' -> '%s' (0ms latency)",
+                resolved_model,
+                fallback_model,
+                extra={"session_id": session_id},
+            )
+            resolved_model = fallback_model
+
         request_trace_id = str(uuid.uuid4())
         call_metadata: dict[str, Any] = {
             "trace_id": request_trace_id,
@@ -277,6 +319,14 @@ class LLMClient:
             "trace_name": (metadata.get("trace_name") if metadata else None) or f"llm_chat_{session_id[:8]}",
             **(metadata or {}),
         }
+
+        # OpenRouter required headers
+        extra_headers: dict[str, str] = {
+            "HTTP-Referer": "https://github.com/enterprise-multi-agent",
+            "X-Title": "Multi-Agent Enterprise System",
+        }
+        if "extra_headers" in kwargs:
+            extra_headers.update(kwargs.pop("extra_headers"))
 
         logger.debug(
             "LLM chat_completion (model=%s, msgs=%d, temp=%.1f)",
@@ -295,6 +345,8 @@ class LLMClient:
                 api_key=self.api_key,
                 api_base=self.api_base,
                 metadata=call_metadata,
+                extra_headers=extra_headers,
+                **kwargs,
             )
 
             # Extract usage for logging
@@ -310,11 +362,70 @@ class LLMClient:
             return response
 
         except Exception as exc:
+            err_msg: str = str(exc)
+            not_found_type = getattr(litellm, "NotFoundError", None)
+            is_not_found_cls = isinstance(not_found_type, type) and issubclass(not_found_type, BaseException)
+            is_404_or_no_endpoints: bool = (
+                (is_not_found_cls and isinstance(exc, not_found_type))
+                or "404" in err_msg
+                or "No endpoints found" in err_msg
+                or "not found" in err_msg.lower()
+            )
+
+            fallback_model: str = DEFAULT_FALLBACK_MODEL
+
+            # Fast 404 / No endpoints found bypass: Blacklist model and fallback
+            if is_404_or_no_endpoints and resolved_model != fallback_model:
+                if resolved_model not in self.unavailable_models:
+                    self.unavailable_models.add(resolved_model)
+                    if requested_model:
+                        self.unavailable_models.add(requested_model)
+                    logger.warning(
+                        "[LLMClient] Blacklisting unavailable model '%s' for this session.",
+                        resolved_model,
+                        extra={"session_id": session_id},
+                    )
+                logger.warning(
+                    "[LLMClient] Model %s unavailable on OpenRouter (404). Auto-fallbacking to %s...",
+                    resolved_model,
+                    fallback_model,
+                    extra={"session_id": session_id},
+                )
+                try:
+                    fallback_resp: Any = await acompletion(
+                        model=fallback_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        api_key=self.api_key,
+                        api_base=self.api_base,
+                        extra_headers=extra_headers,
+                        **kwargs,
+                    )
+                    logger.info(
+                        "LLM chat_completion auto-fallback to '%s' SUCCEEDED",
+                        fallback_model,
+                        extra={"session_id": session_id},
+                    )
+                    return fallback_resp
+                except Exception as fb_exc:
+                    logger.error(
+                        "LLM chat_completion fallback also FAILED (model=%s): %s",
+                        fallback_model,
+                        fb_exc,
+                        extra={"session_id": session_id},
+                    )
+                    raise fb_exc
+
             logger.warning(
-                "LLM chat_completion failed with Langfuse callbacks enabled (%s) — disabling Langfuse and retrying…",
+                "LLM chat_completion failed on model '%s' (%s) — attempting recovery/fallback…",
+                resolved_model,
                 exc,
                 extra={"session_id": session_id},
             )
+            last_exc = exc
+
+            # 1. If Langfuse was enabled, first try disabling it and retrying the primary model
             if self.langfuse_enabled:
                 self.langfuse_enabled = False
                 litellm.success_callback = []
@@ -327,16 +438,158 @@ class LLMClient:
                         max_tokens=max_tokens,
                         api_key=self.api_key,
                         api_base=self.api_base,
+                        extra_headers=extra_headers,
+                        **kwargs,
+                    )
+                    logger.info(
+                        "LLM chat_completion retry without Langfuse OK (model=%s)",
+                        resolved_model,
+                        extra={"session_id": session_id},
                     )
                     return retry_resp
                 except Exception as retry_exc:
-                    logger.error(
-                        "LLM chat_completion retry FAILED (model=%s): %s",
+                    logger.warning(
+                        "LLM chat_completion retry without Langfuse also failed (model=%s): %s",
                         resolved_model,
                         retry_exc,
                         extra={"session_id": session_id},
                     )
-                    raise retry_exc
+                    last_exc = retry_exc
+
+            # 2. Smart Fallback Mechanism:
+            # If the primary model encounters network issues, timeout, rate limit, or other errors,
+            # automatically fallback to openrouter/openai/gpt-4o-mini to maintain PEV execution
+            if resolved_model != fallback_model:
+                logger.warning(
+                    "Primary LLM '%s' failed. Automatically falling back to '%s' to maintain PEV workflow...",
+                    resolved_model,
+                    fallback_model,
+                    extra={"session_id": session_id},
+                )
+                try:
+                    fallback_resp: Any = await acompletion(
+                        model=fallback_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        api_key=self.api_key,
+                        api_base=self.api_base,
+                        extra_headers=extra_headers,
+                        **kwargs,
+                    )
+                    logger.info(
+                        "LLM chat_completion fallback to '%s' SUCCEEDED",
+                        fallback_model,
+                        extra={"session_id": session_id},
+                    )
+                    return fallback_resp
+                except Exception as fb_exc:
+                    logger.error(
+                        "LLM chat_completion fallback also FAILED (model=%s): %s",
+                        fallback_model,
+                        fb_exc,
+                        extra={"session_id": session_id},
+                    )
+                    raise fb_exc
+
+            raise last_exc
+
+    async def acompletion(self, *args: Any, **kwargs: Any) -> Any:
+        """Async alias for chat_completion conforming to LiteLLM / client protocol."""
+        return await self.chat_completion(*args, **kwargs)
+
+    def completion(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float = 0.3,
+        max_tokens: int = 1024,
+        metadata: dict[str, Any] | None = None,
+        session_id: str = "N/A",
+        **kwargs: Any,
+    ) -> Any:
+        """Synchronous chat completion with OpenRouter prefix normalization and fallback."""
+        requested_model: str = model or self.default_model
+        resolved_model: str = normalize_model_name(requested_model)
+        fallback_model: str = DEFAULT_FALLBACK_MODEL
+
+        # Circuit Breaker: Zero-latency instant bypass if model has been blacklisted
+        if (
+            resolved_model in self.unavailable_models
+            or requested_model in self.unavailable_models
+        ) and resolved_model != fallback_model:
+            logger.debug(
+                "[LLMClient] Instant bypass for blacklisted model '%s' -> '%s' (0ms latency)",
+                resolved_model,
+                fallback_model,
+                extra={"session_id": session_id},
+            )
+            resolved_model = fallback_model
+
+        extra_headers: dict[str, str] = {
+            "HTTP-Referer": "https://github.com/enterprise-multi-agent",
+            "X-Title": "Multi-Agent Enterprise System",
+        }
+        if "extra_headers" in kwargs:
+            extra_headers.update(kwargs.pop("extra_headers"))
+
+        try:
+            return litellm.completion(
+                model=resolved_model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                api_key=self.api_key,
+                api_base=self.api_base,
+                extra_headers=extra_headers,
+                **kwargs,
+            )
+        except Exception as exc:
+            err_msg: str = str(exc)
+            not_found_type = getattr(litellm, "NotFoundError", None)
+            is_not_found_cls = isinstance(not_found_type, type) and issubclass(not_found_type, BaseException)
+            is_404_or_no_endpoints: bool = (
+                (is_not_found_cls and isinstance(exc, not_found_type))
+                or "404" in err_msg
+                or "No endpoints found" in err_msg
+                or "not found" in err_msg.lower()
+            )
+            fallback_model: str = DEFAULT_FALLBACK_MODEL
+            if resolved_model != fallback_model:
+                if is_404_or_no_endpoints:
+                    if resolved_model not in self.unavailable_models:
+                        self.unavailable_models.add(resolved_model)
+                        if requested_model:
+                            self.unavailable_models.add(requested_model)
+                        logger.warning(
+                            "[LLMClient] Blacklisting unavailable model '%s' for this session.",
+                            resolved_model,
+                            extra={"session_id": session_id},
+                        )
+                    logger.warning(
+                        "[LLMClient] Model %s unavailable on OpenRouter (404). Auto-fallbacking to %s...",
+                        resolved_model,
+                        fallback_model,
+                        extra={"session_id": session_id},
+                    )
+                else:
+                    logger.warning(
+                        "Sync LLM completion failed on '%s' (%s). Falling back to '%s'...",
+                        resolved_model,
+                        exc,
+                        fallback_model,
+                        extra={"session_id": session_id},
+                    )
+                return litellm.completion(
+                    model=fallback_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    api_key=self.api_key,
+                    api_base=self.api_base,
+                    extra_headers=extra_headers,
+                    **kwargs,
+                )
             raise exc
 
     # ------------------------------------------------------------------

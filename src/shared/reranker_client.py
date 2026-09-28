@@ -15,6 +15,7 @@ Usage:
 """
 
 import logging
+import time
 from typing import Any, List, Optional
 import httpx
 
@@ -22,6 +23,39 @@ from src.config import settings
 from src.shared.logger import get_logger
 
 logger: logging.Logger = get_logger(__name__)
+
+# Circuit breaker settings & state
+_CIRCUIT_BREAKER_THRESHOLD: int = 3
+_CIRCUIT_BREAKER_COOLDOWN: float = 30.0  # seconds
+_consecutive_failures: int = 0
+_last_failure_time: float = 0.0
+
+
+def _is_circuit_open() -> bool:
+    """Check if the circuit breaker is currently open."""
+    global _consecutive_failures, _last_failure_time
+    if _consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
+        elapsed = time.monotonic() - _last_failure_time
+        if elapsed > _CIRCUIT_BREAKER_COOLDOWN:
+            # Half-open: allow a trial request
+            _consecutive_failures = 0
+            return False
+        return True
+    return False
+
+
+def _record_success() -> None:
+    """Reset circuit breaker failure counter on success."""
+    global _consecutive_failures, _last_failure_time
+    _consecutive_failures = 0
+    _last_failure_time = 0.0
+
+
+def _record_failure() -> None:
+    """Increment failure counter and record timestamp."""
+    global _consecutive_failures, _last_failure_time
+    _consecutive_failures += 1
+    _last_failure_time = time.monotonic()
 
 
 def truncate_text(text: str, max_chars: int = 1000) -> str:
@@ -63,6 +97,17 @@ async def rerank_documents(
     """
     if not documents:
         return []
+
+    target_top_k: int = top_k if top_k is not None else settings.RERANK_TOP_K
+
+    # Circuit breaker early exit
+    if _is_circuit_open():
+        logger.warning(
+            "TEI Reranker circuit breaker is OPEN (consecutive_failures=%d). Skipping HTTP call.",
+            _consecutive_failures,
+            extra={"session_id": session_id},
+        )
+        return documents[:target_top_k]
 
     target_endpoint: str = endpoint or settings.RERANKER_ENDPOINT
     target_top_k: int = top_k if top_k is not None else settings.RERANK_TOP_K
@@ -117,6 +162,7 @@ async def rerank_documents(
             continue
 
     if results is None:
+        _record_failure()
         logger.warning(
             "TEI Reranker service call failed (%s: %s). Falling back to top %d hybrid search results.",
             type(last_exc).__name__ if last_exc else "Error",
@@ -125,6 +171,8 @@ async def rerank_documents(
             extra={"session_id": session_id},
         )
         return candidate_docs[:target_top_k]
+
+    _record_success()
 
     # TEI reranker returns a list of items: [{"index": 0, "score": 0.95}, ...]
     reranked_docs: List[dict[str, Any]] = []

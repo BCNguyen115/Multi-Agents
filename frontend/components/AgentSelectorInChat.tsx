@@ -8,9 +8,9 @@ interface AgentSelectorInChatProps {
   onSelectAgent: (agentId: string) => void;
 }
 
-export function AgentSelectorInChat({ 
-  selectedAgent, 
-  onSelectAgent 
+export function AgentSelectorInChat({
+  selectedAgent,
+  onSelectAgent,
 }: AgentSelectorInChatProps) {
   const agents = [
     { id: 'RAG Agent', name: 'RAG Agent', icon: Cloud, desc: 'Tra cứu hợp đồng & tài liệu' },
@@ -19,7 +19,7 @@ export function AgentSelectorInChat({
   ];
 
   return (
-    <div className="px-6 py-2.5 border-b border-slate-200/60 bg-white/80 backdrop-blur-sm flex items-center justify-between sticky top-0 z-10">
+    <div className="px-6 py-2.5 border-b border-border bg-surface/80 backdrop-blur-sm flex items-center justify-between sticky top-0 z-10">
       <div className="flex items-center gap-2">
         {agents.map((agent) => {
           const Icon = agent.icon;
@@ -32,21 +32,21 @@ export function AgentSelectorInChat({
             <button
               key={agent.id}
               onClick={() => onSelectAgent(agent.id)}
-              className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-medium rounded-xl transition-all ${
+              className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-medium rounded-xl transition-all cursor-pointer ${
                 isActive
-                  ? "bg-[#005697] text-white ring-2 ring-[#F37021] border border-[#F37021] shadow-sm font-semibold"
-                  : "bg-slate-100 hover:bg-slate-200/80 text-slate-700"
+                  ? 'bg-accent-primary text-white ring-2 ring-accent-primary/30 font-semibold shadow-xs'
+                  : 'bg-surface-raised hover:bg-surface-overlay text-foreground-secondary border border-border'
               }`}
               title={agent.desc}
             >
-              <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-[#005697]'}`} />
+              <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-accent-primary'}`} />
               <span>{agent.name}</span>
             </button>
           );
         })}
       </div>
-      <div className="text-[11px] text-slate-400 italic hidden sm:block">
-        Đã chọn: <span className="font-semibold text-slate-600">{selectedAgent}</span>
+      <div className="text-[11px] text-foreground-muted italic hidden sm:block">
+        Active: <span className="font-semibold text-foreground-secondary">{selectedAgent}</span>
       </div>
     </div>
   );

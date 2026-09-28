@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { PanelLeft, PenSquare, Search, Pin, MoreVertical, Trash2, Edit3, MessageSquare } from 'lucide-react';
+import { PanelLeft, PenSquare, Search, Pin, MoreVertical, Trash2, Edit3, MessageSquare, Inbox } from 'lucide-react';
 import { FptLogo } from './ui/FptLogo';
 
 export interface ChatSession {
@@ -23,13 +23,45 @@ interface SidebarProps {
   onOpenSearch?: () => void;
 }
 
-export function Sidebar({ 
-  sessions = [], 
-  activeSessionId, 
-  onSelectSession, 
-  onNewChat, 
+// Group sessions by time period
+function groupSessionsByDate(sessions: ChatSession[]): { label: string; sessions: ChatSession[] }[] {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const sevenDaysAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  const groups: { label: string; sessions: ChatSession[] }[] = [
+    { label: 'Hôm nay', sessions: [] },
+    { label: '7 ngày qua', sessions: [] },
+    { label: 'Tháng trước', sessions: [] },
+    { label: 'Cũ hơn', sessions: [] },
+  ];
+
+  sessions.forEach((s) => {
+    const updated = new Date(s.updatedAt);
+    if (updated >= today) {
+      groups[0].sessions.push(s);
+    } else if (updated >= sevenDaysAgo) {
+      groups[1].sessions.push(s);
+    } else if (updated >= thirtyDaysAgo) {
+      groups[2].sessions.push(s);
+    } else {
+      groups[3].sessions.push(s);
+    }
+  });
+
+  return groups.filter((g) => g.sessions.length > 0);
+}
+
+const SIDEBAR_STATE_KEY = 'sidebar_collapsed';
+
+export function Sidebar({
+  sessions = [],
+  activeSessionId,
+  onSelectSession,
+  onNewChat,
   onOpenSearch,
-  onDeleteSession, 
+  onDeleteSession,
   onTogglePin,
   onRenameSession,
 }: SidebarProps) {
@@ -38,13 +70,39 @@ export function Sidebar({
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
 
+  // Persist sidebar state in localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(SIDEBAR_STATE_KEY);
+      if (saved === 'true') setIsOpen(false);
+    } catch {}
+  }, []);
+
+  // Publish current width as a CSS var so fixed/fullscreen overlays (e.g. DynamicDashboard)
+  // can offset themselves instead of rendering underneath the sidebar.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--sidebar-width', isOpen ? '16rem' : '4rem');
+  }, [isOpen]);
+
+  const toggleSidebar = (open: boolean) => {
+    setIsOpen(open);
+    try {
+      localStorage.setItem(SIDEBAR_STATE_KEY, open ? 'false' : 'true');
+    } catch {}
+  };
+
   const pinnedSessions = sessions.filter((s: ChatSession) => s.isPinned);
   const recentSessions = sessions.filter((s: ChatSession) => !s.isPinned);
+  const groupedRecents = groupSessionsByDate(recentSessions);
 
   const handleStartRename = (session: ChatSession) => {
     setEditingSessionId(session.id);
     setEditingTitle(session.title);
     setActiveMenuId(null);
+  };
+
+  const handleCancelRename = () => {
+    setEditingSessionId(null);
   };
 
   const handleSaveRename = (id: string) => {
@@ -55,102 +113,93 @@ export function Sidebar({
   };
 
   return (
-    <aside 
+    <aside
       className={`
-        h-screen bg-[#F8F9FA] dark:bg-slate-900 
-        border-r border-slate-200/80 dark:border-slate-800 
+        h-screen bg-background-secondary
+        border-r border-border
         transition-all duration-300 ease-in-out transform-gpu will-change-[width]
-        flex flex-col shrink-0 overflow-hidden select-none relative z-30
+        flex flex-col shrink-0 overflow-hidden select-none relative z-[60]
         ${isOpen ? 'w-64' : 'w-16'}
       `}
     >
-      {/* 1. SIDEBAR HEADER (FIXED ICON COLUMN W-12) */}
-      <div className="h-14 flex items-center px-2 border-b border-slate-200/60 dark:border-slate-800/60 shrink-0 relative overflow-hidden whitespace-nowrap">
-        {/* Cột Icon Logo cố định - Luôn nằm im vị trí này */}
+      {/* 1. SIDEBAR HEADER */}
+      <div className="h-14 flex items-center px-2 border-b border-border shrink-0 relative overflow-hidden whitespace-nowrap">
+        {/* Logo Slot */}
         <div className="w-12 h-12 flex items-center justify-center shrink-0 relative group cursor-pointer">
-          <FptLogo 
+          <FptLogo
             className={`h-6 w-auto object-contain transition-opacity duration-200 ease-out ${!isOpen ? 'group-hover:opacity-0' : ''}`}
           />
-          
-          {/* Khi Collapsed & Hover vào Logo: Hiển thị Nút Toggle tại đúng tâm Logo */}
+
           {!isOpen && (
-            <button 
+            <button
               type="button"
-              onClick={() => setIsOpen(true)}
-              className="absolute inset-0 m-auto w-8 h-8 flex items-center justify-center rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-[#005697] dark:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity duration-200 ease-out shadow-sm cursor-pointer"
+              onClick={() => toggleSidebar(true)}
+              className="absolute inset-0 m-auto w-8 h-8 flex items-center justify-center rounded-lg bg-surface-raised hover:bg-surface-overlay text-accent-primary opacity-0 group-hover:opacity-100 transition-opacity duration-200 ease-out shadow-sm cursor-pointer"
               title="Mở rộng Sidebar"
             >
-              <PanelLeft className="w-5 h-5"/>
+              <PanelLeft className="w-5 h-5" />
             </button>
           )}
         </div>
 
-        {/* Phần Text Thương hiệu & Nút Toggle khi Sidebar MỞ */}
+        {/* Brand Text & Toggle (Expanded) */}
         <div className={`flex items-center justify-between flex-1 overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none'}`}>
-          <span className="font-bold text-slate-800 dark:text-white whitespace-nowrap text-base">
-            FPT<span className="text-[#005697] dark:text-blue-400">AgentHub</span>
+          <span className="font-bold text-foreground whitespace-nowrap text-base">
+            FPT<span className="text-accent-primary">AgentHub</span>
           </span>
-          <button 
+          <button
             type="button"
-            onClick={() => setIsOpen(false)}
-            className="p-1.5 rounded-lg hover:bg-slate-200/70 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors duration-200 ease-out cursor-pointer shrink-0"
+            onClick={() => toggleSidebar(false)}
+            className="p-1.5 rounded-lg hover:bg-surface-raised text-foreground-muted hover:text-foreground transition-colors duration-200 ease-out cursor-pointer shrink-0"
             title="Thu gọn Sidebar"
           >
-            <PanelLeft className="w-5 h-5"/>
+            <PanelLeft className="w-5 h-5" />
           </button>
         </div>
       </div>
 
-      {/* 2. CHỨC NĂNG CHÍNH (NEW CHAT & SEARCH CHATS - FIXED ICON COLUMN W-12) */}
-      <div className="py-2.5 space-y-1 border-b border-slate-200/40 dark:border-slate-800 px-2 shrink-0 overflow-hidden whitespace-nowrap">
-        {/* Nút New Chat */}
+      {/* 2. ACTION BUTTONS (New Chat & Search) */}
+      <div className="py-2.5 space-y-1 border-b border-border px-2 shrink-0 overflow-hidden whitespace-nowrap">
         <button
           type="button"
           onClick={onNewChat}
-          className="flex items-center h-10 px-0 rounded-xl hover:bg-slate-200/60 dark:hover:bg-slate-800/60 w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap"
+          className="flex items-center h-10 px-0 rounded-xl hover:bg-surface-raised w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap"
           title="New chat"
         >
-          {/* Icon Slot Cố Định */}
           <div className="w-12 h-10 flex items-center justify-center shrink-0">
-            <PenSquare className="w-5 h-5 text-slate-700 dark:text-slate-300"/>
+            <PenSquare className="w-5 h-5 text-foreground-secondary" />
           </div>
-          
-          {/* Text Slot - Chỉ ẩn/hiện opacity, không đẩy Icon */}
-          <span className={`text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden'}`}>
+          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden'}`}>
             New chat
           </span>
         </button>
 
-        {/* Nút Search Chats */}
         <button
           type="button"
           onClick={onOpenSearch}
-          className="flex items-center h-10 px-0 rounded-xl hover:bg-slate-200/60 dark:hover:bg-slate-800/60 w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap"
+          className="flex items-center h-10 px-0 rounded-xl hover:bg-surface-raised w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap"
           title="Search chats"
         >
-          {/* Icon Slot Cố Định */}
           <div className="w-12 h-10 flex items-center justify-center shrink-0">
-            <Search className="w-5 h-5 text-slate-700 dark:text-slate-300"/>
+            <Search className="w-5 h-5 text-foreground-secondary" />
           </div>
-          
-          {/* Text Slot - Chỉ ẩn/hiện opacity, không đẩy Icon */}
-          <span className={`text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden'}`}>
+          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden'}`}>
             Search chats
           </span>
         </button>
       </div>
 
-      {/* 3. DANH SÁCH LỊCH SỬ CHAT (RECENTS & PINNED - FIXED ICON COLUMN W-12) */}
+      {/* 3. SESSION HISTORY (Pinned + Grouped Recents) */}
       <div className="flex-1 overflow-y-auto px-2 py-3 space-y-4 overflow-x-hidden whitespace-nowrap">
         {/* Pinned Section */}
         {pinnedSessions.length > 0 && (
           <div>
-            <div className={`px-3 text-[11px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1 flex items-center justify-between select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden'}`}>
+            <div className={`px-3 text-[11px] font-semibold text-foreground-muted uppercase tracking-wider mb-1 flex items-center justify-between select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden'}`}>
               <span>Pinned</span>
-              <Pin className="w-3 h-3 text-slate-400 dark:text-slate-500" />
+              <Pin className="w-3 h-3 text-foreground-muted" />
             </div>
             {pinnedSessions.map((session: ChatSession) => (
-              <ChatItem 
+              <ChatItem
                 key={session.id}
                 session={session}
                 isOpen={isOpen}
@@ -163,6 +212,7 @@ export function Sidebar({
                 editingTitle={editingTitle}
                 setEditingTitle={setEditingTitle}
                 onSaveRename={() => handleSaveRename(session.id)}
+                onCancelRename={handleCancelRename}
                 isMenuOpen={activeMenuId === session.id}
                 setMenuOpen={(open: boolean) => setActiveMenuId(open ? session.id : null)}
               />
@@ -170,59 +220,82 @@ export function Sidebar({
           </div>
         )}
 
-        {/* Recents Section */}
-        <div>
-          <div className={`px-3 text-[11px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1 select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden'}`}>
-            Recents
-          </div>
-          {recentSessions.length > 0 ? (
-            recentSessions.map((session: ChatSession) => (
-              <ChatItem 
-                key={session.id}
-                session={session}
-                isOpen={isOpen}
-                isActive={session.id === activeSessionId}
-                onSelect={() => onSelectSession(session.id)}
-                onDelete={() => onDeleteSession(session.id)}
-                onTogglePin={() => onTogglePin(session.id)}
-                onRename={() => handleStartRename(session)}
-                isEditing={editingSessionId === session.id}
-                editingTitle={editingTitle}
-                setEditingTitle={setEditingTitle}
-                onSaveRename={() => handleSaveRename(session.id)}
-                isMenuOpen={activeMenuId === session.id}
-                setMenuOpen={(open: boolean) => setActiveMenuId(open ? session.id : null)}
-              />
-            ))
-          ) : (
-            isOpen && (
-              <div className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500 italic select-none whitespace-nowrap">
-                Chưa có cuộc trò chuyện nào
+        {/* Grouped Recents */}
+        {groupedRecents.length > 0 ? (
+          groupedRecents.map((group) => (
+            <div key={group.label}>
+              <div className={`px-3 text-[11px] font-semibold text-foreground-muted uppercase tracking-wider mb-1 select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden'}`}>
+                {group.label}
               </div>
-            )
-          )}
-        </div>
+              {group.sessions.map((session: ChatSession) => (
+                <ChatItem
+                  key={session.id}
+                  session={session}
+                  isOpen={isOpen}
+                  isActive={session.id === activeSessionId}
+                  onSelect={() => onSelectSession(session.id)}
+                  onDelete={() => onDeleteSession(session.id)}
+                  onTogglePin={() => onTogglePin(session.id)}
+                  onRename={() => handleStartRename(session)}
+                  isEditing={editingSessionId === session.id}
+                  editingTitle={editingTitle}
+                  setEditingTitle={setEditingTitle}
+                  onSaveRename={() => handleSaveRename(session.id)}
+                  onCancelRename={handleCancelRename}
+                  isMenuOpen={activeMenuId === session.id}
+                  setMenuOpen={(open: boolean) => setActiveMenuId(open ? session.id : null)}
+                />
+              ))}
+            </div>
+          ))
+        ) : (
+          recentSessions.length === 0 && isOpen && (
+            <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
+              <div className="w-12 h-12 rounded-2xl bg-surface-raised flex items-center justify-center mb-3">
+                <Inbox className="w-6 h-6 text-foreground-muted" />
+              </div>
+              <p className="text-sm font-medium text-foreground-secondary mb-1">Chưa có cuộc trò chuyện</p>
+              <p className="text-xs text-foreground-muted">Bắt đầu bằng cách tạo chat mới</p>
+            </div>
+          )
+        )}
       </div>
     </aside>
   );
 }
 
-// Sub-component Chat Item với React Portal Dropdown Menu chống bị cắt xén
-function ChatItem({ 
-  session, 
+// Sub-component: Chat Item with Portal Dropdown
+function ChatItem({
+  session,
   isOpen,
-  isActive, 
-  onSelect, 
-  onDelete, 
-  onTogglePin, 
+  isActive,
+  onSelect,
+  onDelete,
+  onTogglePin,
   onRename,
   isEditing,
   editingTitle,
   setEditingTitle,
   onSaveRename,
-  isMenuOpen, 
-  setMenuOpen 
-}: any) {
+  onCancelRename,
+  isMenuOpen,
+  setMenuOpen,
+}: {
+  session: ChatSession;
+  isOpen: boolean;
+  isActive: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+  onTogglePin: () => void;
+  onRename: () => void;
+  isEditing: boolean;
+  editingTitle: string;
+  setEditingTitle: (t: string) => void;
+  onSaveRename: () => void;
+  onCancelRename?: () => void;
+  isMenuOpen: boolean;
+  setMenuOpen: (open: boolean) => void;
+}) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
@@ -240,7 +313,6 @@ function ChatItem({
     }
   };
 
-  // Tự động đóng Menu khi click ra ngoài hoặc khi cuộn danh sách
   useEffect(() => {
     if (!isMenuOpen) return;
 
@@ -262,55 +334,65 @@ function ChatItem({
   }, [isMenuOpen, setMenuOpen]);
 
   return (
-    <div 
-      className={`group relative flex items-center h-10 px-0 my-0.5 rounded-xl text-sm transition-colors duration-200 ease-out cursor-pointer overflow-hidden whitespace-nowrap ${
-        isActive 
-          ? 'bg-slate-200/80 dark:bg-slate-800 font-semibold text-slate-900 dark:text-slate-100 shadow-2xs' 
-          : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'
+    <div
+      className={`group relative flex items-center h-10 px-0 my-0.5 rounded-xl text-sm transition-all duration-150 ease-out cursor-pointer overflow-hidden whitespace-nowrap ${
+        isActive
+          ? 'bg-surface-raised font-semibold text-foreground shadow-xs before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:rounded-r-full before:bg-accent-primary'
+          : 'hover:bg-surface-raised/60 text-foreground-secondary hover:text-foreground'
       }`}
-      title={!isOpen ? session.title : undefined}
+      title={session.title}
     >
-      {/* Icon Slot Cố Định w-12 h-10 */}
+      {/* Icon Slot */}
       <div onClick={onSelect} className="w-12 h-10 flex items-center justify-center shrink-0">
-        <MessageSquare className="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0"/>
+        <MessageSquare className={`w-4 h-4 shrink-0 transition-colors ${isActive ? 'text-accent-primary' : 'text-foreground-muted group-hover:text-foreground'}`} />
       </div>
 
-      {/* Text Slot & Actions - Chỉ ẩn/hiện opacity */}
+      {/* Text Slot & Actions */}
       <div className={`flex items-center justify-between flex-1 overflow-hidden pr-2 whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 pointer-events-none'}`}>
         {isEditing ? (
           <input
             type="text"
             value={editingTitle}
             onChange={(e) => setEditingTitle(e.target.value)}
+            onFocus={(e) => e.target.select()}
             onKeyDown={(e) => {
               if (e.key === 'Enter') onSaveRename();
-              if (e.key === 'Escape') setEditingTitle(session.title);
+              if (e.key === 'Escape') {
+                if (onCancelRename) onCancelRename();
+                else setEditingTitle(session.title);
+              }
             }}
             onBlur={onSaveRename}
             autoFocus
-            className="w-full text-xs px-1.5 py-0.5 border border-blue-400 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none"
+            className="w-full text-xs px-1.5 py-0.5 border border-accent-primary rounded bg-surface text-foreground outline-none select-all"
           />
         ) : (
-          <span onClick={onSelect} className="truncate text-xs flex-1 pr-1">{session.title}</span>
+          <span
+            onClick={onSelect}
+            title={session.title}
+            className="truncate block max-w-full text-left text-xs flex-1 pr-1 text-foreground"
+          >
+            {session.title}
+          </span>
         )}
 
         <div className="flex items-center gap-1 shrink-0">
-          {session.isPinned && <Pin className="w-3 h-3 text-[#F37021] shrink-0 fill-[#F37021]"/>}
-          <button 
+          {session.isPinned && <Pin className="w-3 h-3 text-accent-planner shrink-0 fill-current" />}
+          <button
             ref={buttonRef}
             type="button"
             onClick={handleToggleMenu}
-            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-300/50 dark:hover:bg-slate-700 rounded-lg transition-opacity duration-200 ease-out cursor-pointer"
+            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-surface-overlay rounded-lg transition-opacity duration-200 ease-out cursor-pointer"
             title="Tùy chọn"
           >
-            <MoreVertical className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400"/>
+            <MoreVertical className="w-3.5 h-3.5 text-foreground-muted" />
           </button>
         </div>
       </div>
 
-      {/* BẮT BUỘC DÙNG PORTAL RENDER THẲNG VÀO DOCUMENT.BODY ĐỂ NỔI LÊN TRÊN HẲN OVERFLOW-HIDDEN */}
+      {/* Portal Dropdown Menu */}
       {isMenuOpen && menuPos && typeof document !== 'undefined' && createPortal(
-        <div 
+        <div
           onClick={(e) => e.stopPropagation()}
           style={{
             position: 'fixed',
@@ -318,37 +400,34 @@ function ChatItem({
             right: `${menuPos.right}px`,
             zIndex: 9999,
           }}
-          className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-2xl p-1.5 w-48 text-xs space-y-1 whitespace-nowrap animate-in fade-in duration-150"
+          className="bg-surface border border-border-strong rounded-xl shadow-enterprise p-1.5 w-48 text-xs space-y-1 whitespace-nowrap animate-fade-in-scale"
         >
-          {/* 1. Ghim cuộc trò chuyện (Pin / Unpin) */}
-          <button 
+          <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onTogglePin(); setMenuOpen(false); }}
-            className="flex items-center gap-2.5 w-full px-2.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg cursor-pointer transition-colors"
+            className="flex items-center gap-2.5 w-full px-2.5 py-2 hover:bg-surface-raised text-foreground-secondary rounded-lg cursor-pointer transition-colors"
           >
-            <Pin className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0"/>
+            <Pin className="w-3.5 h-3.5 text-foreground-muted shrink-0" />
             <span>{session.isPinned ? 'Bỏ ghim' : 'Ghim cuộc trò chuyện'}</span>
           </button>
 
-          {/* 2. Đổi tên (Rename) */}
           {onRename && (
-            <button 
+            <button
               type="button"
               onClick={(e) => { e.stopPropagation(); onRename(); }}
-              className="flex items-center gap-2.5 w-full px-2.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg cursor-pointer transition-colors"
+              className="flex items-center gap-2.5 w-full px-2.5 py-2 hover:bg-surface-raised text-foreground-secondary rounded-lg cursor-pointer transition-colors"
             >
-              <Edit3 className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0"/>
+              <Edit3 className="w-3.5 h-3.5 text-foreground-muted shrink-0" />
               <span>Đổi tên</span>
             </button>
           )}
 
-          {/* 3. Xóa cuộc trò chuyện (Delete) */}
-          <button 
+          <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onDelete(); setMenuOpen(false); }}
-            className="flex items-center gap-2.5 w-full px-2.5 py-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 rounded-lg font-medium cursor-pointer transition-colors"
+            className="flex items-center gap-2.5 w-full px-2.5 py-2 hover:bg-accent-error/10 text-accent-error rounded-lg font-medium cursor-pointer transition-colors"
           >
-            <Trash2 className="w-3.5 h-3.5 text-red-500 dark:text-red-400 shrink-0"/>
+            <Trash2 className="w-3.5 h-3.5 shrink-0" />
             <span>Xóa cuộc trò chuyện</span>
           </button>
         </div>,

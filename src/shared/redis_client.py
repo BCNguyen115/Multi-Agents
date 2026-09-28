@@ -94,7 +94,7 @@ class RedisClient:
         self,
         key: str,
         value: str,
-        ttl: int = 3600,
+        ttl: int = 86400,
         session_id: str = "N/A",
     ) -> None:
         """Store a string value in Redis with optional TTL.
@@ -102,7 +102,7 @@ class RedisClient:
         Args:
             key: Redis key.
             value: String value to store.
-            ttl: Time-to-live in seconds (default 1 hour).
+            ttl: Time-to-live in seconds (default 24 hours / 86400s).
             session_id: Correlation ID for logging.
         """
         if self.client is None:
@@ -171,7 +171,7 @@ class RedisClient:
         role: str,
         content: str,
         max_turns: int = 5,
-        ttl: int = 3600,
+        ttl: int = 86400,
     ) -> None:
         """Append a message to the session conversation history.
 
@@ -186,7 +186,7 @@ class RedisClient:
             role: Message role (``"user"`` or ``"assistant"``).
             content: Message text.
             max_turns: Maximum number of conversation turns to retain.
-            ttl: TTL in seconds for the history key.
+            ttl: TTL in seconds for the history key (default 24h).
         """
         if self.client is None:
             raise RuntimeError("Redis client is not connected.")

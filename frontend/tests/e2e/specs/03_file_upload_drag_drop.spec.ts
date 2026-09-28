@@ -36,7 +36,7 @@ test.describe('3. Test Đính kèm File & Kéo thả Drag & Drop', () => {
     expect(overlayText).toContain('Kéo & thả file CSV / Excel / Document vào đây để nạp tự động');
   });
 
-  test('3.3 Thả File (Drop): Drop file ➔ UI đính kèm hiển thị giống hệt 100% như bấm nút +', async () => {
+  test('3.3 Thả File (Drop): Drop file -> UI đính kèm hiển thị giống hệt 100% như bấm nút +', async () => {
     // Drop file vào main container
     await chatPage.dropFile(sampleFilePath);
 

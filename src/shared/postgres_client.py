@@ -16,8 +16,13 @@ Usage:
 import logging
 from typing import Any, List, Optional
 
-import asyncpg
-from asyncpg import Pool, Record
+try:
+    import asyncpg
+    from asyncpg import Pool, Record
+except ImportError:
+    asyncpg = None
+    Pool = Any
+    Record = Any
 
 from src.shared.logger import get_logger
 
@@ -50,26 +55,40 @@ class PostgresClient:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self, min_size: int = 2, max_size: int = 10) -> None:
+    async def connect(
+        self,
+        min_size: int = 5,
+        max_size: int = 20,
+        max_inactive_connection_lifetime: float = 300.0,
+    ) -> None:
         """Create the connection pool and activate the pgvector extension.
 
         Args:
-            min_size: Minimum number of connections in the pool.
-            max_size: Maximum number of connections in the pool.
+            min_size: Minimum number of connections in the pool (default: 5).
+            max_size: Maximum number of connections in the pool (default: 20).
+            max_inactive_connection_lifetime: Inactive connection lifetime in seconds (default: 300s).
 
         Raises:
             asyncpg.PostgresError: If the connection or extension setup fails.
         """
+        self._min_size = min_size
+        self._max_size = max_size
+        self._max_inactive = max_inactive_connection_lifetime
+
         try:
             self.pool = await asyncpg.create_pool(
                 dsn=self.dsn,
                 min_size=min_size,
                 max_size=max_size,
+                max_inactive_connection_lifetime=max_inactive_connection_lifetime,
                 timeout=_CONNECT_TIMEOUT,
             )
             await self._ensure_pgvector_extension()
             logger.info(
-                "PostgreSQL connection pool created",
+                "PostgreSQL connection pool created (min=%d, max=%d, lifetime=%.1fs)",
+                min_size,
+                max_size,
+                max_inactive_connection_lifetime,
                 extra={"session_id": "SYSTEM"},
             )
         except asyncpg.PostgresError as exc:
@@ -86,6 +105,19 @@ class PostgresClient:
                 extra={"session_id": "SYSTEM"},
             )
             raise
+
+    async def _ensure_connected(self) -> None:
+        """Auto-reconnect if connection pool is None or closed."""
+        if self.pool is None or getattr(self.pool, "_closed", False):
+            logger.warning(
+                "PostgreSQL connection pool closed or uninitialised; reconnecting...",
+                extra={"session_id": "SYSTEM"},
+            )
+            await self.connect(
+                min_size=getattr(self, "_min_size", 5),
+                max_size=getattr(self, "_max_size", 20),
+                max_inactive_connection_lifetime=getattr(self, "_max_inactive", 300.0),
+            )
 
     async def disconnect(self) -> None:
         """Gracefully close the connection pool."""

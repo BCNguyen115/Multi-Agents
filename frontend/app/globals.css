@@ -1,13 +1,133 @@
+/* ============================================================================
+   MULTI-AGENT ENTERPRISE SYSTEM — GLOBAL DESIGN TOKENS & STYLES
+   Design Language: Modern Enterprise B2B AI Studio (Linear/Vercel/Datadog)
+   Color Mode: Dark-First (default), Light Mode supported
+   Grid System: 8-point grid | Font: Inter + System Font Stack
+   ============================================================================ */
+
+/* AG-Grid Theme Imports (Quartz for Dark/Light parity) */
 @import 'ag-grid-community/styles/ag-grid.css';
-@import 'ag-grid-community/styles/ag-theme-alpine.css';
+@import 'ag-grid-community/styles/ag-theme-quartz.css';
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ── Google Font: Inter (variable weight) ────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+/* ============================================================================
+   1. CSS CUSTOM PROPERTIES — DARK MODE (Default / First-Class)
+   ============================================================================ */
 :root {
-  --background: #F8F9FA;
-  --foreground: #212529;
+  /* ── Surface Palette (Slate/Zinc — NO pure #000) ── */
+  --background:       #09090b;
+  --background-secondary: #18181b;
+  --surface:          #18181b;
+  --surface-raised:   #27272a;
+  --surface-overlay:  #3f3f46;
+  --foreground:       #fafafa;
+  --foreground-secondary: #a1a1aa;
+  --foreground-muted: #71717a;
+
+  /* ── Border & Divider ── */
+  --border:           rgba(255, 255, 255, 0.08);
+  --border-strong:    rgba(255, 255, 255, 0.14);
+  --border-focus:     #3b82f6;
+
+  /* ── Accent Colors — Agent State Semantic ── */
+  --accent-planner:   #f59e0b;       /* Amber/Orange — Planner */
+  --accent-executor:  #6366f1;       /* Indigo — Executor */
+  --accent-verifier:  #10b981;       /* Emerald — Verifier */
+  --accent-error:     #f43f5e;       /* Rose — Error/Alert */
+  --accent-primary:   #3b82f6;       /* Blue — Primary interactive */
+  --accent-primary-hover: #2563eb;
+
+  /* ── Brand (FPT) ── */
+  --brand-primary:    #005697;
+  --brand-accent:     #f37021;
+
+  /* ── Ring / Focus ── */
+  --ring:             #3b82f680;
+
+  /* ── Shadow Tokens ── */
+  --shadow-sm:        0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md:        0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg:        0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-glow-blue: 0 0 20px rgba(59, 130, 246, 0.15);
+  --shadow-glow-amber:0 0 20px rgba(245, 158, 11, 0.15);
+  --shadow-glow-emerald: 0 0 20px rgba(16, 185, 129, 0.15);
+
+  /* ── Typography ── */
+  --font-sans:        'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:        'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+
+  /* ── Spacing (8pt grid) ── */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ── Radius ── */
+  --radius-sm:  6px;
+  --radius-md:  8px;
+  --radius-lg:  12px;
+  --radius-xl:  16px;
+  --radius-2xl: 20px;
+  --radius-full: 9999px;
+
+  /* ── Transition ── */
+  --transition-fast:    150ms ease-out;
+  --transition-normal:  200ms ease-out;
+  --transition-slow:    300ms ease-in-out;
+
+  /* ── Color scheme ── */
+  color-scheme: dark;
+}
+
+/* ============================================================================
+   2. LIGHT MODE OVERRIDES (WCAG AA Contrast)
+   ============================================================================ */
+[data-theme="light"],
+.light {
+  --background:       #fafafa;
+  --background-secondary: #ffffff;
+  --surface:          #ffffff;
+  --surface-raised:   #f4f4f5;
+  --surface-overlay:  #e4e4e7;
+  --foreground:       #09090b;
+  --foreground-secondary: #52525b;
+  --foreground-muted: #a1a1aa;
+
+  --border:           #e4e4e7;
+  --border-strong:    #d4d4d8;
+  --border-focus:     #3b82f6;
+
+  --shadow-sm:        0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md:        0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg:        0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-glow-blue: 0 0 20px rgba(59, 130, 246, 0.1);
+  --shadow-glow-amber:0 0 20px rgba(245, 158, 11, 0.1);
+  --shadow-glow-emerald: 0 0 20px rgba(16, 185, 129, 0.1);
+
+  color-scheme: light;
+}
+
+/* ============================================================================
+   3. BASE ELEMENT STYLES
+   ============================================================================ */
+html {
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 html, body {
@@ -18,21 +138,313 @@ html, body {
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  font-family: var(--font-sans);
+  line-height: 1.6;
 }
 
-/* Modern Slim Scrollbar */
+/* ── Selection ── */
+::selection {
+  background: rgba(59, 130, 246, 0.3);
+  color: var(--foreground);
+}
+
+/* ============================================================================
+   4. MODERN SLIM SCROLLBAR (Dark + Light)
+   ============================================================================ */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 9999px;
+  background: var(--surface-overlay);
+  border-radius: var(--radius-full);
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--foreground-muted);
 }
+
+/* Firefox Scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-overlay) transparent;
+}
+
+/* ============================================================================
+   5. KEYFRAME ANIMATIONS (Enterprise-Grade)
+   ============================================================================ */
+
+/* Shimmer Loading Effect — Skeleton Cards */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Subtle Pulse Glow — Active Agent Steps */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.3); }
+  50%      { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+}
+
+@keyframes pulse-glow-amber {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.3); }
+  50%      { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+}
+
+@keyframes pulse-glow-emerald {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.3); }
+  50%      { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+}
+
+/* Accordion Slide In/Out */
+@keyframes accordion-down {
+  from { max-height: 0; opacity: 0; }
+  to   { max-height: var(--radix-accordion-content-height, 500px); opacity: 1; }
+}
+
+@keyframes accordion-up {
+  from { max-height: var(--radix-accordion-content-height, 500px); opacity: 1; }
+  to   { max-height: 0; opacity: 0; }
+}
+
+/* Fade In / Slide Up */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in-scale {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Spinner Ring */
+@keyframes spin-ring {
+  to { transform: rotate(360deg); }
+}
+
+/* Typing Dots */
+@keyframes typing-dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30%           { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ============================================================================
+   6. UTILITY CLASSES (Animations)
+   ============================================================================ */
+.animate-shimmer {
+  background: linear-gradient(90deg, var(--surface-raised) 25%, var(--surface-overlay) 50%, var(--surface-raised) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.animate-pulse-glow-amber {
+  animation: pulse-glow-amber 2s ease-in-out infinite;
+}
+
+.animate-pulse-glow-emerald {
+  animation: pulse-glow-emerald 2s ease-in-out infinite;
+}
+
+.animate-fade-in {
+  animation: fade-in 200ms ease-out both;
+}
+
+.animate-fade-in-scale {
+  animation: fade-in-scale 200ms ease-out both;
+}
+
+.animate-accordion-down {
+  animation: accordion-down 300ms ease-out both;
+  overflow: hidden;
+}
+
+.animate-accordion-up {
+  animation: accordion-up 200ms ease-out both;
+  overflow: hidden;
+}
+
+.animate-typing-dot {
+  animation: typing-dot 1.2s ease-in-out infinite;
+}
+
+/* ============================================================================
+   7. COMPONENT UTILITY CLASSES
+   ============================================================================ */
+
+/* Frosted Glass Header Bar */
+.glass-header {
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  background: rgba(9, 9, 11, 0.8);
+  border-bottom: 1px solid var(--border);
+}
+
+.light .glass-header,
+[data-theme="light"] .glass-header {
+  background: rgba(250, 250, 250, 0.85);
+}
+
+/* Enterprise Card */
+.enterprise-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.enterprise-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+/* KPI Card with left accent border */
+.kpi-card {
+  position: relative;
+  padding-left: 16px;
+}
+
+.kpi-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent-primary);
+}
+
+/* Tabular Nums for KPI values */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================================
+   8. REDUCED MOTION RESPECT
+   ============================================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .animate-shimmer,
+  .animate-pulse-glow,
+  .animate-pulse-glow-amber,
+  .animate-pulse-glow-emerald {
+    animation: none !important;
+  }
+}
+
+/* ============================================================================
+   9. AG-GRID DARK MODE OVERRIDES
+   ============================================================================ */
+.ag-theme-quartz-dark,
+.ag-theme-alpine-dark {
+  --ag-background-color: var(--surface);
+  --ag-header-background-color: var(--surface-raised);
+  --ag-odd-row-background-color: var(--background-secondary);
+  --ag-row-hover-color: rgba(59, 130, 246, 0.06);
+  --ag-border-color: var(--border);
+  --ag-font-size: 13px;
+  --ag-row-height: 40px;
+  --ag-header-height: 44px;
+}
+
+.ag-theme-quartz,
+.ag-theme-alpine {
+  --ag-font-size: 13px;
+  --ag-row-height: 40px;
+  --ag-header-height: 44px;
+  --ag-row-hover-color: rgba(59, 130, 246, 0.04);
+}
+
+/* ============================================================================
+   10. PRINT STYLES FOR EXECUTIVE A4 LANDSCAPE PDF EXPORT
+   ============================================================================ */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm 10mm;
+  }
+
+  /* Hide interactive, chat controls, sidebars, buttons */
+  aside,
+  header,
+  .no-print,
+  button,
+  .chat-input-container,
+  input,
+  textarea {
+    display: none !important;
+  }
+
+  body,
+  html,
+  main,
+  #root,
+  #__next {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Full-width print container */
+  .dynamic-dashboard-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+  }
+
+  /* High contrast readable card backgrounds */
+  .bg-surface,
+  .bg-surface-raised,
+  .bg-surface-raised\/60 {
+    background: #f8fafc !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #0f172a !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .text-foreground,
+  .text-foreground-secondary {
+    color: #0f172a !important;
+  }
+
+  .text-foreground-muted {
+    color: #475569 !important;
+  }
+
+  /* Prevent page breaks across crucial elements */
+  .chart-card,
+  .kpi-card,
+  .storyteller-card {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+}
+
+

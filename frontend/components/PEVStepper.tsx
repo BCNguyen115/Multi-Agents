@@ -11,8 +11,10 @@ import {
   CheckCircle2,
   AlertCircle,
   Brain,
+  RotateCcw,
+  ChevronRight,
 } from 'lucide-react';
-import { PEVStepData, PEVTrace } from '../lib/types';
+import { PEVStepData, PEVTrace, PEVTraceState } from '../lib/types';
 
 interface PEVStepperProps {
   pevStep?: PEVStepData;
@@ -20,248 +22,425 @@ interface PEVStepperProps {
     plan?: { plan: string; target_agent: string };
     executing?: { target_agent: string; execution_result: string };
     verifying?: { is_verified: boolean; verifier_feedback: string; retry_count: number };
-    final_response?: { response: string; target_agent: string; is_verified: boolean };
+    final_response?: { response: string; target_agent: string; is_verified: boolean; pev_trace?: PEVTrace };
     error?: string;
   };
   pevTrace?: PEVTrace;
+  pevTraceState?: PEVTraceState;
   isStreaming?: boolean;
+}
+
+function getAgentPipelineSteps(agentName?: string): { name: string; desc?: string }[] {
+  const norm = (agentName || '').toLowerCase();
+  if (norm.includes('data')) {
+    return [
+      { name: 'EDA', desc: 'Khám phá dữ liệu' },
+      { name: 'Tạo Layout', desc: 'Thiết kế bố cục' },
+      { name: 'Dựng Biểu Đồ', desc: 'Trực quan hóa' },
+    ];
+  }
+  if (norm.includes('rag')) {
+    return [
+      { name: 'HyDE Document', desc: 'Tổng hợp tài liệu giả định' },
+      { name: 'Hybrid Search (pgvector)', desc: 'Truy vấn vector kết hợp' },
+      { name: 'TEI Reranker (Top 5)', desc: 'Tái xếp hạng độ liên quan' },
+    ];
+  }
+  if (norm.includes('search')) {
+    return [
+      { name: 'Tavily Web Search', desc: 'Truy vấn web thời gian thực' },
+      { name: 'Crawl4AI Content Extraction', desc: 'Trích xuất bài viết sâu' },
+    ];
+  }
+  if (norm.includes('db')) {
+    return [
+      { name: 'Sinh câu lệnh SQL Read-Only', desc: 'Tạo truy vấn đọc an toàn' },
+      { name: 'Thực thi qua MCP', desc: 'Truy vấn cơ sở dữ liệu' },
+    ];
+  }
+  return [
+    { name: 'Phân tích tác vụ', desc: 'Nhận diện nhiệm vụ' },
+    { name: 'Thực thi công cụ', desc: 'Xử lý dữ liệu' },
+    { name: 'Tổng hợp kết quả', desc: 'Đóng gói phản hồi' },
+  ];
 }
 
 export const PEVStepper: React.FC<PEVStepperProps> = ({
   pevStep,
   pevEvents,
   pevTrace,
+  pevTraceState,
   isStreaming,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  if (!pevStep && !pevEvents && !pevTrace && !isStreaming) return null;
+  if (!pevStep && !pevEvents && !pevTrace && !pevTraceState && !isStreaming) return null;
 
-  const currentStep = pevStep?.step || (
-    pevTrace || pevEvents?.verifying
-      ? 'completed'
-      : pevEvents?.executing
-      ? 'verifier'
-      : pevEvents?.plan
-      ? 'executor'
-      : 'planner'
-  );
-
-  const plan = pevEvents?.plan || (pevTrace?.planner ? { plan: pevTrace.planner.plan_summary || 'Lập kế hoạch phân tích', target_agent: pevTrace.planner.target_agent || 'data_agent' } : undefined);
-  const executing = pevEvents?.executing || (pevTrace?.executor ? { target_agent: pevTrace.executor.agent_used || 'data_agent', execution_result: pevTrace.executor.execution_summary || 'Thực thi mã thành công' } : undefined);
-  const verifying = pevEvents?.verifying || (pevTrace?.verifier ? { is_verified: pevTrace.verifier.is_verified ?? true, verifier_feedback: pevTrace.verifier.verifier_feedback || 'Đã kiểm duyệt', retry_count: 0 } : undefined);
+  // Resolve plan, executing, verifying data from state, events or pevTrace
+  const planData = pevEvents?.plan || (pevTrace?.planner ? { plan: pevTrace.planner.plan_summary || '', target_agent: pevTrace.planner.target_agent || '' } : undefined);
+  const execData = pevEvents?.executing || (pevTrace?.executor ? { target_agent: pevTrace.executor.agent_used || '', execution_result: pevTrace.executor.execution_summary || '' } : undefined);
+  const verifyData = pevEvents?.verifying || (pevTrace?.verifier ? { is_verified: pevTrace.verifier.is_verified ?? true, verifier_feedback: pevTrace.verifier.verifier_feedback || '', retry_count: 0 } : undefined);
   const error = pevEvents?.error;
 
-  const isPlannerDone = Boolean(plan) || Boolean(pevTrace) || currentStep === 'executor' || currentStep === 'verifier' || currentStep === 'completed';
-  const isExecutorDone = Boolean(executing) || Boolean(pevTrace) || currentStep === 'verifier' || currentStep === 'completed';
-  const isVerifierDone = (Boolean(verifying) && (verifying?.is_verified ?? true)) || Boolean(pevTrace) || currentStep === 'completed';
+  const targetAgent =
+    pevTraceState?.planner.targetAgent ||
+    pevTraceState?.executor.agentName ||
+    planData?.target_agent ||
+    execData?.target_agent ||
+    pevStep?.target ||
+    pevTrace?.planner?.target_agent ||
+    pevTrace?.executor?.agent_used;
 
-  const isPlannerActive = isStreaming && currentStep === 'planner';
-  const isExecutorActive = isStreaming && currentStep === 'executor';
-  const isVerifierActive = isStreaming && currentStep === 'verifier';
+  const planText = pevTraceState?.planner.plan || planData?.plan || pevTrace?.planner?.plan_summary || '';
+  const execSummary = pevTraceState?.executor.outputSummary || execData?.execution_result || pevTrace?.executor?.execution_summary || '';
+  const verifierFeedback = pevTraceState?.verifier.feedback || verifyData?.verifier_feedback || pevTrace?.verifier?.verifier_feedback || '';
+
+  // Determine current step
+  const currentStep = pevTraceState?.currentStep || pevStep?.step || (
+    pevTrace || pevEvents?.verifying || verifyData !== undefined
+      ? 'completed'
+      : pevEvents?.executing || execData
+      ? 'verifier'
+      : pevEvents?.plan || planData
+      ? 'executor'
+      : isStreaming
+      ? 'planner'
+      : 'completed'
+  );
+
+  // Determine node statuses
+  const plannerStatus: 'idle' | 'active' | 'completed' =
+    pevTraceState?.planner.status === 'completed'
+      ? 'completed'
+      : pevTraceState?.planner.status === 'active'
+      ? 'active'
+      : Boolean(planText) || currentStep === 'executor' || currentStep === 'verifier' || currentStep === 'completed' || Boolean(pevTrace)
+      ? 'completed'
+      : currentStep === 'planner' && isStreaming
+      ? 'active'
+      : 'idle';
+
+  const executorStatus: 'idle' | 'active' | 'completed' =
+    pevTraceState?.executor.status === 'completed'
+      ? 'completed'
+      : pevTraceState?.executor.status === 'active'
+      ? 'active'
+      : Boolean(execSummary) || currentStep === 'verifier' || currentStep === 'completed' || Boolean(pevTrace)
+      ? 'completed'
+      : currentStep === 'executor' && isStreaming
+      ? 'active'
+      : 'idle';
 
   const isVerified =
-    pevEvents?.verifying?.is_verified ??
+    pevTraceState?.verifier.isVerified ??
+    verifyData?.is_verified ??
     pevEvents?.final_response?.is_verified ??
     (pevTrace?.status ? pevTrace.status === 'Verified' : undefined) ??
     pevTrace?.verifier?.is_verified ??
     true;
 
-  let statusText = 'Khởi tạo luồng PEV Loop...';
+  const verifierStatus: 'idle' | 'active' | 'completed' =
+    pevTraceState?.verifier.status === 'completed'
+      ? 'completed'
+      : pevTraceState?.verifier.status === 'active'
+      ? 'active'
+      : currentStep === 'completed' || verifyData !== undefined || Boolean(pevTrace)
+      ? 'completed'
+      : currentStep === 'verifier' && isStreaming
+      ? 'active'
+      : 'idle';
+
+  const isPlannerDone = plannerStatus === 'completed';
+  const isExecutorDone = executorStatus === 'completed';
+  const isVerifierDone = verifierStatus === 'completed';
+
+  const isPlannerActive = plannerStatus === 'active';
+  const isExecutorActive = executorStatus === 'active';
+  const isVerifierActive = verifierStatus === 'active';
+
+  const retryCount = pevTraceState?.verifier.retryCount ?? verifyData?.retry_count ?? 0;
+  const isRetry = verifierStatus === 'completed' && !isVerified && retryCount > 0;
+  const isAuditPassed = isVerified && !isRetry;
+
+  let statusText = 'Initializing PEV Loop...';
   if (pevStep?.logs) {
     statusText = pevStep.logs;
   } else if (isStreaming) {
-    if (isPlannerActive) statusText = 'Agent đang phân tích yêu cầu & lập kế hoạch...';
-    else if (isExecutorActive) statusText = `Planner hoàn tất ➔ Executor [${plan?.target_agent || pevStep?.target || 'Agent'}] đang thực thi...`;
-    else if (isVerifierActive) statusText = 'Executor hoàn tất ➔ Verifier đang kiểm duyệt phản hồi...';
+    if (isPlannerActive) statusText = 'Planner analyzing request...';
+    else if (isExecutorActive) statusText = `Executor [${targetAgent || 'Agent'}] processing...`;
+    else if (isVerifierActive) statusText = 'Verifier validating response...';
   } else {
-    statusText = isVerified
-      ? 'Chu trình suy luận PEV Loop hoàn tất (Verified)'
-      : 'Chu trình suy luận PEV Loop hoàn tất (⚠️ Unverified - Cần kiểm duyệt lại)';
+    statusText = isVerified ? 'PEV Loop completed (Verified)' : 'PEV Loop completed (Needs review)';
   }
 
+  const pipelineSteps = getAgentPipelineSteps(targetAgent);
+
   return (
-    <div className="my-3 border border-slate-200/90 dark:border-slate-800 rounded-2xl bg-white dark:bg-slate-900 shadow-xs overflow-hidden text-xs transition-colors duration-300">
-      {/* Header bar */}
+    <div data-testid="pev-stepper" className="my-3 border border-border rounded-xl bg-surface shadow-xs overflow-hidden text-xs transition-colors duration-200">
+      {/* Header Bar */}
       <div
         onClick={() => setIsExpanded(!isExpanded)}
-        className="flex items-center justify-between px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 hover:bg-slate-100/80 dark:hover:bg-slate-800 cursor-pointer transition-colors duration-200 ease-out border-b border-slate-200/80 dark:border-slate-700/80"
+        className="flex items-center justify-between px-4 py-2.5 bg-surface-raised hover:bg-surface-overlay/30 cursor-pointer transition-colors duration-150 border-b border-border"
       >
-        <div className="flex items-center space-x-2.5 overflow-hidden">
-          <Brain className={`w-4 h-4 shrink-0 text-[#005697] dark:text-blue-400 ${isStreaming ? 'animate-pulse' : ''}`} />
-          <span className="font-extrabold text-[#005697] dark:text-blue-300 shrink-0">
-            PEV Loop Stepper: Core Reasoning Workflow
-          </span>
-          <span className="text-slate-500 dark:text-slate-400 font-medium italic truncate">{statusText}</span>
+        <div className="flex items-center space-x-2.5 overflow-hidden min-w-0">
+          <Brain className={`w-4 h-4 shrink-0 text-accent-primary ${isStreaming ? 'animate-pulse' : ''}`} />
+          <span className="font-bold text-accent-primary shrink-0">PEV Loop Stepper: Core Reasoning Workflow</span>
+          <span className="text-foreground-muted font-medium truncate">{statusText}</span>
         </div>
 
         <div className="flex items-center space-x-2 shrink-0">
           {isStreaming ? (
-            <span className="flex items-center space-x-1 bg-amber-50 dark:bg-amber-950/60 text-[#F37021] dark:text-amber-400 border border-amber-200 dark:border-amber-800 px-2.5 py-0.5 rounded-full font-bold text-[10px] animate-pulse">
-              <Loader2 className="w-3 h-3 animate-spin text-[#F37021] dark:text-amber-400" />
-              <span>Real-time Active</span>
+            <span className="flex items-center space-x-1 bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2.5 py-0.5 rounded-full font-bold text-[10px] animate-pulse">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              <span>Active</span>
             </span>
           ) : isVerified ? (
-            <span className="flex items-center space-x-1 bg-emerald-50 dark:bg-emerald-950/60 text-[#10B981] dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 px-2.5 py-0.5 rounded-full font-bold text-[10px]">
-              <CheckCircle2 className="w-3 h-3 text-[#10B981] dark:text-emerald-400" />
+            <span className="flex items-center space-x-1 bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 px-2.5 py-0.5 rounded-full font-bold text-[10px]">
+              <CheckCircle2 className="w-3 h-3" />
               <span>(Verified)</span>
             </span>
           ) : (
-            <span className="flex items-center space-x-1 bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 px-2.5 py-0.5 rounded-full font-bold text-[10px]">
-              <AlertCircle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-              <span>⚠️ Unverified</span>
+            <span className="flex items-center space-x-1 bg-accent-error/10 text-accent-error border border-accent-error/20 px-2.5 py-0.5 rounded-full font-bold text-[10px]">
+              <AlertCircle className="w-3 h-3" />
+              <span>(Unverified)</span>
             </span>
           )}
-          <button className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors duration-200 ease-out">
+          <button className="text-foreground-muted hover:text-foreground transition-colors duration-150 cursor-pointer">
             {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
         </div>
       </div>
 
-      {/* Timeline Nodes Bar */}
-      <div className="p-3.5 bg-white dark:bg-slate-900 flex items-center justify-around border-b border-slate-100 dark:border-slate-800 gap-2">
+      {/* Timeline Stepper Bar */}
+      <div className="px-5 py-3.5 bg-surface flex items-center justify-between gap-3">
         {/* Step 1: Planner Node */}
-        <div className="flex items-center space-x-2">
-          <div
-            className={`w-7 h-7 rounded-full flex items-center justify-center font-bold transition-all duration-200 ease-out ${
-              isPlannerDone
-                ? 'bg-[#F37021] text-white shadow-xs'
-                : isPlannerActive
-                ? 'bg-amber-50 dark:bg-amber-950/60 text-[#F37021] dark:text-amber-400 ring-2 ring-[#F37021] animate-pulse'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700'
-            }`}
-          >
-            {isPlannerActive ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#F37021]" />
-            ) : isPlannerDone ? (
-              <CheckCircle2 className="w-3.5 h-3.5 text-white" />
-            ) : (
-              <Compass className="w-3.5 h-3.5 text-slate-400" />
-            )}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-200 ${
+            isPlannerDone
+              ? 'bg-accent-planner text-white shadow-xs'
+              : isPlannerActive
+              ? 'bg-accent-planner/10 text-accent-planner ring-2 ring-accent-planner/40 animate-pulse-glow-amber'
+              : 'bg-surface-raised text-foreground-muted border border-border'
+          }`}>
+            {isPlannerActive ? <Loader2 className="w-4 h-4 animate-spin" /> : isPlannerDone ? <CheckCircle2 className="w-4 h-4" /> : <Compass className="w-4 h-4" />}
           </div>
-          <div>
-            <div className="font-bold text-[#212529] dark:text-slate-200 flex items-center gap-1">
-              1. Planner Node
-            </div>
-            <div className="text-[10px] text-[#495057] dark:text-slate-400">
-              {plan?.target_agent ? `Target: ${plan.target_agent}` : isPlannerActive ? 'Đang lập kế hoạch' : 'Lập kế hoạch'}
+          <div className="min-w-0">
+            <div className="font-semibold text-foreground text-xs">1. Planner Node</div>
+            <div className="text-xs text-foreground-muted truncate">
+              {targetAgent ? `→ ${targetAgent}` : isPlannerActive ? 'Đang phân tích...' : 'Chiến lược'}
             </div>
           </div>
         </div>
 
-        <div className={`h-0.5 flex-1 max-w-[40px] transition-colors duration-200 ease-out ${isPlannerDone ? 'bg-[#F37021]' : 'bg-slate-200 dark:bg-slate-800'}`} />
+        {/* Dynamic Flex Connector 1→2 */}
+        <div className={`h-0.5 flex-1 max-w-[96px] rounded-full transition-colors duration-200 ${isPlannerDone ? 'bg-accent-planner' : 'bg-border'}`} />
 
         {/* Step 2: Executor Node */}
-        <div className="flex items-center space-x-2">
-          <div
-            className={`w-7 h-7 rounded-full flex items-center justify-center font-bold transition-all duration-200 ease-out ${
-              isExecutorDone
-                ? 'bg-[#005697] text-white shadow-xs'
-                : isExecutorActive
-                ? 'bg-blue-50 dark:bg-blue-950/60 text-[#005697] dark:text-blue-400 ring-2 ring-[#005697] animate-pulse'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700'
-            }`}
-          >
-            {isExecutorActive ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#005697]" />
-            ) : isExecutorDone ? (
-              <CheckCircle2 className="w-3.5 h-3.5 text-white" />
-            ) : (
-              <Cpu className="w-3.5 h-3.5 text-slate-400" />
-            )}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-200 ${
+            isExecutorDone
+              ? 'bg-accent-executor text-white shadow-xs'
+              : isExecutorActive
+              ? 'bg-accent-executor/10 text-accent-executor ring-2 ring-accent-executor/40 animate-pulse-glow'
+              : 'bg-surface-raised text-foreground-muted border border-border'
+          }`}>
+            {isExecutorActive ? <Loader2 className="w-4 h-4 animate-spin" /> : isExecutorDone ? <CheckCircle2 className="w-4 h-4" /> : <Cpu className="w-4 h-4" />}
           </div>
-          <div>
-            <div className="font-bold text-[#212529] dark:text-slate-200 flex items-center gap-1">
-              2. Executor Node
-            </div>
-            <div className="text-[10px] text-[#495057] dark:text-slate-400">
-              {executing?.target_agent || plan?.target_agent || (isExecutorActive ? 'Đang thực thi' : 'Chờ thực thi')}
+          <div className="min-w-0">
+            <div className="font-semibold text-foreground text-xs">2. Executor Node</div>
+            <div className="text-xs text-foreground-muted truncate">
+              {targetAgent || (isExecutorActive ? 'Đang chạy...' : 'Xử lý')}
             </div>
           </div>
         </div>
 
-        <div className={`h-0.5 flex-1 max-w-[40px] transition-colors duration-200 ease-out ${isExecutorDone ? 'bg-[#005697]' : 'bg-slate-200 dark:bg-slate-800'}`} />
+        {/* Dynamic Flex Connector 2→3 */}
+        <div className={`h-0.5 flex-1 max-w-[96px] rounded-full transition-colors duration-200 ${isExecutorDone ? 'bg-accent-executor' : 'bg-border'}`} />
 
         {/* Step 3: Verifier Node */}
-        <div className="flex items-center space-x-2">
-          <div
-            className={`w-7 h-7 rounded-full flex items-center justify-center font-bold transition-all duration-200 ease-out ${
-              isVerifierActive
-                ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 ring-2 ring-emerald-500 animate-pulse'
-                : isVerifierDone
-                ? isVerified
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-amber-500 text-white shadow-xs'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700'
-            }`}
-          >
-            {isVerifierActive ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
-            ) : isVerifierDone ? (
-              isVerified ? (
-                <CheckCircle2 className="w-3.5 h-3.5 text-white" />
-              ) : (
-                <AlertCircle className="w-3.5 h-3.5 text-white" />
-              )
-            ) : (
-              <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
-            )}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-200 ${
+            isVerifierActive
+              ? 'bg-accent-verifier/10 text-accent-verifier ring-2 ring-accent-verifier/40 animate-pulse-glow-emerald'
+              : isVerifierDone
+              ? isVerified
+                ? 'bg-accent-verifier text-white shadow-xs'
+                : 'bg-accent-error text-white shadow-xs'
+              : 'bg-surface-raised text-foreground-muted border border-border'
+          }`}>
+            {isVerifierActive ? <Loader2 className="w-4 h-4 animate-spin" /> : isVerifierDone ? (isVerified ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />) : <ShieldCheck className="w-4 h-4" />}
           </div>
-          <div>
-            <div className="font-bold text-[#212529] dark:text-slate-200 flex items-center gap-1">
-              3. Verifier Node
-            </div>
-            <div className="text-[10px] text-[#495057] dark:text-slate-400">
-              {isVerifierDone ? (isVerified ? 'Xác minh 100%' : 'Cảnh báo Unverified') : isVerifierActive ? 'Đang kiểm duyệt' : 'Chờ kiểm duyệt'}
+          <div className="min-w-0">
+            <div className="font-semibold text-foreground text-xs">3. Verifier Node</div>
+            <div className="text-xs text-foreground-muted truncate">
+              {isVerifierDone ? (isVerified ? '100% Hợp lệ' : 'Cần rà soát') : isVerifierActive ? 'Đối soát...' : 'Kiểm định'}
             </div>
           </div>
         </div>
+
+        {/* Retry indicator */}
+        {isRetry && (
+          <div className="flex items-center gap-1 px-2 py-0.5 bg-accent-error/10 text-accent-error rounded-full text-[10px] font-bold shrink-0">
+            <RotateCcw className="w-3 h-3" />
+            <span>Retry #{retryCount}</span>
+          </div>
+        )}
       </div>
 
-      {/* Detailed Log Accordion Panel */}
+      {/* Expandable Detail Accordion (Live Activity Timeline Panel) */}
       {isExpanded && (
-        <div className="p-4 bg-slate-50/80 dark:bg-slate-800/60 space-y-3 font-mono text-[11px] leading-relaxed animate-in fade-in duration-300 ease-in-out">
-          {plan && (
-            <div className="p-2.5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700/80 rounded-xl space-y-1">
-              <div className="font-bold text-[#F37021] flex items-center gap-1.5">
-                <Compass className="w-3.5 h-3.5" /> [Planner Step Output]
+        <div className="p-4 bg-zinc-50 dark:bg-zinc-900/70 border-t border-zinc-200 dark:border-zinc-800 text-xs font-mono space-y-4 animate-fade-in">
+          {/* Mục 1: Planner Node (Phân tích & Lập Kế Hoạch) */}
+          <div className="p-3.5 rounded-lg bg-white dark:bg-zinc-950/60 border border-zinc-200 dark:border-zinc-800 shadow-2xs space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 font-sans font-bold text-xs text-amber-600 dark:text-amber-400">
+                <Compass className="w-4 h-4" />
+                <span>Planner Node (Phân tích &amp; Lập Kế Hoạch)</span>
               </div>
-              <p className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{plan.plan}</p>
-              <div className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold">
-                ➜ Target Agent Assigned: <span className="text-[#005697] dark:text-blue-400">{plan.target_agent}</span>
-              </div>
-            </div>
-          )}
-
-          {executing && (
-            <div className="p-2.5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700/80 rounded-xl space-y-1">
-              <div className="font-bold text-[#005697] dark:text-blue-400 flex items-center gap-1.5">
-                <Cpu className="w-3.5 h-3.5" /> [Executor Execution Result]
-              </div>
-              <div className="text-slate-700 dark:text-slate-300 max-h-36 overflow-y-auto whitespace-pre-wrap bg-slate-50 dark:bg-slate-800 p-2 rounded border border-slate-100 dark:border-slate-700">
-                {executing.execution_result}
-              </div>
-            </div>
-          )}
-
-          {verifying && (
-            <div className="p-2.5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700/80 rounded-xl space-y-1">
-              <div className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5" /> [Verifier Inspection Report]
-              </div>
-              <div className="text-slate-700 dark:text-slate-300">
-                Status: <span className="font-bold text-emerald-600 dark:text-emerald-400">{verifying.is_verified ? 'VERIFIED PASSED' : 'REJECTED RE-RUN'}</span>
-              </div>
-              {verifying.verifier_feedback && (
-                <div className="text-slate-600 dark:text-slate-400 italic">
-                  Feedback: "{verifying.verifier_feedback}"
-                </div>
+              {plannerStatus === 'completed' && targetAgent && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                  Target: {targetAgent}
+                </span>
               )}
             </div>
-          )}
 
+            {plannerStatus === 'active' ? (
+              <div className="flex items-center gap-2.5 py-1.5 text-zinc-600 dark:text-zinc-300">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500 shrink-0" />
+                <span>Đang phân tích câu hỏi, nạp bộ nhớ dài hạn và lựa chọn Agent phù hợp...</span>
+              </div>
+            ) : plannerStatus === 'completed' ? (
+              <div className="space-y-1.5 pt-0.5">
+                {planText ? (
+                  <div className="p-2.5 rounded bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-800/80 text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">
+                    {planText}
+                  </div>
+                ) : (
+                  <div className="text-zinc-500 dark:text-zinc-400 italic">
+                    Kế hoạch đã được xác lập và điều phối tới [{targetAgent || 'Agent'}].
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="py-1 text-zinc-400 dark:text-zinc-600 italic">
+                Chờ thực thi...
+              </div>
+            )}
+          </div>
+
+          {/* Mục 2: Executor Node (Thực Thi Nhiệm Vụ) */}
+          <div className="p-3.5 rounded-lg bg-white dark:bg-zinc-950/60 border border-zinc-200 dark:border-zinc-800 shadow-2xs space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 font-sans font-bold text-xs text-blue-600 dark:text-blue-400">
+                <Cpu className="w-4 h-4" />
+                <span>Executor Node (Thực Thi Nhiệm Vụ)</span>
+              </div>
+              {executorStatus !== 'idle' && targetAgent && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                  Agent: {targetAgent}
+                </span>
+              )}
+            </div>
+
+            {/* Pipeline subtasks */}
+            {(executorStatus === 'active' || executorStatus === 'completed') && (
+              <div className="flex items-center gap-1.5 flex-wrap py-1 text-[11px]">
+                {pipelineSteps.map((step, idx) => (
+                  <React.Fragment key={step.name}>
+                    <span className={`px-2 py-0.5 rounded border transition-colors ${
+                      executorStatus === 'completed'
+                        ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
+                        : idx === 0
+                        ? 'bg-blue-500/15 text-blue-600 dark:text-blue-300 border-blue-500/30 animate-pulse'
+                        : 'bg-zinc-100 dark:bg-zinc-900 text-zinc-400 dark:text-zinc-500 border-zinc-200 dark:border-zinc-800'
+                    }`}>
+                      {step.name}
+                    </span>
+                    {idx < pipelineSteps.length - 1 && (
+                      <ChevronRight className="w-3 h-3 text-zinc-400 dark:text-zinc-600 shrink-0" />
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
+
+            {executorStatus === 'active' ? (
+              <div className="flex items-center gap-2.5 py-1.5 text-zinc-600 dark:text-zinc-300">
+                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
+                </span>
+                <span>Agent [{targetAgent || 'Chuyên biệt'}] đang thực thi tác vụ...</span>
+              </div>
+            ) : executorStatus === 'completed' ? (
+              <div className="space-y-1.5 pt-0.5">
+                {execSummary ? (
+                  <div className="p-2.5 rounded bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-800/80 text-zinc-700 dark:text-zinc-300 max-h-36 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+                    {execSummary}
+                  </div>
+                ) : (
+                  <div className="text-zinc-500 dark:text-zinc-400 italic">
+                    Tác vụ đã được thực thi thành công bởi Agent [{targetAgent || 'Executor'}].
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="py-1 text-zinc-400 dark:text-zinc-600 italic">
+                Chờ thực thi...
+              </div>
+            )}
+          </div>
+
+          {/* Mục 3: Verifier Node (Kiểm Định Chất Lượng & Zero-Hallucination) */}
+          <div className="p-3.5 rounded-lg bg-white dark:bg-zinc-950/60 border border-zinc-200 dark:border-zinc-800 shadow-2xs space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 font-sans font-bold text-xs text-emerald-600 dark:text-emerald-400">
+                <ShieldCheck className="w-4 h-4" />
+                <span>Verifier Node (Kiểm Định Chất Lượng &amp; Zero-Hallucination)</span>
+              </div>
+              {verifierStatus === 'completed' && (
+                isAuditPassed ? (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    <span>Audit Passed (100% Verified)</span>
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 flex items-center gap-1">
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Retry Loop (Lần {retryCount || 1}/2)</span>
+                  </span>
+                )
+              )}
+            </div>
+
+            {verifierStatus === 'active' ? (
+              <div className="flex items-center gap-2.5 py-1.5 text-zinc-600 dark:text-zinc-300">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500 shrink-0" />
+                <span>Đang đối soát kết quả với kế hoạch ban đầu và kiểm định tính trung thực...</span>
+              </div>
+            ) : verifierStatus === 'completed' ? (
+              <div className="space-y-1.5 pt-0.5">
+                {verifierFeedback ? (
+                  <div className="p-2.5 rounded bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-800/80 text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">
+                    <span className="font-semibold text-emerald-600 dark:text-emerald-400">Tiêu chí đối soát: </span>
+                    {verifierFeedback}
+                  </div>
+                ) : (
+                  <div className="text-zinc-500 dark:text-zinc-400 italic">
+                    Kết quả đã được đối soát kỹ lưỡng, đảm bảo tính chuẩn xác và không ảo giác (Zero-Hallucination).
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="py-1 text-zinc-400 dark:text-zinc-600 italic">
+                Chờ thực thi...
+              </div>
+            )}
+          </div>
+
+          {/* Error Banner */}
           {error && (
-            <div className="p-2.5 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 rounded-xl text-rose-700 dark:text-rose-300 flex items-center gap-2">
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-600 dark:text-red-400 flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{error}</span>
             </div>

@@ -20,7 +20,7 @@ test.describe('4. Test Tóm tắt Dữ liệu & Dựng Dashboard', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          explanation: '### 📊 Tóm Tắt Dữ Liệu Tập Tin Bán Hàng\n\n- **Tổng số dòng (Rows)** | `500`\n- **Tổng số cột (Columns)** | `10`',
+          explanation: '### Tóm Tắt Dữ Liệu Tập Tin Bán Hàng\n\n- **Tổng số dòng (Rows)** | `500`\n- **Tổng số cột (Columns)** | `10`',
           metadata: {
             total_rows: 500,
             total_cols: 10,
@@ -47,7 +47,7 @@ test.describe('4. Test Tóm tắt Dữ liệu & Dựng Dashboard', () => {
           status: 200,
           contentType: 'application/json',
           body: JSON.stringify({
-            explanation: '### 📊 Tóm Tắt Dữ Liệu Tập Tin Bán Hàng\n\n- **Tổng số dòng (Rows)** | `500`\n- **Tổng số cột (Columns)** | `10`',
+            explanation: '### Tóm Tắt Dữ Liệu Tập Tin Bán Hàng\n\n- **Tổng số dòng (Rows)** | `500`\n- **Tổng số cột (Columns)** | `10`',
             metadata: { total_rows: 500, total_cols: 10 },
           }),
         });
@@ -87,7 +87,7 @@ test.describe('4. Test Tóm tắt Dữ liệu & Dựng Dashboard', () => {
     await page.waitForTimeout(300);
     await chatPage.sendMessage('Tóm tắt dữ liệu');
 
-    // Click nút CTA "📌 Dựng Dashboard trực quan từ dữ liệu này"
+    // Click nút CTA "Dựng Dashboard trực quan từ dữ liệu này"
     await dashboardPage.clickGenerateDashboardCTA();
 
     // Verify component <DynamicDashboard /> render thành công

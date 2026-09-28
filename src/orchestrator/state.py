@@ -42,3 +42,15 @@ class AgentState(TypedDict, total=False):
     retry_count: int
     max_retries: int
     agent_mode: Optional[str]
+    requires_dashboard: Optional[bool]
+
+    # Human-in-the-Loop (HITL) fields
+    requires_human_approval: Optional[bool]
+    approval_payload: Optional[dict[str, Any]]
+    is_approved: Optional[bool]
+    action_id: Optional[str]
+    human_feedback: Optional[str]
+
+    # DAG Parallel Execution fields
+    sub_tasks: Optional[list[dict[str, Any]]]
+    parallel_results: Optional[list[dict[str, Any]]]

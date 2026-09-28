@@ -22,20 +22,20 @@ export function ChatInput({
 }: ChatInputProps) {
   const [text, setText] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const agents = [
     { id: 'RAG Agent', name: 'RAG Agent', icon: Cloud, desc: 'Tra cứu hợp đồng & NDA' },
-    { id: '📊 Data Agent', name: 'Data Agent', icon: Database, desc: 'Phân tích CSV & Dashboard' },
-    { id: '🌐 Search Agent', name: 'Search Agent', icon: Globe, desc: 'Tìm kiếm Web real-time' },
+    { id: 'Data Agent', name: 'Data Agent', icon: Database, desc: 'Phân tích CSV & Dashboard' },
+    { id: 'Search Agent', name: 'Search Agent', icon: Globe, desc: 'Tìm kiếm Web real-time' },
   ];
 
-  const currentAgent = agents.find(a => a.id === selectedAgent || selectedAgent.includes(a.name.split(' ')[0])) || agents[0];
+  const currentAgent = agents.find(a => a.id === selectedAgent || selectedAgent.includes(a.name) || selectedAgent.includes(a.name.split(' ')[0])) || agents[0];
   const isExpanded = text.length > 0 || attachedFile !== null || text.includes('\n');
 
-  // Auto-resize Textarea height & maintain single mounted focus
+  // Auto-resize Textarea
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -44,7 +44,6 @@ export function ChatInput({
     }
   }, [text, isExpanded]);
 
-  // Focus textarea khi có file được đính kèm (cả từ Nút + hoặc Drag & Drop)
   useEffect(() => {
     if (attachedFile && textareaRef.current) {
       textareaRef.current.focus();
@@ -63,71 +62,77 @@ export function ChatInput({
   };
 
   const getFileIcon = (fileName?: string) => {
-    if (!fileName) return <FileSpreadsheet className="w-4 h-4 text-[#005697] dark:text-blue-400" />;
+    if (!fileName) return <FileSpreadsheet className="w-4 h-4 text-accent-primary" />;
     const lower = fileName.toLowerCase();
     if (lower.endsWith('.csv') || lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
-      return <FileSpreadsheet className="w-4 h-4 text-[#005697] dark:text-blue-400" />;
+      return <FileSpreadsheet className="w-4 h-4 text-accent-primary" />;
     }
-    return <FileText className="w-4 h-4 text-[#005697] dark:text-blue-400" />;
+    return <FileText className="w-4 h-4 text-accent-primary" />;
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes}B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
   };
 
   return (
-    <div className="mx-auto max-w-5xl w-full px-4">
+    <div className="mx-auto max-w-5xl w-full px-4" data-testid="chat-input">
       {/* Hidden File Input */}
-      <input 
-        type="file" 
-        ref={fileInputRef} 
-        accept=".csv,.xlsx,.xls,.pdf,.docx,.doc,.txt" 
-        className="hidden" 
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept=".csv,.xlsx,.xls,.pdf,.docx,.doc,.txt"
+        className="hidden"
         onChange={(e) => {
           if (e.target.files?.[0]) {
             onFileSelect?.(e.target.files[0]);
           }
           e.target.value = '';
-        }} 
+        }}
       />
 
-      {/* CONTAINER KHUNG CHAT DYNAMIC */}
-      <div 
-        className={`bg-white/95 dark:bg-slate-800/95 backdrop-blur-md border border-slate-200/90 dark:border-slate-700/90 shadow-lg shadow-slate-200/40 dark:shadow-slate-950/50 transition-all duration-300 ease-in-out focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100 dark:focus-within:ring-blue-900/40 ${
-          isExpanded 
-            ? 'rounded-3xl p-3.5 flex flex-col gap-3' 
-            : 'rounded-full px-4 py-2.5 flex items-center gap-2 min-h-[54px]'
+      {/* CHAT INPUT CONTAINER */}
+      <div
+        className={`bg-surface/95 backdrop-blur-md border border-border shadow-md transition-all duration-200 ease-out focus-within:border-accent-primary focus-within:ring-2 focus-within:ring-accent-primary/20 ${
+          isExpanded
+            ? 'rounded-2xl p-4 flex flex-col gap-3'
+            : 'rounded-full px-4 py-2 flex items-center gap-2 min-h-14'
         }`}
       >
-        {/* PREVIEW FILE CHIP (Hiển thị đồng nhất cho cả nút + và Drag & Drop) */}
+        {/* File Preview Chip */}
         {attachedFile && (
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-xl text-xs w-fit text-blue-900 dark:text-blue-200 font-medium animate-in fade-in">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-accent-primary/8 border border-accent-primary/15 rounded-xl text-xs w-fit text-foreground font-medium animate-fade-in" data-testid="csv-upload-dropzone">
             {getFileIcon(attachedFile.name)}
             <span className="truncate max-w-xs font-semibold">{attachedFile.name}</span>
-            <span className="text-slate-400 dark:text-slate-500">({(attachedFile.size / 1024).toFixed(0)}KB)</span>
-            <button 
-              type="button" 
-              onClick={() => onFileSelect?.(null)} 
-              className="hover:text-red-500 ml-1 cursor-pointer transition-colors p-0.5"
+            <span className="text-foreground-muted font-mono tabular-nums">({formatFileSize(attachedFile.size)})</span>
+            <button
+              type="button"
+              onClick={() => onFileSelect?.(null)}
+              className="hover:text-accent-error ml-1 cursor-pointer transition-colors p-0.5 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary/40"
               title="Gỡ file đính kèm"
             >
-              <X className="w-3.5 h-3.5"/>
+              <X className="w-3.5 h-3.5" />
             </button>
           </div>
         )}
 
-        {/* HÀNG TRÊN: TEXTAREA DUY NHẤT MOUNTED KHÔNG HỦY DOM NODE */}
+        {/* Main Row: Textarea + Actions */}
         <div className={`w-full flex ${isExpanded ? 'flex-col gap-2' : 'items-center justify-between gap-2'}`}>
-          
-          {/* Nút + bên trái (khi chưa Expand) */}
+
+          {/* Plus Button (collapsed mode) */}
           {!isExpanded && (
-            <button 
+            <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full text-slate-500 dark:text-slate-400 hover:text-[#005697] dark:hover:text-blue-400 transition-colors shrink-0 cursor-pointer"
+              className="p-1.5 hover:bg-surface-raised rounded-full text-foreground-muted hover:text-accent-primary transition-colors shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
               title="Đính kèm file (.csv, .xlsx, .pdf, .docx)"
             >
-              <Plus className="w-5 h-5"/>
+              <Plus className="w-5 h-5" />
             </button>
           )}
 
-          {/* TEXTAREA MOUNTED DUY NHẤT */}
+          {/* TEXTAREA */}
           <div className="flex-1 w-full flex items-center">
             <textarea
               ref={textareaRef}
@@ -140,13 +145,13 @@ export function ChatInput({
                   handleSend();
                 }
               }}
-              placeholder={attachedFile ? "Nhập câu hỏi hoặc đúp chuột gửi để phân tích file..." : "Nhập yêu cầu phân tích dữ liệu hoặc đính kèm file CSV..."}
-              className="w-full bg-transparent text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 text-sm focus:outline-none resize-none leading-relaxed overflow-y-auto"
+              placeholder={attachedFile ? "Nhập câu hỏi về file đính kèm..." : "Nhập yêu cầu phân tích hoặc đính kèm file CSV..."}
+              className="w-full bg-transparent text-foreground placeholder-foreground-muted text-sm focus:outline-none resize-none leading-relaxed overflow-y-auto"
               style={{ height: '24px', minHeight: '24px' }}
             />
           </div>
 
-          {/* Cụm Nút bên phải (khi chưa Expand) */}
+          {/* Right Actions (collapsed mode) */}
           {!isExpanded && (
             <div className="flex items-center gap-2 shrink-0 relative">
               <AgentDropdown
@@ -160,30 +165,36 @@ export function ChatInput({
                   setIsDropdownOpen(false);
                 }}
               />
-              <button 
+              <button
                 type="button"
+                data-testid="send-button"
                 disabled={isSending || (!text.trim() && !attachedFile)}
                 onClick={handleSend}
-                className="bg-[#005697] hover:bg-[#004070] text-white p-2 rounded-full shadow-sm transition-all shrink-0 active:scale-95 disabled:opacity-50 cursor-pointer"
+                className="w-9 h-9 flex items-center justify-center bg-accent-primary hover:bg-accent-primary-hover text-white rounded-full shadow-xs transition-all duration-150 shrink-0 active:scale-95 disabled:opacity-40 disabled:hover:bg-accent-primary disabled:active:scale-100 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                title={text.trim() || attachedFile ? 'Gửi tin nhắn (Enter)' : 'Nhập nội dung để gửi'}
               >
-                {isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4"/>}
+                {isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </button>
             </div>
           )}
-
         </div>
 
-        {/* HÀNG CÔNG CỤ ĐÁY (KHU VỰC KHI ĐÃ EXPAND) */}
+        {/* Bottom Toolbar (expanded mode) */}
         {isExpanded && (
-          <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-700/80 animate-in fade-in duration-150">
-            <button 
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full text-slate-500 dark:text-slate-400 hover:text-[#005697] dark:hover:text-blue-400 transition-colors cursor-pointer"
-              title="Đính kèm file (.csv, .xlsx, .pdf, .docx)"
-            >
-              <Plus className="w-5 h-5"/>
-            </button>
+          <div className="flex items-center justify-between pt-2 border-t border-border animate-fade-in">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="p-1.5 hover:bg-surface-raised rounded-full text-foreground-muted hover:text-accent-primary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                title="Đính kèm file"
+              >
+                <Plus className="w-5 h-5" />
+              </button>
+              <span className="text-xs text-foreground-muted font-mono hidden sm:inline">
+                Enter ↵ gửi · Shift+Enter ↵ xuống dòng
+              </span>
+            </div>
 
             <div className="flex items-center gap-2 relative">
               <AgentDropdown
@@ -197,66 +208,106 @@ export function ChatInput({
                   setIsDropdownOpen(false);
                 }}
               />
-              <button 
+              <button
                 type="button"
+                data-testid="send-button"
                 disabled={isSending || (!text.trim() && !attachedFile)}
                 onClick={handleSend}
-                className="bg-[#005697] hover:bg-[#004070] text-white p-2.5 rounded-2xl shadow-md transition-all shrink-0 active:scale-95 disabled:opacity-50 cursor-pointer"
+                className="w-9 h-9 flex items-center justify-center bg-accent-primary hover:bg-accent-primary-hover text-white rounded-full shadow-xs transition-all duration-150 shrink-0 active:scale-95 disabled:opacity-40 disabled:hover:bg-accent-primary disabled:active:scale-100 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                title={text.trim() || attachedFile ? 'Gửi tin nhắn (Enter)' : 'Nhập nội dung để gửi'}
               >
-                {isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4"/>}
+                {isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </button>
             </div>
           </div>
         )}
-
       </div>
     </div>
   );
 }
 
-// Sub-component Dropdown Selector
-function AgentDropdown({ currentAgent, agents, selectedAgent, onSelect, isOpen, setIsOpen }: any) {
+// Agent Dropdown Selector with Click-outside and Escape key accessibility
+function AgentDropdown({ currentAgent, agents, selectedAgent, onSelect, isOpen, setIsOpen }: {
+  currentAgent: { id: string; name: string; icon: React.ElementType; desc: string };
+  agents: { id: string; name: string; icon: React.ElementType; desc: string }[];
+  selectedAgent: string;
+  onSelect: (id: string) => void;
+  isOpen: boolean;
+  setIsOpen: (open: boolean) => void;
+}) {
   const CurrentIcon = currentAgent.icon;
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, setIsOpen]);
+
   return (
-    <div className="relative">
+    <div className="relative" ref={dropdownRef}>
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 dark:bg-slate-700/80 hover:bg-slate-200/80 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-600/80 rounded-full text-xs font-semibold text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
+        className="flex items-center gap-1.5 px-3 py-1 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-xs font-semibold text-foreground-secondary transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
       >
-        <CurrentIcon className="w-3.5 h-3.5 text-[#005697] dark:text-blue-400"/>
+        <CurrentIcon className="w-3.5 h-3.5 text-accent-primary" />
         <span>{currentAgent.name}</span>
-        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 dark:text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`w-3.5 h-3.5 text-foreground-muted transition-transform duration-150 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 bottom-10 mb-2 w-56 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-xl p-1.5 z-50 text-xs animate-in fade-in zoom-in-95">
-          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-700 select-none">
+        <div className="absolute right-0 bottom-10 mb-2 w-56 bg-surface border border-border-strong rounded-xl shadow-enterprise p-1.5 z-50 text-xs animate-fade-in-scale">
+          <div className="px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-foreground-muted border-b border-border select-none">
             Chọn Agent xử lý:
           </div>
-          {agents.map((agent: any) => {
-            const Icon = agent.icon;
-            const isSelected = selectedAgent === agent.id || selectedAgent.includes(agent.name.split(' ')[0]);
-            return (
-              <button
-                key={agent.id}
-                type="button"
-                onClick={() => {
-                  onSelect(agent.id);
-                  setIsOpen(false);
-                }}
-                className={`flex items-start gap-2.5 w-full p-2.5 rounded-xl transition-all text-left cursor-pointer ${
-                  isSelected ? 'bg-blue-50 dark:bg-blue-950/60 text-[#005697] dark:text-blue-300 font-semibold' : 'hover:bg-slate-100 dark:hover:bg-slate-700/80 text-slate-700 dark:text-slate-200'
-                }`}
-              >
-                <Icon className={`w-4 h-4 mt-0.5 shrink-0 ${isSelected ? 'text-[#005697] dark:text-blue-400' : 'text-slate-400'}`} />
-                <div>
-                  <div className="font-medium">{agent.name}</div>
-                  <div className="text-[10px] text-slate-400 dark:text-slate-500 font-normal">{agent.desc}</div>
-                </div>
-              </button>
-            );
-          })}
+          <div className="mt-1 space-y-0.5" role="listbox">
+            {agents.map((agent) => {
+              const Icon = agent.icon;
+              const isSelected = selectedAgent === agent.id || selectedAgent.includes(agent.name.split(' ')[0]);
+              return (
+                <button
+                  key={agent.id}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => {
+                    onSelect(agent.id);
+                    setIsOpen(false);
+                  }}
+                  className={`flex items-start gap-2.5 w-full p-2.5 rounded-lg transition-all text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 ${
+                    isSelected ? 'bg-accent-primary/10 text-accent-primary font-semibold' : 'hover:bg-surface-raised text-foreground-secondary'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 mt-0.5 shrink-0 ${isSelected ? 'text-accent-primary' : 'text-foreground-muted'}`} />
+                  <div>
+                    <div className="font-medium text-foreground">{agent.name}</div>
+                    <div className="text-xs text-foreground-muted font-normal">{agent.desc}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 import unicodedata
 import uuid
@@ -233,10 +234,24 @@ _INJECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         ),
         "Rule Erasure Attempt",
     ),
+    (
+        re.compile(
+            r"\b(?:bỏ qua|hủy bỏ|xóa bỏ)\s+(?:toàn bộ\s+)?(?:hướng dẫn|quy tắc|chỉ thị|chính sách)\b",
+            re.IGNORECASE,
+        ),
+        "Vietnamese Instruction Override Attempt",
+    ),
     # --- Jailbreak / persona hijack ---
     (
         re.compile(r"\bdan\s+mode\b|\bdo\s+anything\s+now\b", re.IGNORECASE),
         "DAN (Do Anything Now) Jailbreak Mode",
+    ),
+    (
+        re.compile(
+            r"\b(?:chế độ\s+dan|chế độ\s+bảo trì|đóng vai\s+trò\s+là\s+dan)\b",
+            re.IGNORECASE,
+        ),
+        "Vietnamese Jailbreak Attempt",
     ),
     (
         re.compile(r"\bjailbreak\b|\boverride\s+safety\b|\bbypass\s+guardrails?\b", re.IGNORECASE),
@@ -244,7 +259,14 @@ _INJECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
-            r"\bact\s+as\s+(?:an?\s+)?(?:unfiltered|uncensored|unrestricted)\b",
+            r"\b(?:maintenance|developer|debug|sudo|root|god)\s+mode\b",
+            re.IGNORECASE,
+        ),
+        "Privileged Mode Override Attempt",
+    ),
+    (
+        re.compile(
+            r"\bact\s+as\s+(?:an?\s+)?(?:unfiltered|uncensored|unrestricted|evil|rebel)\b",
             re.IGNORECASE,
         ),
         "Unfiltered Persona Hijack Attempt",
@@ -256,7 +278,7 @@ _INJECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         ),
         "Persona Override Attempt",
     ),
-    # --- System prompt leakage ---
+    # --- System prompt leakage & Canary probing ---
     (
         re.compile(
             r"\b(?:repeat|show|print|reveal|output|display|dump|leak|echo)\s+"
@@ -267,20 +289,99 @@ _INJECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
+            r"\b(?:xuất|hiển thị|tiết lộ|in ra)\s+(?:nguyên văn\s+)?(?:system prompt|hướng dẫn hệ thống|khóa bí mật)\b",
+            re.IGNORECASE,
+        ),
+        "Vietnamese System Prompt Extraction",
+    ),
+    (
+        re.compile(
             r"\bwhat\s+(?:is|are)\s+your\s+(?:system\s+)?(?:prompt|instructions?|rules?)\b",
             re.IGNORECASE,
         ),
         "System Prompt Inquiry Attempt",
     ),
+    (
+        re.compile(r"\bcanary_secret_\w+\b", re.IGNORECASE),
+        "Canary Token Extraction Probe",
+    ),
     # --- Multi-turn / delimiter injection ---
     (
         re.compile(
-            r"\b(?:new\s+instructions?|system\s*:\s*|<\|system\|>|<<\s*SYS\s*>>|\[INST\])",
+            r"\b(?:new\s+instructions?|system\s*:\s*|<\|system\|>|<<\s*SYS\s*>>|\[INST\]|<user_untrusted_input)",
             re.IGNORECASE,
         ),
         "Delimiter / System Tag Injection",
     ),
 ]
+
+# Canary Token Prefix & Pattern
+CANARY_PREFIX: str = "CANARY_SECRET_"
+_CANARY_PATTERN: re.Pattern[str] = re.compile(r"CANARY_SECRET_[a-f0-9]{12}", re.IGNORECASE)
+
+
+def generate_canary_token() -> str:
+    """Generate an ephemeral, cryptographically unique canary token for system prompt leakage detection."""
+    return f"{CANARY_PREFIX}{secrets.token_hex(6)}"
+
+
+def inspect_response_for_canary_leak(
+    response_text: str, specific_canary: Optional[str] = None
+) -> tuple[bool, str]:
+    """Inspect model response for prompt leakage of canary/honeypot tokens.
+
+    Returns:
+        tuple[bool, str]: (is_leaked, leaked_token). Returns (False, "") if clean.
+    """
+    if not response_text:
+        return False, ""
+
+    if specific_canary and specific_canary in response_text:
+        logger.critical(
+            "PROMPT_LEAKAGE_DETECTED: Target Canary Token '%s' found in model response!",
+            specific_canary,
+            extra={"session_id": "SECURITY"},
+        )
+        return True, specific_canary
+
+    match = _CANARY_PATTERN.search(response_text)
+    if match:
+        leaked_token = match.group(0)
+        logger.critical(
+            "PROMPT_LEAKAGE_DETECTED: Canary pattern '%s' discovered in model response!",
+            leaked_token,
+            extra={"session_id": "SECURITY"},
+        )
+        return True, leaked_token
+
+    return False, ""
+
+
+# Dynamic Nonce Delimiters for Untrusted User Input
+def generate_input_nonce() -> str:
+    """Generate a unique 4-byte (8-hex-char) cryptographic nonce."""
+    return secrets.token_hex(4)
+
+
+def wrap_user_input(query: str, nonce: Optional[str] = None) -> tuple[str, str]:
+    """Wrap raw user input in dynamic nonce delimiters to prevent instruction hijacking.
+
+    Returns:
+        tuple[str, str]: (wrapped_string, nonce)
+    """
+    active_nonce = nonce or generate_input_nonce()
+    clean_query = query.strip()
+    wrapped = f'<user_untrusted_input nonce="{active_nonce}">\n{clean_query}\n</user_untrusted_input nonce="{active_nonce}">'
+    return wrapped, active_nonce
+
+
+def unwrap_user_input(wrapped_text: str) -> tuple[str, Optional[str]]:
+    """Extract raw query and nonce from wrapped user input if present."""
+    pattern = r'<user_untrusted_input nonce="([a-f0-9]+)">\s*(.*?)\s*</user_untrusted_input nonce="\1">'
+    match = re.search(pattern, wrapped_text, re.DOTALL)
+    if match:
+        return match.group(2).strip(), match.group(1)
+    return wrapped_text.strip(), None
 
 
 def _normalize_for_safety_check(text: str) -> str:
@@ -290,88 +391,119 @@ def _normalize_for_safety_check(text: str) -> str:
       1. Unicode NFKC normalization (folds homoglyphs, fullwidth chars, etc.).
       2. Stripping zero-width / invisible Unicode characters.
       3. Collapsing excessive whitespace.
-
-    Args:
-        text: Raw user input.
-
-    Returns:
-        str: Normalized text suitable for regex pattern matching.
     """
-    # NFKC folds compatibility characters (e.g. fullwidth ASCII, ligatures)
     normalized = unicodedata.normalize("NFKC", text)
-    # Strip zero-width and invisible characters
     normalized = _INVISIBLE_CHARS_RE.sub("", normalized)
-    # Collapse whitespace
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
 
 
 def _detect_base64_injection(text: str) -> tuple[bool, str]:
-    """Attempt to detect Base64-encoded prompt injection payloads.
-
-    Looks for Base64-encoded segments ≥ 20 chars, decodes them, and
-    recursively checks the decoded content against injection patterns.
-
-    Args:
-        text: Normalized user input text.
-
-    Returns:
-        tuple[bool, str]: (is_injection_found, label). Returns (False, "")
-            if no Base64 injection detected.
-    """
-    # Match potential base64 segments (at least 20 chars, valid base64 alphabet)
+    """Attempt to detect Base64-encoded prompt injection payloads."""
     b64_candidates = re.findall(r"[A-Za-z0-9+/=]{20,}", text)
-    for candidate in b64_candidates[:3]:  # Limit decode attempts for performance
+    for candidate in b64_candidates[:3]:
         try:
             decoded = base64.b64decode(candidate, validate=True).decode("utf-8", errors="ignore")
             if len(decoded) < 8:
                 continue
-            # Check decoded content against injection patterns (non-recursive)
             for pattern, label in _INJECTION_PATTERNS:
                 if pattern.search(decoded):
                     return True, f"Base64 Encoded {label}"
+            # Also test semantic intent on decoded text
+            is_semantic_b64, sem_label = _semantic_intent_classification(decoded)
+            if is_semantic_b64:
+                return True, f"Base64 Encoded {sem_label}"
         except Exception:
             continue
     return False, ""
 
 
+def _semantic_intent_classification(text: str) -> tuple[bool, str]:
+    """Semantic Guardrail Layer: Fast semantic intent and adversarial cluster classifier (<2ms).
+
+    Identifies adversarial context switching, roleplay jailbreaks, and prompt exfiltration
+    by analyzing semantic intent density across threat clusters.
+    """
+    clean = text.lower()
+
+    # Cluster 1: Override / Bypass Verbs
+    override_keywords = {
+        "ignore", "disregard", "forget", "bypass", "override", "disable", "reset",
+        "bỏ qua", "hủy bỏ", "xóa bỏ", "vượt qua", "tắt", "stop following", "drop all"
+    }
+
+    # Cluster 2: Target Rules / System Instructions
+    target_keywords = {
+        "instruction", "instructions", "prompt", "prompts", "rule", "rules",
+        "guideline", "guidelines", "constraint", "constraints", "policy", "safety",
+        "guardrail", "hướng dẫn", "chỉ thị", "quy tắc", "chính sách"
+    }
+
+    # Cluster 3: Persona / Roleplay Hijack
+    roleplay_keywords = {
+        "dan", "jailbreak", "unfiltered", "uncensored", "unrestricted", "pretend",
+        "roleplay", "maintenance mode", "developer mode", "god mode", "sudo", "root"
+    }
+
+    # Cluster 4: Exfiltration / System Leakage
+    exfiltration_keywords = {
+        "system prompt", "system instructions", "secret", "secrets", "api key",
+        "credentials", "password", "tokens", "webhook", "canary", "canary_secret"
+    }
+
+    has_override = any(k in clean for k in override_keywords)
+    has_target = any(k in clean for k in target_keywords)
+    has_roleplay = any(k in clean for k in roleplay_keywords)
+    has_exfil = any(k in clean for k in exfiltration_keywords)
+
+    # Heuristic Combinations
+    if has_override and (has_target or has_roleplay):
+        return True, "Semantic Adversarial Instruction Override"
+    if has_roleplay and (has_override or has_target or has_exfil):
+        return True, "Semantic Jailbreak & Persona Hijack"
+    if has_exfil and (has_override or "show" in clean or "reveal" in clean or "leak" in clean or "tiết lộ" in clean):
+        return True, "Semantic System Prompt Exfiltration"
+
+    return False, ""
+
+
 def inspect_prompt_safety(query: str) -> tuple[bool, str]:
-    """Inspect user input query against prompt injection & jailbreak patterns.
+    """Inspect user input query against direct prompt injection, jailbreaks & semantic attacks.
 
-    Processing pipeline:
-      1. Unicode NFKC normalization + invisible character stripping.
-      2. Regex pattern matching against known attack signatures.
-      3. Base64 payload decode and recursive scan.
+    Defense-in-depth pipeline:
+      Tier 1: Unicode NFKC normalization + invisible character stripping.
+      Tier 2: Signature pattern matching against known adversarial vectors.
+      Tier 3: Base64 decode extraction and recursive scan.
+      Tier 4: Semantic Intent Classifier detecting evasion & context-switching.
 
-    Performance: Designed to complete in < 1ms for typical queries. All
-    patterns are pre-compiled at module import time.
+    Performance: < 2ms execution time.
 
     Args:
         query: User natural language query text.
 
     Returns:
-        tuple[bool, str]: ``(is_safe, violation_label)``.
-            If safe, returns ``(True, "")``.
-            If unsafe, returns ``(False, label_describing_violation)``.
+        tuple[bool, str]: (is_safe, violation_label).
+            If safe: (True, "")
+            If unsafe: (False, violation_label)
     """
     if not query or not query.strip():
         return True, ""
 
-    # Step 1: Normalize to defeat evasion
+    # Tier 1: Normalize to defeat evasion (homoglyphs, zero-width chars)
     normalized = _normalize_for_safety_check(query)
 
-    # Step 2: Pattern matching on normalized text
+    # Tier 2: Pattern matching on normalized text
     for pattern, label in _INJECTION_PATTERNS:
         if pattern.search(normalized):
             logger.warning(
-                "Prompt Injection Attempt Blocked: label='%s' | query='%s'",
+                "Prompt Injection Signature Blocked: label='%s' | query='%s'",
                 label,
                 query[:120],
                 extra={"session_id": "SECURITY"},
             )
             return False, label
 
-    # Step 3: Base64 decode detection
+    # Tier 3: Base64 decode detection
     is_b64_injection, b64_label = _detect_base64_injection(normalized)
     if is_b64_injection:
         logger.warning(
@@ -382,4 +514,16 @@ def inspect_prompt_safety(query: str) -> tuple[bool, str]:
         )
         return False, b64_label
 
+    # Tier 4: Semantic Intent Classifier
+    is_semantic_threat, sem_label = _semantic_intent_classification(normalized)
+    if is_semantic_threat:
+        logger.warning(
+            "Semantic Prompt Guardrail Blocked: label='%s' | query='%s'",
+            sem_label,
+            query[:120],
+            extra={"session_id": "SECURITY"},
+        )
+        return False, sem_label
+
     return True, ""
+

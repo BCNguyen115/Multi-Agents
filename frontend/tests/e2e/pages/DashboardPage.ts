@@ -15,7 +15,7 @@ export class DashboardPage {
     this.page = page;
     this.totalRecordsCard = page.locator('text=Tổng số bản ghi').locator('..');
     this.totalFieldsCard = page.locator('text=Số trường dữ liệu').locator('..');
-    this.generateDashboardCTA = page.locator('button', { hasText: '📌 Dựng Dashboard trực quan từ dữ liệu này' });
+    this.generateDashboardCTA = page.locator('button', { hasText: 'Dựng Dashboard trực quan từ dữ liệu này' });
     this.dynamicDashboardContainer = page.locator('h2').first();
     this.singleChartViewBadge = page.locator('span', { hasText: 'Single Chart View' });
     this.agGridRecordSummary = page.locator('span', { hasText: /Hiển thị.*bản ghi/i });

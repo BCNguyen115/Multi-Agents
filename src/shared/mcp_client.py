@@ -11,14 +11,91 @@ Provides:
 
 import json
 import logging
+import re
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
+from pydantic import BaseModel, Field, field_validator
 
 from src.shared.logger import get_logger
 from src.shared.postgres_client import PostgresClient
 
 logger: logging.Logger = get_logger(__name__)
+
+# Allowed domains for Enterprise integration tools
+ALLOWED_DOMAINS: set[str] = {
+    "localhost",
+    "127.0.0.1",
+    "[::1]",
+    "api.enterprise.internal",
+    "jsonplaceholder.typicode.com",
+    "httpbin.org",
+    "example.com",
+}
+
+_SHELL_INJECTION_CHARS = re.compile(r"[;`|$\n\r]|&&|\|\||\$\(")
+_PATH_TRAVERSAL_CHARS = re.compile(r"\.\./|\.\.\\|%2e%2e|/\.\.", re.IGNORECASE)
+
+
+class RESTToolInput(BaseModel):
+    """Pydantic v2 schema for strict REST Tool parameter validation."""
+    url: str = Field(..., description="Target REST API URL")
+    method: str = Field("GET", description="HTTP Method")
+    payload: Optional[dict[str, Any]] = Field(None, description="Request JSON payload")
+
+    @field_validator("url")
+    @classmethod
+    def validate_url_security(cls, v: str) -> str:
+        clean_url = v.strip()
+        if not clean_url.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+
+        # Shell Injection check
+        if _SHELL_INJECTION_CHARS.search(clean_url):
+            raise ValueError("URL contains prohibited shell control characters.")
+
+        # Path Traversal check
+        if _PATH_TRAVERSAL_CHARS.search(clean_url):
+            raise ValueError("URL contains prohibited path traversal sequences.")
+
+        # Domain whitelist check
+        parsed = urlparse(clean_url)
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            raise ValueError("Invalid URL: missing hostname.")
+
+        if hostname not in ALLOWED_DOMAINS and not hostname.endswith(".internal"):
+            raise ValueError(f"Domain '{hostname}' is not in the trusted enterprise whitelist.")
+
+        return clean_url
+
+    @field_validator("method")
+    @classmethod
+    def validate_http_method(cls, v: str) -> str:
+        upper_m = v.strip().upper()
+        if upper_m not in ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"):
+            raise ValueError(f"Unsupported HTTP method: {v}")
+        return upper_m
+
+
+class SQLToolInput(BaseModel):
+    """Pydantic v2 schema for strict SQL Tool parameter validation."""
+    query_sql: str = Field(..., description="SQL SELECT query string")
+    params: Optional[list[Any]] = Field(default_factory=list, description="Positional query parameters")
+
+    @field_validator("query_sql")
+    @classmethod
+    def validate_sql_security(cls, v: str) -> str:
+        clean_sql = v.strip()
+        if not clean_sql:
+            raise ValueError("SQL query cannot be empty.")
+
+        # Shell expansion check
+        if any(c in clean_sql for c in ["`", "$("]):
+            raise ValueError("SQL query contains prohibited shell expansion characters.")
+
+        return clean_sql
 
 
 class MCPClient:
@@ -48,31 +125,52 @@ class MCPClient:
     async def execute_sql_query(
         self,
         query_sql: str,
+        params: Optional[list[Any]] = None,
         session_id: str = "N/A",
     ) -> str:
-        """Execute a read-only SQL query against PostgreSQL.
+        """Execute a read-only SQL query against PostgreSQL using parameterized statements.
 
-        Enforces basic security: rejects non-SELECT queries to prevent
-        unintended mutation or data loss.
+        Enforces strict AST and parameter validation: rejects mutations and shell expansion.
 
         Args:
-            query_sql: SQL query string to execute.
+            query_sql: SQL query string to execute (e.g. with $1, $2 placeholders).
+            params: Optional positional parameter list for prepared execution.
             session_id: Correlation ID for logging.
 
         Returns:
             str: JSON formatted string containing query results or error.
         """
+        # Strict Pydantic v2 Parameter Validation
+        try:
+            validated = SQLToolInput(query_sql=query_sql, params=params or [])
+            clean_query = validated.query_sql
+            query_params = validated.params or []
+        except Exception as val_err:
+            logger.warning(
+                "MCP Security: Rejected SQL parameters: %s",
+                val_err,
+                extra={"session_id": session_id},
+            )
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"Security policy violation in SQL parameters: {val_err}",
+                },
+                ensure_ascii=False,
+            )
+
         logger.info(
-            "MCP Tool: execute_sql_query: %s",
-            query_sql[:100],
+            "MCP Tool: execute_sql_query: %s (params=%s)",
+            clean_query[:100],
+            query_params,
             extra={"session_id": session_id},
         )
 
-        clean_sql: str = query_sql.strip().lower()
-        if not clean_sql.startswith("select") and not clean_sql.startswith("with"):
+        clean_lower: str = clean_query.strip().lower()
+        if not clean_lower.startswith("select") and not clean_lower.startswith("with"):
             logger.warning(
                 "MCP Security: Rejected non-SELECT query: %s",
-                query_sql,
+                clean_query,
                 extra={"session_id": session_id},
             )
             return json.dumps(
@@ -90,7 +188,9 @@ class MCPClient:
             )
 
         try:
-            records = await self.pg_client.fetch(query_sql, session_id=session_id)
+            records = await self.pg_client.fetch(
+                clean_query, *query_params, session_id=session_id
+            )
             # Convert Record objects to list of dicts
             results: list[dict[str, Any]] = [dict(record) for record in records]
 
@@ -145,7 +245,7 @@ class MCPClient:
         payload: Optional[dict[str, Any]] = None,
         session_id: str = "N/A",
     ) -> str:
-        """Execute an external REST API HTTP request via httpx.
+        """Execute an external REST API HTTP request via httpx with strict validation.
 
         Args:
             url: Destination URL.
@@ -157,26 +257,47 @@ class MCPClient:
         Returns:
             str: JSON string containing response data or error.
         """
+        # Strict Pydantic v2 Tool Input Validation (Blocks shell injection, path traversal, domain mismatch)
+        try:
+            validated = RESTToolInput(url=url, method=method, payload=payload)
+            target_url = validated.url
+            target_method = validated.method
+            target_payload = validated.payload
+        except Exception as val_err:
+            logger.warning(
+                "MCP Security: Rejected REST request parameters: %s",
+                val_err,
+                extra={"session_id": session_id},
+            )
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"Security policy violation in REST request: {val_err}",
+                },
+                ensure_ascii=False,
+            )
+
         logger.info(
             "MCP Tool: execute_rest_request %s %s",
-            method.upper(),
-            url,
+            target_method,
+            target_url,
             extra={"session_id": session_id},
         )
 
         try:
-            req_method: str = method.upper()
-            if req_method == "GET":
-                response = await self.http_client.get(url, headers=headers)
-            elif req_method == "POST":
-                response = await self.http_client.post(url, headers=headers, json=payload)
-            elif req_method == "PUT":
-                response = await self.http_client.put(url, headers=headers, json=payload)
-            elif req_method == "DELETE":
-                response = await self.http_client.delete(url, headers=headers)
+            if target_method == "GET":
+                response = await self.http_client.get(target_url, headers=headers)
+            elif target_method == "POST":
+                response = await self.http_client.post(target_url, headers=headers, json=target_payload)
+            elif target_method == "PUT":
+                response = await self.http_client.put(target_url, headers=headers, json=target_payload)
+            elif target_method == "DELETE":
+                response = await self.http_client.delete(target_url, headers=headers)
+            elif target_method == "PATCH":
+                response = await self.http_client.patch(target_url, headers=headers, json=target_payload)
             else:
                 return json.dumps(
-                    {"status": "error", "message": f"Unsupported HTTP method: {method}"},
+                    {"status": "error", "message": f"Unsupported HTTP method: {target_method}"},
                     ensure_ascii=False,
                 )
 

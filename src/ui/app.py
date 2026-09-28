@@ -35,7 +35,6 @@ _REQUEST_TIMEOUT: float = 60.0  # seconds (longer for LLM code generation)
 
 st.set_page_config(
     page_title="Multi-Agent Enterprise Chat",
-    page_icon="🤖",
     layout="wide",
 )
 
@@ -50,7 +49,7 @@ if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
 if "current_agent_mode" not in st.session_state:
-    st.session_state["current_agent_mode"] = "🤖 RAG Agent"
+    st.session_state["current_agent_mode"] = "RAG Agent"
 
 session_id: str = st.session_state["session_id"]
 
@@ -59,11 +58,11 @@ session_id: str = st.session_state["session_id"]
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.header("⚙️ Cài Đặt")
+    st.header("Cài Đặt")
     st.caption(f"Session: `{session_id}`")
     st.divider()
 
-    if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
+    if st.button("Xóa lịch sử chat", use_container_width=True):
         st.session_state["messages"] = []
         st.rerun()
 
@@ -71,38 +70,38 @@ with st.sidebar:
 # Main Header & Agent Selector Menu
 # ---------------------------------------------------------------------------
 
-st.title("🤖 Multi-Agent Enterprise System")
+st.title("Multi-Agent Enterprise System")
 
 # Agent selection menu buttons
 col1, col2, col3 = st.columns(3)
 with col1:
-    rag_active: bool = st.session_state["current_agent_mode"] == "🤖 RAG Agent"
+    rag_active: bool = st.session_state["current_agent_mode"] == "RAG Agent"
     if st.button(
-        "🤖 RAG Agent (Tra cứu tài liệu)",
+        "RAG Agent (Tra cứu tài liệu)",
         use_container_width=True,
         type="primary" if rag_active else "secondary",
     ):
-        st.session_state["current_agent_mode"] = "🤖 RAG Agent"
+        st.session_state["current_agent_mode"] = "RAG Agent"
         st.rerun()
 
 with col2:
-    data_active: bool = st.session_state["current_agent_mode"] == "📊 Data Agent"
+    data_active: bool = st.session_state["current_agent_mode"] == "Data Agent"
     if st.button(
-        "📊 Data Agent (Phân tích dữ liệu)",
+        "Data Agent (Phân tích dữ liệu)",
         use_container_width=True,
         type="primary" if data_active else "secondary",
     ):
-        st.session_state["current_agent_mode"] = "📊 Data Agent"
+        st.session_state["current_agent_mode"] = "Data Agent"
         st.rerun()
 
 with col3:
-    search_active: bool = st.session_state["current_agent_mode"] == "🌐 Search Agent"
+    search_active: bool = st.session_state["current_agent_mode"] == "Search Agent"
     if st.button(
-        "🌐 Search Agent (Tìm kiếm Web)",
+        "Search Agent (Tìm kiếm Web)",
         use_container_width=True,
         type="primary" if search_active else "secondary",
     ):
-        st.session_state["current_agent_mode"] = "🌐 Search Agent"
+        st.session_state["current_agent_mode"] = "Search Agent"
         st.rerun()
 
 st.divider()
@@ -112,7 +111,7 @@ st.divider()
 # ---------------------------------------------------------------------------
 
 uploaded_file: Any = None
-if st.session_state["current_agent_mode"] == "📊 Data Agent":
+if st.session_state["current_agent_mode"] == "Data Agent":
     uploaded_file = st.file_uploader(
         "Kéo thả file CSV vào đây để phân tích",
         type=["csv"],
@@ -120,12 +119,12 @@ if st.session_state["current_agent_mode"] == "📊 Data Agent":
     )
 
     if uploaded_file is not None:
-        st.success(f"✅ Đã tải: **{uploaded_file.name}**")
+        st.success(f"Đã tải: **{uploaded_file.name}**")
         try:
             preview_df: pd.DataFrame = pd.read_csv(uploaded_file)
             uploaded_file.seek(0)  # Reset file pointer
-            st.caption(f"📋 {len(preview_df)} dòng × {len(preview_df.columns)} cột")
-            with st.expander("👀 Xem dữ liệu mẫu"):
+            st.caption(f"{len(preview_df)} dòng × {len(preview_df.columns)} cột")
+            with st.expander("Xem dữ liệu mẫu"):
                 st.dataframe(preview_df.head(5), use_container_width=True)
         except Exception:
             st.warning("Không thể hiển thị preview của file CSV.")
@@ -149,12 +148,12 @@ for message_item in st.session_state["messages"]:
                     section: str = src.get("section", "N/A")
                     category: str = src.get("category", "")
                     cat_badge: str = f" ({category})" if category else ""
-                    st.markdown(f"- 📄 **{file_name}**{cat_badge} | Section: *{section}*")
+                    st.markdown(f"- **{file_name}**{cat_badge} | Section: *{section}*")
 
         # Show generated code if present
         msg_code: str = message_item.get("generated_code", "")
         if msg_code:
-            with st.expander("💻 Xem mã nguồn (Live Code)"):
+            with st.expander("Xem mã nguồn (Live Code)"):
                 st.code(msg_code, language="python")
 
             # Re-render the dashboard
@@ -173,7 +172,7 @@ for message_item in st.session_state["messages"]:
                     }
                     exec(msg_code, exec_globals)  # noqa: S102
                 except Exception as render_err:
-                    st.error(f"⚠️ Lỗi khi render lại dashboard: {render_err}")
+                    st.error(f"Lỗi khi render lại dashboard: {render_err}")
 
 # ---------------------------------------------------------------------------
 # Chat Input Handling & API Routing
@@ -181,15 +180,15 @@ for message_item in st.session_state["messages"]:
 
 placeholder_text: str = (
     "Nhập câu hỏi để tìm kiếm thông tin trên Internet..."
-    if st.session_state["current_agent_mode"] == "🌐 Search Agent"
+    if st.session_state["current_agent_mode"] == "Search Agent"
     else "Nhập câu hỏi của bạn…"
 )
 user_input: str | None = st.chat_input(placeholder_text)
 
 if user_input:
     # Validate Data Agent mode requirement (CSV upload required)
-    if st.session_state["current_agent_mode"] == "📊 Data Agent" and uploaded_file is None:
-        st.warning("⚠️ Vui lòng kéo thả file CSV vào trước khi bắt đầu chat phân tích dữ liệu!")
+    if st.session_state["current_agent_mode"] == "Data Agent" and uploaded_file is None:
+        st.warning("Vui lòng kéo thả file CSV vào trước khi bắt đầu chat phân tích dữ liệu!")
     else:
         # Display user message immediately
         st.session_state["messages"].append(
@@ -205,7 +204,7 @@ if user_input:
 
         with st.chat_message("assistant"):
             with st.spinner("Đang xử lý…"):
-                if st.session_state["current_agent_mode"] == "📊 Data Agent" and uploaded_file is not None:
+                if st.session_state["current_agent_mode"] == "Data Agent" and uploaded_file is not None:
                     # =============================================
                     # MODE: DATA AGENT (CSV Analysis)
                     # =============================================
@@ -243,11 +242,11 @@ if user_input:
                             code_to_store = generated_code
                             csv_to_store = csv_string
 
-                            with st.expander("💻 Xem mã nguồn (Live Code)"):
+                            with st.expander("Xem mã nguồn (Live Code)"):
                                 st.code(generated_code, language="python")
 
                             st.divider()
-                            st.subheader("📊 Dashboard")
+                            st.subheader("Dashboard")
                             try:
                                 df = pd.read_csv(io.StringIO(csv_string))
                                 exec_globals = {
@@ -262,25 +261,25 @@ if user_input:
                                 exec(generated_code, exec_globals)  # noqa: S102
                             except Exception as exec_err:
                                 st.error(
-                                    f"⚠️ Lỗi khi thực thi code: {exec_err}\n\n"
+                                    f"Lỗi khi thực thi code: {exec_err}\n\n"
                                     "Vui lòng thử lại với câu hỏi khác hoặc mô tả cụ thể hơn."
                                 )
 
                     except httpx.ConnectError:
                         assistant_reply = (
-                            f"⚠️ Không thể kết nối tới server. Hãy đảm bảo FastAPI đang chạy tại `{_API_BASE_URL}`."
+                            f"Không thể kết nối tới server. Hãy đảm bảo FastAPI đang chạy tại `{_API_BASE_URL}`."
                         )
                         st.markdown(assistant_reply)
                     except httpx.TimeoutException:
-                        assistant_reply = "⏳ Yêu cầu đã hết thời gian chờ. Vui lòng thử lại."
+                        assistant_reply = "Yêu cầu đã hết thời gian chờ. Vui lòng thử lại."
                         st.markdown(assistant_reply)
                     except httpx.HTTPStatusError as exc:
                         assistant_reply = (
-                            f"❌ Lỗi từ server (HTTP {exc.response.status_code}): {exc.response.text[:200]}"
+                            f"Lỗi từ server (HTTP {exc.response.status_code}): {exc.response.text[:200]}"
                         )
                         st.markdown(assistant_reply)
                     except Exception as exc:
-                        assistant_reply = f"❌ Lỗi không xác định: {exc}"
+                        assistant_reply = f"Lỗi không xác định: {exc}"
                         st.markdown(assistant_reply)
 
                 else:
@@ -291,7 +290,7 @@ if user_input:
                         "query": user_input,
                         "session_id": session_id,
                     }
-                    if st.session_state["current_agent_mode"] == "🌐 Search Agent":
+                    if st.session_state["current_agent_mode"] == "Search Agent":
                         chat_payload["agent_mode"] = "search_agent"
 
                     try:
@@ -308,16 +307,16 @@ if user_input:
 
                     except httpx.ConnectError:
                         assistant_reply = (
-                            f"⚠️ Không thể kết nối tới server. Hãy đảm bảo FastAPI đang chạy tại `{_API_BASE_URL}`."
+                            f"Không thể kết nối tới server. Hãy đảm bảo FastAPI đang chạy tại `{_API_BASE_URL}`."
                         )
                     except httpx.TimeoutException:
-                        assistant_reply = "⏳ Yêu cầu đã hết thời gian chờ. Vui lòng thử lại."
+                        assistant_reply = "Yêu cầu đã hết thời gian chờ. Vui lòng thử lại."
                     except httpx.HTTPStatusError as exc:
                         assistant_reply = (
-                            f"❌ Lỗi từ server (HTTP {exc.response.status_code}): {exc.response.text[:200]}"
+                            f"Lỗi từ server (HTTP {exc.response.status_code}): {exc.response.text[:200]}"
                         )
                     except Exception as exc:
-                        assistant_reply = f"❌ Lỗi không xác định: {exc}"
+                        assistant_reply = f"Lỗi không xác định: {exc}"
 
                     st.markdown(assistant_reply)
 
@@ -329,7 +328,7 @@ if user_input:
                                 category = src.get("category", "")
                                 cat_badge = f" ({category})" if category else ""
                                 st.markdown(
-                                    f"- 📄 **{file_name}**{cat_badge} | Section: *{section}*"
+                                    f"- **{file_name}**{cat_badge} | Section: *{section}*"
                                 )
 
         # Persist assistant reply

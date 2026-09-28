@@ -623,3 +623,223 @@ class TestCosineSimilarity:
             "tra cuu tai lieu ky thuat API",
         )
         assert 0.0 < sim < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Module 6: Chart Cardinality & Inversion Guardrail Tests
+# ---------------------------------------------------------------------------
+
+class TestChartCardinalityAndInversionRules:
+    """Tests for Cardinality Heuristics, Chart Inversion Guards & Verifier Auditing."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_dependencies(self) -> None:
+        """Ensure missing enterprise backend dependencies are safely mocked."""
+        import sys
+        for mod in ["litellm", "asyncpg", "redis", "redis.asyncio", "sse_starlette", "sse_starlette.sse"]:
+            if mod not in sys.modules:
+                sys.modules[mod] = MagicMock()
+
+    def test_classify_columns_cardinality_rules(self) -> None:
+        """Categorical columns with 2<=nunique<=6 go to donut_pie_cat_cols; entity cols go to entity_cols."""
+        import pandas as pd
+        from src.agents.data_agent.agent import classify_columns_advanced
+
+        df = pd.DataFrame({
+            "artist_name": [f"Artist_{i}" for i in range(100)],
+            "sex": ["Male", "Female", "Mixed"] * 33 + ["Male"],
+            "artist_type": ["Solo", "Group"] * 50,
+            "total_streams": [float(i * 1000) for i in range(100)],
+            "percent_streams": [0.5] * 100,
+        })
+
+        cls = classify_columns_advanced(df)
+        assert "sex" in cls["donut_pie_cat_cols"]
+        assert "artist_type" in cls["donut_pie_cat_cols"]
+        assert "artist_name" not in cls["donut_pie_cat_cols"]
+        assert cls["entity_cols"][0] == "artist_name"
+        assert cls["numeric_metrics"][0] == "total_streams"
+
+    def test_validate_and_correct_chart_specs_fixes_donut(self) -> None:
+        """validate_and_correct_chart_specs automatically repairs Donut chart with high-cardinality dimension."""
+        import pandas as pd
+        from src.agents.data_agent.agent import classify_columns_advanced, validate_and_correct_chart_specs
+
+        df = pd.DataFrame({
+            "artist_name": [f"Artist_{i}" for i in range(50)],
+            "sex": ["Male", "Female", "Mixed"] * 16 + ["Male", "Female"],
+            "total_streams": [float(i * 500) for i in range(50)],
+        })
+        cls = classify_columns_advanced(df)
+
+        bad_spec = {
+            "charts": [
+                {
+                    "type": "donut",
+                    "dimension": "artist_name",
+                    "title": "Tỷ Trọng Theo Artist",
+                    "data": [{"name": f"Artist_{i}", "value": 10} for i in range(50)],
+                }
+            ]
+        }
+
+        fixed = validate_and_correct_chart_specs(bad_spec, cls, df)
+        donut_chart = fixed["charts"][0]
+        assert donut_chart["dimension"] == "sex"
+        assert "Sex" in donut_chart["title"]
+        assert len(donut_chart["data"]) <= 6
+
+    def test_validate_and_correct_chart_specs_elevates_bar_ranking(self) -> None:
+        """validate_and_correct_chart_specs elevates Bar chart from low-cardinality count(*) to Top Entity ranking."""
+        import pandas as pd
+        from src.agents.data_agent.agent import classify_columns_advanced, validate_and_correct_chart_specs
+
+        df = pd.DataFrame({
+            "artist_name": [f"Artist_{i}" for i in range(30)],
+            "sex": ["Male", "Female", "Mixed"] * 10,
+            "total_streams": [float(i * 100) for i in range(30)],
+        })
+        cls = classify_columns_advanced(df)
+
+        trivial_spec = {
+            "charts": [
+                {
+                    "type": "bar",
+                    "dimension": "sex",
+                    "title": "Biểu Đồ Theo Sex",
+                    "data": [{"x": "Male", "y": 10}, {"x": "Female", "y": 10}, {"x": "Mixed", "y": 10}],
+                }
+            ]
+        }
+
+        fixed = validate_and_correct_chart_specs(trivial_spec, cls, df)
+        bar_chart = fixed["charts"][0]
+        assert bar_chart["dimension"] == "artist_name"
+        assert "Artist Name" in bar_chart["title"]
+        assert len(bar_chart["data"]) <= 15
+        assert bar_chart["data"][0]["y"] >= bar_chart["data"][-1]["y"]
+
+    def test_verifier_rejects_high_cardinality_pie_chart(self) -> None:
+        """verify_dashboard_spec returns False with specific error message when Donut has > 7 categories."""
+        import pandas as pd
+        from src.orchestrator.verifier import verify_dashboard_spec
+
+        df = pd.DataFrame({
+            "artist_name": [f"Artist_{i}" for i in range(50)],
+            "sex": ["Male", "Female"] * 25,
+            "streams": list(range(50)),
+        })
+
+        bad_spec = {
+            "charts": [
+                {
+                    "type": "donut",
+                    "dimension": "artist_name",
+                    "data": [{"name": f"A_{i}", "value": i} for i in range(20)],
+                },
+                {
+                    "type": "bar",
+                    "dimension": "artist_name",
+                    "data": [{"x": "A_1", "y": 100}],
+                },
+            ],
+            "kpiCards": [{"title": "Total", "value": 50}],
+        }
+
+        is_verified, feedback = verify_dashboard_spec(df, bad_spec)
+        assert is_verified is False
+        assert "Lỗi nghiêm trọng: Donut chart đang nhận cột có độ đa dạng quá lớn làm vỡ biểu đồ ('Khác: 99%')" in feedback
+        assert "Hãy đổi Donut chart sang nhóm phân loại hẹp" in feedback
+
+    def test_spotify_dataset_end_to_end_exploration(self) -> None:
+        """End-to-end data exploration on actual Spotify CSV produces Top Artists Bar and narrow Donut."""
+        import os
+        import pandas as pd
+        from src.shared.csv_sanitizer import sanitize_column_names
+        from src.agents.data_agent.agent import DataAnalystAgent
+
+        csv_path = os.path.join(
+            "dataset", "test_data", "Most Streamed Artists on Spotify (17_07_2026) V1.1.csv"
+        )
+        if not os.path.exists(csv_path):
+            pytest.skip("Spotify dataset not found in workspace")
+
+        df = pd.read_csv(csv_path)
+        df = sanitize_column_names(df)
+
+        agent = DataAnalystAgent(llm_client=MagicMock())
+        exploration = agent._run_data_exploration(df, "spotify.csv", "Tạo dashboard Spotify")
+
+        assert exploration["target_bar_col"] == "artist_name"
+        assert len(exploration["bar_chart_data"]) == 15
+        top_artist = exploration["bar_chart_data"][0]
+        assert top_artist["x"] in ["Drake", "Taylor Swift", "Bad Bunny", "The Weeknd"]
+        assert top_artist["y"] > 50000
+
+        assert exploration["target_pie_col"] in ["sex", "artist_type"]
+        assert len(exploration["pie_chart_data"]) <= 6
+        pie_labels = [p["name"] for p in exploration["pie_chart_data"]]
+        assert "Male" in pie_labels or "Solo" in pie_labels
+
+    def test_sales_commercial_dataset_exploration(self) -> None:
+        """Universal profiler and exploration on Commercial Sales dataset."""
+        import pandas as pd
+        from src.agents.data_agent.agent import DataAnalystAgent, classify_columns_advanced
+
+        df = pd.DataFrame({
+            "order_id": [f"ORD-{i:04d}" for i in range(100)],
+            "city": ["Hà Nội", "TP. Hồ Chí Minh", "Đà Nẵng", "Cần Thơ", "Hải Phòng", "Nha Trang", "Huế", "Quy Nhơn", "Vũng Tàu", "Đà Lạt"] * 10,
+            "customer_segment": ["Consumer", "Corporate", "Home Office"] * 33 + ["Consumer"],
+            "sales_amount": [float(i * 120.5 + 50) for i in range(100)],
+            "discount_rate": [0.05, 0.1, 0.15, 0.2] * 25,
+        })
+
+        cls = classify_columns_advanced(df)
+        assert "customer_segment" in cls["donut_pie_cat_cols"]
+        assert "discount_rate" in cls["ratio_metrics"]
+        assert "sales_amount" in cls["numeric_metrics"]
+        assert "city" in cls["entity_cols"] or "order_id" in cls["entity_cols"]
+
+        agent = DataAnalystAgent(llm_client=MagicMock())
+        exploration = agent._run_data_exploration(df, "sales.csv", "Dựng dashboard phân tích bán hàng")
+
+        assert exploration["target_bar_col"] in ["city", "order_id"]
+        assert len(exploration["bar_chart_data"]) <= 15
+        assert exploration["target_pie_col"] == "customer_segment"
+        assert len(exploration["pie_chart_data"]) <= 6
+        assert len(exploration["kpi_cards"]) >= 3
+        # Ensure KPI contains total records and sales
+        kpi_titles = [k["title"] for k in exploration["kpi_cards"]]
+        assert any("BẢN GHI" in t for t in kpi_titles)
+        assert any("SALES AMOUNT" in t for t in kpi_titles)
+
+    def test_hr_personnel_dataset_exploration(self) -> None:
+        """Universal profiler and exploration on HR Personnel dataset."""
+        import pandas as pd
+        from src.agents.data_agent.agent import DataAnalystAgent, classify_columns_advanced
+
+        df = pd.DataFrame({
+            "employee_name": [f"Nhân viên {i}" for i in range(80)],
+            "department": ["Engineering", "Product", "Sales", "Marketing", "HR"] * 16,
+            "employment_type": ["Full-time", "Part-time", "Contract"] * 26 + ["Full-time", "Part-time"],
+            "monthly_salary": [float(15000000 + i * 500000) for i in range(80)],
+            "years_experience": [float(i % 10 + 1) for i in range(80)],
+        })
+
+        cls = classify_columns_advanced(df)
+        assert "employment_type" in cls["donut_pie_cat_cols"]
+        assert "department" in cls["donut_pie_cat_cols"]
+        assert "employee_name" in cls["entity_cols"]
+        assert "monthly_salary" in cls["numeric_metrics"]
+
+        agent = DataAnalystAgent(llm_client=MagicMock())
+        exploration = agent._run_data_exploration(df, "hr.csv", "Báo cáo nhân sự và quỹ lương")
+
+        assert exploration["target_bar_col"] in ["employee_name", "department"]
+        assert exploration["target_pie_col"] in ["employment_type", "department"]
+        assert len(exploration["bar_chart_data"]) <= 15
+        assert len(exploration["pie_chart_data"]) <= 6
+        assert len(exploration["kpi_cards"]) >= 3
+        kpi_titles = [k["title"] for k in exploration["kpi_cards"]]
+        assert any("BẢN GHI" in t for t in kpi_titles)
+        assert any("MONTHLY SALARY" in t for t in kpi_titles)

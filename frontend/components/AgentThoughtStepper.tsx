@@ -41,157 +41,170 @@ export const AgentThoughtStepper: React.FC<AgentThoughtStepperProps> = ({
   const hasExecuting = Boolean(executing);
   const hasVerifying = Boolean(verifying);
 
-  let currentStatusText = 'Khởi tạo luồng tư duy PEV Loop...';
+  let currentStatusText = 'Initializing PEV Loop...';
   if (isStreaming) {
-    if (!hasPlan) currentStatusText = 'Agent đang lập kế hoạch suy luận...';
-    else if (!hasExecuting) currentStatusText = `Planner giải quyết ➔ Đang chuyển giao tới [${plan?.target_agent || 'Executor'}]...`;
-    else if (!hasVerifying) currentStatusText = 'Executor hoàn tất ➔ Verifier đang kiểm duyệt phản hồi...';
+    if (!hasPlan) currentStatusText = 'Agent planning analysis...';
+    else if (!hasExecuting) currentStatusText = `Planner → Delegating to [${plan?.target_agent || 'Executor'}]...`;
+    else if (!hasVerifying) currentStatusText = 'Executor → Verifier validating response...';
   } else {
-    currentStatusText = 'Chu trình suy luận PEV Loop hoàn tất';
+    currentStatusText = 'PEV Loop completed';
   }
 
   return (
-    <div className="my-3 border border-slate-200 rounded-xl bg-slate-50/80 shadow-sm overflow-hidden text-xs">
+    <div className="my-3 border border-border rounded-xl bg-surface shadow-xs overflow-hidden text-xs transition-colors">
       {/* Header bar */}
       <div
         onClick={() => setIsExpanded(!isExpanded)}
-        className="flex items-center justify-between px-4 py-2.5 bg-slate-100/90 hover:bg-slate-200/70 cursor-pointer transition-colors border-b border-slate-200"
+        className="flex items-center justify-between px-4 py-2.5 bg-surface-raised hover:bg-surface-overlay/30 cursor-pointer transition-colors border-b border-border"
       >
         <div className="flex items-center space-x-2.5">
-          <Brain className="w-4 h-4 text-brand-600 animate-pulse" />
-          <span className="font-semibold text-slate-800 flex items-center gap-1.5">
-            PEV Loop Stepper:
-          </span>
-          <span className="text-slate-600 font-medium italic">{currentStatusText}</span>
+          <Brain className={`w-4 h-4 text-accent-primary ${isStreaming ? 'animate-pulse' : ''}`} />
+          <span className="font-bold text-accent-primary">PEV Loop:</span>
+          <span className="text-foreground-muted font-medium italic">{currentStatusText}</span>
         </div>
 
         <div className="flex items-center space-x-2">
           {isStreaming ? (
-            <span className="flex items-center space-x-1 bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full font-medium text-[11px] animate-pulse">
+            <span className="flex items-center space-x-1 bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2 py-0.5 rounded-full font-bold text-[10px] animate-pulse">
               <Loader2 className="w-3 h-3 animate-spin" />
-              <span>Streaming Thought</span>
+              <span>Active</span>
             </span>
           ) : (
-            <span className="flex items-center space-x-1 bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium text-[11px]">
+            <span className="flex items-center space-x-1 bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 px-2 py-0.5 rounded-full font-bold text-[10px]">
               <CheckCircle2 className="w-3 h-3" />
               <span>Verified</span>
             </span>
           )}
-          <button className="text-slate-500 hover:text-slate-800">
+          <button className="text-foreground-muted hover:text-foreground cursor-pointer transition-colors">
             {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
         </div>
       </div>
 
       {/* Timeline Nodes Bar */}
-      <div className="p-3.5 bg-white flex items-center justify-around border-b border-slate-100 gap-2">
+      <div className="px-4 py-3 bg-surface flex items-center justify-around gap-2">
         {/* Step 1: Planner */}
         <div className="flex items-center space-x-2">
-          <div
-            className={`w-7 h-7 rounded-full flex items-center justify-center font-bold ${
-              hasPlan
-                ? 'bg-brand-700 text-white shadow-sm'
-                : isStreaming
-                ? 'bg-brand-100 text-brand-700 animate-pulse'
-                : 'bg-slate-200 text-slate-500'
-            }`}
-          >
+          <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold transition-all ${
+            hasPlan
+              ? 'bg-accent-planner text-white shadow-xs'
+              : isStreaming
+              ? 'bg-accent-planner/10 text-accent-planner animate-pulse'
+              : 'bg-surface-raised text-foreground-muted border border-border'
+          }`}>
             <Compass className="w-3.5 h-3.5" />
           </div>
           <div>
-            <div className="font-semibold text-slate-800">1. Planner Node</div>
-            <div className="text-[10px] text-slate-500">
-              {plan?.target_agent ? `Target: ${plan.target_agent}` : 'Tạo kế hoạch'}
+            <div className="font-semibold text-foreground">1. Plan</div>
+            <div className="text-[10px] text-foreground-muted">
+              {plan?.target_agent ? `Target: ${plan.target_agent}` : 'Strategy'}
             </div>
           </div>
         </div>
 
-        <div className="h-0.5 flex-1 bg-slate-200 max-w-[40px]" />
+        <div className={`h-0.5 flex-1 max-w-[40px] rounded-full ${hasPlan ? 'bg-accent-planner' : 'bg-border'}`} />
 
         {/* Step 2: Executor */}
         <div className="flex items-center space-x-2">
-          <div
-            className={`w-7 h-7 rounded-full flex items-center justify-center font-bold ${
-              hasExecuting
-                ? 'bg-indigo-600 text-white shadow-sm'
-                : isStreaming && hasPlan
-                ? 'bg-indigo-100 text-indigo-700 animate-pulse'
-                : 'bg-slate-200 text-slate-500'
-            }`}
-          >
+          <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold transition-all ${
+            hasExecuting
+              ? 'bg-accent-executor text-white shadow-xs'
+              : isStreaming && hasPlan
+              ? 'bg-accent-executor/10 text-accent-executor animate-pulse'
+              : 'bg-surface-raised text-foreground-muted border border-border'
+          }`}>
             <Cpu className="w-3.5 h-3.5" />
           </div>
           <div>
-            <div className="font-semibold text-slate-800">2. Executor Node</div>
-            <div className="text-[10px] text-slate-500">
-              {executing?.target_agent || 'Thực thi Agent'}
+            <div className="font-semibold text-foreground">2. Execute</div>
+            <div className="text-[10px] text-foreground-muted">
+              {executing?.target_agent || 'Process'}
             </div>
           </div>
         </div>
 
-        <div className="h-0.5 flex-1 bg-slate-200 max-w-[40px]" />
+        <div className={`h-0.5 flex-1 max-w-[40px] rounded-full ${hasExecuting ? 'bg-accent-executor' : 'bg-border'}`} />
 
         {/* Step 3: Verifier */}
         <div className="flex items-center space-x-2">
-          <div
-            className={`w-7 h-7 rounded-full flex items-center justify-center font-bold ${
-              hasVerifying
-                ? verifying?.is_verified
-                  ? 'bg-emerald-600 text-white shadow-sm'
-                  : 'bg-amber-600 text-white shadow-sm'
-                : isStreaming && hasExecuting
-                ? 'bg-emerald-100 text-emerald-700 animate-pulse'
-                : 'bg-slate-200 text-slate-500'
-            }`}
-          >
+          <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold transition-all ${
+            hasVerifying
+              ? verifying?.is_verified
+                ? 'bg-accent-verifier text-white shadow-xs'
+                : 'bg-accent-error text-white shadow-xs'
+              : isStreaming && hasExecuting
+              ? 'bg-accent-verifier/10 text-accent-verifier animate-pulse'
+              : 'bg-surface-raised text-foreground-muted border border-border'
+          }`}>
             <ShieldCheck className="w-3.5 h-3.5" />
           </div>
           <div>
-            <div className="font-semibold text-slate-800">3. Verifier Node</div>
-            <div className="text-[10px] text-slate-500">
-              {verifying ? (verifying.is_verified ? 'Verified ✅' : 'Feedback Loop 🔄') : 'Kiểm duyệt'}
+            <div className="font-semibold text-foreground">3. Verify</div>
+            <div className="text-[10px] text-foreground-muted">
+              {verifying ? (verifying.is_verified ? 'Passed' : 'Feedback Loop') : 'Quality'}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Expandable Thought Detail Section */}
+      {/* Expandable Detail Section */}
       {isExpanded && (
-        <div className="p-4 space-y-3 bg-slate-50 border-t border-slate-200 font-mono text-[11px] text-slate-700">
-          {plan && (
-            <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-2xs">
-              <div className="font-bold text-brand-700 mb-1 flex items-center gap-1.5 font-sans text-xs">
-                <Compass className="w-3.5 h-3.5" /> 📌 Kế Hoạch từ Planner Node:
-              </div>
+        <div className="p-4 space-y-3 bg-surface-raised/50 border-t border-border font-mono text-[11px] text-foreground-secondary animate-fade-in">
+          <div className="bg-surface p-3 rounded-lg border border-border">
+            <div className="font-bold text-accent-planner mb-1 flex items-center gap-1.5 font-sans text-xs">
+              <Compass className="w-3.5 h-3.5" /> Planner Output:
+            </div>
+            {plan ? (
               <p className="whitespace-pre-wrap">{plan.plan}</p>
-            </div>
-          )}
+            ) : isStreaming && !hasPlan ? (
+              <p className="italic text-foreground-muted flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin text-accent-planner" />
+                Đang phân tích câu hỏi và lập kế hoạch...
+              </p>
+            ) : (
+              <p className="italic text-foreground-muted">Chờ thực thi...</p>
+            )}
+          </div>
 
-          {executing && (
-            <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-2xs">
-              <div className="font-bold text-indigo-700 mb-1 flex items-center gap-1.5 font-sans text-xs">
-                <Cpu className="w-3.5 h-3.5" /> ⚡ Nhật Ký Thực Thi từ [{executing.target_agent}]:
-              </div>
+          <div className="bg-surface p-3 rounded-lg border border-border">
+            <div className="font-bold text-accent-executor mb-1 flex items-center gap-1.5 font-sans text-xs">
+              <Cpu className="w-3.5 h-3.5" /> Executor [{executing?.target_agent || plan?.target_agent || 'Chuyên biệt'}]:
+            </div>
+            {executing ? (
               <p className="whitespace-pre-wrap max-h-40 overflow-y-auto">{executing.execution_result.slice(0, 500)}...</p>
-            </div>
-          )}
+            ) : isStreaming && hasPlan && !hasExecuting ? (
+              <p className="italic text-foreground-muted flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin text-accent-executor" />
+                Agent đang thực thi tác vụ...
+              </p>
+            ) : (
+              <p className="italic text-foreground-muted">Chờ thực thi...</p>
+            )}
+          </div>
 
-          {verifying && (
-            <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-2xs">
-              <div className="font-bold text-emerald-700 mb-1 flex items-center gap-1.5 font-sans text-xs">
-                <ShieldCheck className="w-3.5 h-3.5" /> 🛡️ Đánh Giá từ Verifier Node:
-              </div>
+          <div className="bg-surface p-3 rounded-lg border border-border">
+            <div className="font-bold text-accent-verifier mb-1 flex items-center gap-1.5 font-sans text-xs">
+              <ShieldCheck className="w-3.5 h-3.5" /> Verifier Report:
+            </div>
+            {verifying ? (
               <p className="whitespace-pre-wrap">
-                Chất lượng: <span className={verifying.is_verified ? 'text-emerald-600 font-bold' : 'text-amber-600 font-bold'}>
-                  {verifying.is_verified ? 'Đạt Tiêu Chuẩn (Passed)' : 'Cần Chỉnh Sửa'}
+                Quality: <span className={verifying.is_verified ? 'text-accent-verifier font-bold' : 'text-accent-error font-bold'}>
+                  {verifying.is_verified ? 'VERIFIED PASSED' : 'REJECTED'}
                 </span>
                 {verifying.verifier_feedback && ` | Feedback: ${verifying.verifier_feedback}`}
               </p>
-            </div>
-          )}
+            ) : isStreaming && hasExecuting && !hasVerifying ? (
+              <p className="italic text-foreground-muted flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin text-accent-verifier" />
+                Đang đối soát và kiểm định tính trung thực...
+              </p>
+            ) : (
+              <p className="italic text-foreground-muted">Chờ thực thi...</p>
+            )}
+          </div>
 
           {error && (
-            <div className="bg-rose-50 p-3 rounded-lg border border-rose-200 text-rose-700 flex items-center gap-2">
+            <div className="bg-accent-error/5 p-3 rounded-lg border border-accent-error/20 text-accent-error flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{error}</span>
             </div>

@@ -28,6 +28,9 @@ from src.shared.logger import get_logger
 
 logger: logging.Logger = get_logger(__name__)
 
+# Maximum allowed column count for dataset sanitization
+_MAX_COLUMN_COUNT: int = 100
+
 
 def _remove_diacritics(text: str) -> str:
     """Remove Vietnamese diacritics and accented characters via NFD decomposition.
@@ -56,12 +59,13 @@ def sanitize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     """Sanitise DataFrame column names into clean, ASCII-safe snake_case.
 
     Transformations applied:
-      1. Strip leading/trailing whitespace.
-      2. Remove Vietnamese diacritics (``Tên`` → ``Ten``).
-      3. Replace spaces, hyphens, and dots with underscores.
-      4. Remove remaining special characters (keep alphanumeric + underscore).
-      5. Collapse consecutive underscores.
-      6. Convert to lowercase.
+      1. Replace numeric, nan, or Unnamed headers with col_N.
+      2. Strip leading/trailing whitespace.
+      3. Remove Vietnamese diacritics (``Tên`` → ``Ten``).
+      4. Replace spaces, hyphens, and dots with underscores.
+      5. Remove remaining special characters (keep alphanumeric + underscore).
+      6. Collapse consecutive underscores.
+      7. Convert to lowercase.
 
     Args:
         df: Input DataFrame with potentially dirty column names.
@@ -71,22 +75,32 @@ def sanitize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     """
     new_columns: list[str] = []
 
-    for col in df.columns:
-        name: str = str(col).strip()
-        # Remove diacritics (Vietnamese / accented chars)
-        name = _remove_diacritics(name)
-        # Replace spaces, hyphens, dots with underscore
-        name = re.sub(r"[\s\-\.]+", "_", name)
-        # Remove all non-alphanumeric characters except underscore
-        name = re.sub(r"[^a-zA-Z0-9_]", "", name)
-        # Collapse multiple underscores
-        name = re.sub(r"_+", "_", name)
-        # Strip leading/trailing underscores and lowercase
-        name = name.strip("_").lower()
+    for idx, col in enumerate(df.columns):
+        col_str: str = str(col).strip()
+        # Handle nan, all-numeric headers (e.g. 0, 1), and Unnamed: N
+        if (
+            pd.isna(col)
+            or col_str.lower() in ("nan", "none", "null")
+            or col_str.isdigit()
+            or col_str.startswith("Unnamed:")
+        ):
+            name = f"col_{idx}"
+        else:
+            name = col_str
+            # Remove diacritics (Vietnamese / accented chars)
+            name = _remove_diacritics(name)
+            # Replace spaces, hyphens, dots with underscore
+            name = re.sub(r"[\s\-\.]+", "_", name)
+            # Remove all non-alphanumeric characters except underscore
+            name = re.sub(r"[^a-zA-Z0-9_]", "", name)
+            # Collapse multiple underscores
+            name = re.sub(r"_+", "_", name)
+            # Strip leading/trailing underscores and lowercase
+            name = name.strip("_").lower()
 
-        # Fallback for empty column names
-        if not name:
-            name = f"col_{len(new_columns)}"
+            # Fallback for empty or purely numeric column names
+            if not name or name.isdigit():
+                name = f"col_{idx}"
 
         new_columns.append(name)
 
@@ -106,7 +120,7 @@ def sanitize_column_names(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def detect_and_convert_encoding(raw_bytes: bytes) -> str:
-    """Detect the encoding of raw bytes and convert to UTF-8 string.
+    """Detect the encoding of raw bytes and convert to UTF-8 string with BOM stripping.
 
     Uses ``chardet`` for automatic detection with a confidence threshold.
     Falls back through common encodings if detection fails.
@@ -115,11 +129,19 @@ def detect_and_convert_encoding(raw_bytes: bytes) -> str:
         raw_bytes: Raw file content as bytes.
 
     Returns:
-        str: The file content decoded as a UTF-8 string.
-
-    Raises:
-        ValueError: If no encoding can successfully decode the content.
+        str: The file content decoded as a UTF-8 string without BOM.
     """
+    if not raw_bytes:
+        return ""
+
+    # Explicit BOM detection & stripping
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        return raw_bytes[3:].decode("utf-8", errors="replace")
+    if raw_bytes.startswith(b"\xff\xfe"):
+        return raw_bytes[2:].decode("utf-16-le", errors="replace")
+    if raw_bytes.startswith(b"\xfe\xff"):
+        return raw_bytes[2:].decode("utf-16-be", errors="replace")
+
     try:
         import chardet
     except ImportError:
@@ -161,6 +183,7 @@ def detect_and_convert_encoding(raw_bytes: bytes) -> str:
 def clean_csv_content(
     raw_bytes: bytes,
     remove_empty_rows: bool = True,
+    max_columns: int = _MAX_COLUMN_COUNT,
 ) -> str:
     """Full CSV cleaning pipeline: detect encoding → convert → sanitise headers.
 
@@ -170,9 +193,13 @@ def clean_csv_content(
     Args:
         raw_bytes: Raw uploaded file content.
         remove_empty_rows: Whether to strip fully-empty rows.
+        max_columns: Maximum number of allowed columns (default: _MAX_COLUMN_COUNT).
 
     Returns:
         str: Cleaned CSV content as a UTF-8 string with sanitised headers.
+
+    Raises:
+        ValueError: If CSV column count exceeds max_columns limit.
     """
     # Step 1: Detect encoding and convert to string
     csv_text: str = detect_and_convert_encoding(raw_bytes)
@@ -186,8 +213,13 @@ def clean_csv_content(
             df = pd.read_csv(io.StringIO(csv_text), sep=None, engine="python")
         except Exception as exc:
             logger.error("CSV parsing failed even with flexible delimiter: %s", exc)
-            # Return the raw UTF-8 text as-is
             return csv_text
+
+    # Guard against excessively wide CSVs
+    if len(df.columns) > max_columns:
+        raise ValueError(
+            f"CSV contains {len(df.columns)} columns, exceeding the maximum allowed limit of {max_columns} columns."
+        )
 
     # Step 3: Sanitise column names
     df = sanitize_column_names(df)

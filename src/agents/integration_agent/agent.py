@@ -13,8 +13,9 @@ from typing import Any, Optional
 
 from src.agents.base_agent import BaseAgent
 from src.shared.llm_client import LLMClient
-from src.shared.mcp_client import MCPClient
 from src.shared.logger import get_logger
+from src.shared.mcp_client import MCPClient
+from src.shared.security import unwrap_user_input
 
 logger: logging.Logger = get_logger(__name__)
 
@@ -81,8 +82,10 @@ class IntegrationAgent(BaseAgent):
             extra={"session_id": session_id},
         )
 
+        clean_query, _ = unwrap_user_input(query)
+
         url, method, payload, explanation = await self._parse_request(
-            query, session_id
+            clean_query, session_id
         )
 
         if not url:
@@ -111,12 +114,20 @@ class IntegrationAgent(BaseAgent):
         status_code: Any = mcp_res.get("status_code", "N/A")
         data: Any = mcp_res.get("data", {})
 
-        summary: str = (
-            f"**Kết quả tích hợp API ({method} {url}):**\n\n"
-            f"- **Trạng thái:** HTTP {status_code} ({status.upper()})\n"
-            f"- **Mục đích:** {explanation}\n"
-            f"- **Response Data:**\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
-        )
+        if status == "error":
+            error_msg = mcp_res.get("message", "Lỗi không xác định khi gọi API.")
+            summary: str = (
+                f"**Thất bại khi gọi API ({method} {url}):**\n\n"
+                f"- **Lý do:** {error_msg}\n"
+                f"- **Mục đích:** {explanation}"
+            )
+        else:
+            summary: str = (
+                f"**Kết quả tích hợp API ({method} {url}):**\n\n"
+                f"- **Trạng thái:** HTTP {status_code} ({status.upper()})\n"
+                f"- **Mục đích:** {explanation}\n"
+                f"- **Response Data:**\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
+            )
 
         return json.dumps(
             {
@@ -138,6 +149,17 @@ class IntegrationAgent(BaseAgent):
                 "kết nối hệ thống bên ngoài, health check endpoint, hoặc tích hợp dịch vụ HTTP."
             ),
         }
+
+    async def parse_request(
+        self, query: str, session_id: str
+    ) -> tuple[str, str, Optional[dict[str, Any]], str]:
+        """Public accessor to parse natural language query into HTTP request spec."""
+        clean_query, _ = unwrap_user_input(query)
+        return await self._parse_request(clean_query, session_id)
+
+    def is_mutation_request(self, method: str) -> bool:
+        """Check if HTTP method mutates server state (requires HITL approval)."""
+        return method.upper() in ("POST", "PUT", "DELETE", "PATCH")
 
     # ------------------------------------------------------------------
     # Private helpers

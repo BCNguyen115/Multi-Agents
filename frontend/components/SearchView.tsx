@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Search, MessageSquare, X } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { Search, X, MessageSquare, Clock, ChevronRight, Inbox, Command } from 'lucide-react';
 import { ChatSession } from './Sidebar';
 
 interface SearchViewProps {
@@ -10,82 +10,143 @@ interface SearchViewProps {
   onClose: () => void;
 }
 
-export function SearchView({ 
-  sessions, 
-  onSelectSession, 
-  onClose 
-}: SearchViewProps) {
+export function SearchView({ sessions, onSelectSession, onClose }: SearchViewProps) {
   const [query, setQuery] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const filtered = sessions.filter(s => 
-    s.title.toLowerCase().includes(query.toLowerCase())
-  );
+  // Close on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const filteredSessions = useMemo(() => {
+    if (!query.trim()) return sessions;
+    const lower = query.toLowerCase();
+    return sessions.filter(
+      (s) =>
+        s.title.toLowerCase().includes(lower) ||
+        s.id.toLowerCase().includes(lower)
+    );
+  }, [sessions, query]);
+
+  const formatDate = (dateStr: string) => {
+    try {
+      const d = new Date(dateStr);
+      const now = new Date();
+      const diffMs = now.getTime() - d.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHrs = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+      if (diffMins < 1) return 'Vừa xong';
+      if (diffMins < 60) return `${diffMins} phút trước`;
+      if (diffHrs < 24) return `${diffHrs} giờ trước`;
+      if (diffDays === 1) return 'Hôm qua';
+      if (diffDays < 7) return `${diffDays} ngày trước`;
+      return d.toLocaleDateString('vi-VN');
+    } catch {
+      return dateStr;
+    }
+  };
 
   return (
-    <div className="flex-1 flex flex-col h-full min-h-0 bg-white items-center pt-16 px-6 overflow-y-auto animate-in fade-in duration-200">
-      
-      {/* Container Ô Tìm Kiếm Trung Tâm */}
-      <div className="w-full max-w-2xl space-y-8">
-        
-        {/* Input Bar Lớn Chuẩn Gemini */}
-        <div className="relative flex items-center bg-slate-100/80 hover:bg-slate-100 focus-within:bg-white border border-slate-200/80 rounded-full px-5 py-3.5 shadow-xs focus-within:shadow-md focus-within:ring-2 focus-within:ring-blue-100 transition-all">
-          <Search className="w-5 h-5 text-slate-500 mr-3 shrink-0"/>
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center pt-16 sm:pt-24 px-4 bg-black/60 backdrop-blur-md animate-fade-in"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command Palette Tìm kiếm hội thoại"
+    >
+      <div className="w-full max-w-2xl bg-surface border border-border-strong rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[75vh] animate-scale-up">
+        {/* Search Input Bar */}
+        <div className="flex items-center gap-3 px-4 py-3.5 border-b border-border bg-surface-raised/40 shrink-0">
+          <Search className="w-5 h-5 text-accent-primary shrink-0" />
           <input
+            ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search chats"
-            autoFocus
-            className="w-full bg-transparent text-slate-800 placeholder-slate-400 text-base focus:outline-none"
+            placeholder="Tìm kiếm cuộc trò chuyện (nhấn ESC để thoát)..."
+            className="flex-1 bg-transparent text-foreground placeholder-foreground-muted text-sm focus:outline-none"
           />
           {query && (
-            <button 
+            <button
               type="button"
-              onClick={() => setQuery('')} 
-              className="p-1 hover:bg-slate-200 rounded-full text-slate-400 cursor-pointer"
+              onClick={() => setQuery('')}
+              className="text-foreground-muted hover:text-foreground p-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary/40"
+              title="Xóa tìm kiếm"
             >
-              <X className="w-4 h-4"/>
+              <X className="w-4 h-4" />
             </button>
           )}
+          <kbd className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 text-xs font-mono text-foreground-muted bg-surface border border-border rounded-md shadow-2xs select-none">
+            ESC
+          </kbd>
         </div>
 
-        {/* Danh Sách Kết Quả Search / Recent Sessions */}
-        <div className="space-y-3">
-          <div className="text-sm font-medium text-slate-500 px-2 select-none">
-            Recent
-          </div>
-
-          <div className="space-y-1">
-            {filtered.length > 0 ? (
-              filtered.map((session) => (
-                <div
-                  key={session.id}
-                  onClick={() => {
-                    onSelectSession(session.id);
-                    onClose();
-                  }}
-                  className="flex items-center justify-between p-3.5 rounded-2xl hover:bg-slate-100/80 cursor-pointer transition-all group"
-                >
-                  {/* Tiêu đề bên trái */}
-                  <div className="flex items-center gap-3 text-slate-800 font-medium text-sm group-hover:text-blue-900 truncate pr-4">
-                    <MessageSquare className="w-4 h-4 text-slate-400 shrink-0 group-hover:text-blue-600"/>
-                    <span className="truncate max-w-md">{session.title}</span>
-                  </div>
-
-                  {/* Ngày tháng bên phải */}
-                  <span className="text-xs text-slate-400 font-normal shrink-0">
-                    {session.updatedAt ? new Date(session.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Today'}
-                  </span>
-                </div>
-              ))
-            ) : (
-              <div className="text-center py-12 text-slate-400 text-sm">
-                Không tìm thấy cuộc trò chuyện nào phù hợp.
+        {/* Results list */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+          {filteredSessions.length > 0 ? (
+            <>
+              <div className="px-2 py-1 text-xs text-foreground-muted font-semibold flex items-center justify-between">
+                <span>{query ? `${filteredSessions.length} kết quả phù hợp` : `${sessions.length} cuộc trò chuyện`}</span>
+                <span className="flex items-center gap-1 text-xs font-mono">
+                  <Command className="w-3 h-3" /> K
+                </span>
               </div>
-            )}
-          </div>
+              {filteredSessions.map((session) => (
+                <button
+                  key={session.id}
+                  type="button"
+                  onClick={() => onSelectSession(session.id)}
+                  className="w-full flex items-center gap-3 p-3 bg-surface hover:bg-surface-raised border border-transparent hover:border-border rounded-xl transition-all duration-150 cursor-pointer text-left group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                >
+                  <div className="w-9 h-9 rounded-lg bg-surface-raised flex items-center justify-center shrink-0 group-hover:bg-accent-primary/10 transition-colors">
+                    <MessageSquare className="w-4 h-4 text-foreground-muted group-hover:text-accent-primary transition-colors" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p title={session.title} className="text-sm font-semibold text-foreground truncate group-hover:text-accent-primary transition-colors">
+                      {session.title}
+                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <Clock className="w-3 h-3 text-foreground-muted" />
+                      <span className="text-xs text-foreground-muted font-mono tabular-nums">
+                        {formatDate(session.updatedAt)}
+                      </span>
+                      {session.isPinned && (
+                        <span className="text-xs bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2 py-0.2 rounded-full font-semibold">
+                          Đã ghim
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-foreground-muted group-hover:text-accent-primary transition-all group-hover:translate-x-0.5 shrink-0" />
+                </button>
+              ))}
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-surface-raised flex items-center justify-center mb-3">
+                <Inbox className="w-7 h-7 text-foreground-muted" />
+              </div>
+              <p className="text-sm font-semibold text-foreground-secondary mb-1">Không tìm thấy kết quả</p>
+              <p className="text-xs text-foreground-muted">
+                {query ? `Không có cuộc trò chuyện nào khớp với "${query}"` : 'Chưa có cuộc trò chuyện nào'}
+              </p>
+            </div>
+          )}
         </div>
-
       </div>
     </div>
   );

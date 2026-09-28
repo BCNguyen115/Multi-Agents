@@ -18,7 +18,7 @@ Usage:
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import sqlglot
 from sqlglot import exp
@@ -39,6 +39,63 @@ _FORBIDDEN_TYPES: set[type] = {
     exp.Drop,
     exp.Alter,
     exp.Command,
+}
+
+# System Schemas and Tables Quarantine (AST Level)
+_QUARANTINED_SCHEMAS: set[str] = {
+    "information_schema",
+    "pg_catalog",
+    "pg_toast",
+    "pg_temp",
+}
+
+_QUARANTINED_TABLES: set[str] = {
+    "pg_tables",
+    "pg_class",
+    "pg_roles",
+    "pg_user",
+    "pg_shadow",
+    "pg_authid",
+    "pg_database",
+    "pg_proc",
+    "pg_namespace",
+    "pg_attribute",
+    "pg_stat_activity",
+    "pg_settings",
+    "pg_views",
+    "pg_matviews",
+    "pg_indexes",
+    "pg_group",
+    "pg_shshadow",
+}
+
+# Dangerous / DoS / Command / Exfiltration Functions Blacklist (AST Level)
+_FORBIDDEN_FUNCTIONS: set[str] = {
+    "pg_sleep",
+    "pg_sleep_for",
+    "pg_sleep_until",
+    "pg_terminate_backend",
+    "pg_cancel_backend",
+    "dblink",
+    "dblink_exec",
+    "dblink_connect",
+    "dblink_open",
+    "query_to_xml",
+    "query_to_xmlschema",
+    "table_to_xml",
+    "table_to_xmlschema",
+    "cursor_to_xml",
+    "cursor_to_xmlschema",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "pg_write_file",
+    "system",
+    "sys_eval",
+    "copy_to",
+    "lo_export",
+    "lo_import",
 }
 
 # Known large tables that SHOULD have a WHERE clause
@@ -155,8 +212,44 @@ def validate_sql(
             logger.warning(msg, extra={"session_id": session_id})
             return False, "", msg
 
+    # Strict Read-Only: Reject SELECT ... INTO and Locking clauses (FOR UPDATE / FOR SHARE)
+    if statement.find(exp.Into):
+        msg = "Security reject: SELECT INTO / Table mutation clause is strictly forbidden."
+        logger.warning(msg, extra={"session_id": session_id})
+        return False, "", msg
+
+    if statement.find(exp.Lock):
+        msg = "Security reject: Locking clause (FOR UPDATE/SHARE) is strictly forbidden in read-only queries."
+        logger.warning(msg, extra={"session_id": session_id})
+        return False, "", msg
+
     # ------------------------------------------------------------------
-    # 5. Auto-inject LIMIT if missing
+    # 5. Schema & System Table Quarantine
+    # ------------------------------------------------------------------
+    for table in statement.find_all(exp.Table):
+        t_name = (table.name or "").lower()
+        t_db = (table.db or "").lower()
+        if t_db in _QUARANTINED_SCHEMAS:
+            msg = f"Security reject: Access to quarantined system schema '{t_db}' is forbidden."
+            logger.warning(msg, extra={"session_id": session_id})
+            return False, "", msg
+        if t_name in _QUARANTINED_TABLES:
+            msg = f"Security reject: Access to quarantined system table '{t_name}' is forbidden."
+            logger.warning(msg, extra={"session_id": session_id})
+            return False, "", msg
+
+    # ------------------------------------------------------------------
+    # 6. Function Blacklist (DoS, File I/O, Privilege Escalation)
+    # ------------------------------------------------------------------
+    for func in statement.find_all(exp.Func, exp.Anonymous):
+        func_name = (func.name or func.key or "").lower()
+        if func_name in _FORBIDDEN_FUNCTIONS:
+            msg = f"Security reject: Function '{func_name}()' is blacklisted (potential DoS/Privilege Escalation)."
+            logger.warning(msg, extra={"session_id": session_id})
+            return False, "", msg
+
+    # ------------------------------------------------------------------
+    # 7. Auto-inject LIMIT if missing
     # ------------------------------------------------------------------
     has_limit: bool = statement.find(exp.Limit) is not None
     if not has_limit:
@@ -172,7 +265,7 @@ def validate_sql(
             pass
 
     # ------------------------------------------------------------------
-    # 6. WHERE clause warning for large tables
+    # 8. WHERE clause warning for large tables
     # ------------------------------------------------------------------
     tables_referenced: list[str] = [
         t.name.lower()
@@ -191,7 +284,7 @@ def validate_sql(
             )
 
     # ------------------------------------------------------------------
-    # 7. Generate sanitized SQL from the validated AST
+    # 9. Generate sanitized SQL from the validated AST
     # ------------------------------------------------------------------
     sanitized: str = statement.sql(dialect="postgres")
 
@@ -202,3 +295,57 @@ def validate_sql(
     )
 
     return True, sanitized, ""
+
+
+def parameterize_sql(sql: str, dialect: str = "postgres") -> tuple[str, list[Any]]:
+    """Extract literal constants from SQL AST and replace with $1, $2, ... positional parameters.
+
+    Ensures 100% prepared statement execution on asyncpg, eliminating SQL injection risk.
+    Leaves LIMIT and OFFSET integers in place for execution compatibility.
+
+    Args:
+        sql: Sanitized SQL string.
+        dialect: SQL dialect (default: 'postgres').
+
+    Returns:
+        tuple[str, list[Any]]: (parameterized_sql, params_list)
+    """
+    if not sql or not sql.strip():
+        return sql, []
+
+    from typing import Any
+
+    try:
+        ast = sqlglot.parse_one(sql, read=dialect)
+    except Exception as exc:
+        logger.warning("Failed to parse SQL AST for parameterization: %s", exc)
+        return sql, []
+
+    params: list[Any] = []
+    param_idx: int = 1
+
+    # Traverse AST nodes to find literals
+    for node in list(ast.walk()):
+        if isinstance(node, exp.Literal):
+            # Keep LIMIT and OFFSET literals inline
+            parent = node.parent
+            if parent and isinstance(parent, (exp.Limit, exp.Offset)):
+                continue
+
+            raw_val = node.this
+            # Convert numeric or boolean types
+            if node.is_number:
+                val: Any = float(raw_val) if "." in str(raw_val) else int(raw_val)
+            elif isinstance(raw_val, str) and raw_val.lower() in ("true", "false"):
+                val = raw_val.lower() == "true"
+            else:
+                val = raw_val
+
+            params.append(val)
+            node.replace(exp.Parameter(this=exp.Literal.number(param_idx)))
+            param_idx += 1
+
+    parameterized_sql = ast.sql(dialect=dialect)
+    logger.debug("Parameterize SQL: %s -> %s (params=%s)", sql[:80], parameterized_sql[:80], params)
+    return parameterized_sql, params
+

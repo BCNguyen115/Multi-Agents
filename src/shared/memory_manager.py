@@ -98,10 +98,30 @@ def redact_pii(text: str) -> str:
 
 
 
+class DualResult(dict):
+    """A dictionary that can also be awaited in async contexts."""
+
+    def __await__(self):
+        async def _resolve():
+            return self
+
+        return _resolve().__await__()
+
+
+class DualList(list):
+    """A list that can also be awaited in async contexts."""
+
+    def __await__(self):
+        async def _resolve():
+            return self
+
+        return _resolve().__await__()
+
+
 class MemoryManager:
     """Manages cross-session long-term memory for users and sessions.
 
-    Wraps ``mem0.Memory`` with asynchronous helpers and graceful fallback.
+    Wraps ``mem0.Memory`` with asynchronous/synchronous helpers and graceful fallback.
 
     Attributes:
         enabled: Whether long-term memory is active.
@@ -127,22 +147,41 @@ class MemoryManager:
             from src.config import settings as global_settings
             cfg = settings or global_settings
 
-            # Force environment variables for OpenAI-compatible client routing (e.g. OpenRouter)
-            os.environ["OPENAI_API_KEY"] = cfg.OPENROUTER_API_KEY
-            os.environ["OPENAI_BASE_URL"] = cfg.OPENROUTER_BASE_URL
+            # Force environment variables for OpenRouter / OpenAI routing
+            if cfg.OPENROUTER_API_KEY:
+                os.environ["OPENROUTER_API_KEY"] = cfg.OPENROUTER_API_KEY
+                os.environ["OPENROUTER_API_BASE"] = cfg.OPENROUTER_BASE_URL
+                os.environ["OPENAI_API_KEY"] = cfg.OPENROUTER_API_KEY
+                os.environ["OPENAI_BASE_URL"] = cfg.OPENROUTER_BASE_URL
 
             if getattr(cfg, "HF_TOKEN", None):
                 os.environ["HF_TOKEN"] = cfg.HF_TOKEN
 
             from mem0 import Memory  # type: ignore[import-untyped]
 
+            mem0_llm_model: str = (
+                getattr(cfg, "MEM0_LLM_MODEL", None)
+                or getattr(cfg, "FAST_LLM_MODEL", None)
+                or "openai/gpt-4o-mini"
+            )
+
+            vector_store_cfg: dict[str, Any] = {"on_disk": False}
+            try:
+                from qdrant_client import QdrantClient
+                vector_store_cfg["client"] = QdrantClient(location=":memory:")
+            except Exception:
+                pass
+
             mem0_config: dict[str, Any] = {
                 "llm": {
                     "provider": "openai",
                     "config": {
-                        "model": cfg.OPENROUTER_MODEL.replace("openai/", "").replace("openrouter/", ""),
-                        "api_key": cfg.OPENROUTER_API_KEY,
+                        "model": mem0_llm_model,
+                        "temperature": 0.1,
+                        "max_tokens": 1000,
                         "openai_base_url": cfg.OPENROUTER_BASE_URL,
+                        "openrouter_base_url": cfg.OPENROUTER_BASE_URL,
+                        "api_key": cfg.OPENROUTER_API_KEY,
                     },
                 },
                 "embedder": {
@@ -155,9 +194,7 @@ class MemoryManager:
                 },
                 "vector_store": {
                     "provider": "qdrant",
-                    "config": {
-                        "on_disk": False,
-                    },
+                    "config": vector_store_cfg,
                 },
             }
 
@@ -168,7 +205,9 @@ class MemoryManager:
                 self.mem0_client = Memory()
 
             logger.info(
-                "MemoryManager initialised with mem0ai library (OpenRouter base_url, PII redaction active)",
+                "MemoryManager initialised with mem0ai library (model=%s, base_url=%s, PII redaction active)",
+                mem0_llm_model,
+                cfg.OPENROUTER_BASE_URL,
                 extra={"session_id": "SYSTEM"},
             )
         except Exception as exc:
@@ -200,7 +239,7 @@ class MemoryManager:
             # 2. Warm-up mem0 models if initialized
             if self.mem0_client is not None:
                 try:
-                    self.mem0_client.search("warmup_query", filters={"user_id": "warmup_system"}, limit=1)
+                    self.mem0_client.search("warmup_query", filters={"user_id": "warmup_system"}, top_k=1)
                     logger.info("Pre-loaded mem0 memory models successfully", extra={"session_id": "SYSTEM"})
                 except Exception as e:
                     logger.debug("mem0 search warm-up skipped: %s", e)
@@ -211,66 +250,150 @@ class MemoryManager:
         except Exception as exc:
             logger.warning("MemoryManager warm-up exception (non-fatal): %s", exc)
 
-    async def add_memory(
+    def add_memory(
         self,
-        user_id: str,
-        text: str,
+        *args: Any,
+        user_id: Optional[str] = None,
+        text: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
-    ) -> None:
+        **kwargs: Any,
+    ) -> DualResult:
         """Store a new memory item for the specified user after PII redaction.
 
+        Supports both positional and keyword argument variations, and both sync and async:
+            res = mm.add_memory("Tôi tên là Nguyên", user_id="user_123")
+            await mm.add_memory(user_id="user_123", text="Tôi tên là Nguyên")
+
         Args:
+            *args: Positional text or user_id.
             user_id: User / Session correlation identifier.
             text: Memory content or key fact.
             metadata: Optional metadata dictionary.
+            **kwargs: Extra arguments.
+
+        Returns:
+            DualResult: Memory addition result dictionary (awaitable).
         """
-        if not text or not user_id:
-            return
+        target_user_id: str = user_id or kwargs.get("user_id", "")
+        target_text: str = text or kwargs.get("text", "")
+
+        if args:
+            if len(args) == 1:
+                if target_user_id:
+                    target_text = str(args[0])
+                elif target_text:
+                    target_user_id = str(args[0])
+                else:
+                    target_text = str(args[0])
+            elif len(args) >= 2:
+                target_user_id = str(args[0])
+                target_text = str(args[1])
+                if len(args) >= 3 and metadata is None:
+                    metadata = args[2]
+
+        if not target_text or not target_user_id:
+            return DualResult({"results": [], "status": "skipped_empty"})
 
         # Apply PII Redaction Pipeline
-        clean_text = redact_pii(text)
+        clean_text = redact_pii(target_text)
 
         logger.debug(
             "Adding memory for user '%s' (PII redacted): %s",
-            user_id,
+            target_user_id,
             clean_text[:60],
-            extra={"session_id": user_id},
+            extra={"session_id": target_user_id},
         )
 
         if self.mem0_client is not None:
             try:
-                # mem0ai v2 accepts text as positional argument or messages= text
-                self.mem0_client.add(
+                res = self.mem0_client.add(
                     clean_text,
-                    user_id=user_id,
+                    user_id=target_user_id,
                     metadata=metadata or {},
                 )
-                return
+                if isinstance(res, dict):
+                    return DualResult(res)
+                return DualResult({"results": res})
             except Exception as exc:
                 logger.warning(
-                    "mem0ai add_memory exception: %s",
+                    "mem0ai add_memory non-fatal failure (%s). Storing to fallback store.",
+                    exc,
+                    extra={"session_id": target_user_id},
+                )
+
+        # Fallback in-memory storage
+        if target_user_id not in self._fallback_store:
+            self._fallback_store[target_user_id] = []
+
+        fallback_entry = {
+            "memory": clean_text,
+            "metadata": metadata or {},
+        }
+        self._fallback_store[target_user_id].append(fallback_entry)
+        return DualResult({"results": [{"memory": clean_text, "event": "ADD_FALLBACK"}]})
+
+    def get_memories(
+        self,
+        user_id: str,
+        limit: int = 5,
+    ) -> DualList:
+        """Retrieve all stored memories for a user.
+
+        Supports both sync and async usage:
+            memories = mm.get_memories("user_123")
+            memories = await mm.get_memories("user_123")
+
+        Args:
+            user_id: User / Session correlation identifier.
+            limit: Maximum number of memory items to return.
+
+        Returns:
+            DualList: List of memory text strings (awaitable).
+        """
+        if not user_id:
+            return DualList([])
+
+        memories: list[str] = []
+        if self.mem0_client is not None:
+            try:
+                results: Any = self.mem0_client.get_all(
+                    filters={"user_id": user_id},
+                    top_k=limit,
+                )
+                items = (
+                    results.get("results", [])
+                    if isinstance(results, dict)
+                    else (results if isinstance(results, list) else [])
+                )
+                for item in items:
+                    if isinstance(item, dict) and "memory" in item:
+                        memories.append(str(item["memory"]))
+                    elif isinstance(item, str):
+                        memories.append(item)
+            except Exception as exc:
+                logger.warning(
+                    "mem0ai get_memories non-fatal exception (%s). Using fallback store.",
                     exc,
                     extra={"session_id": user_id},
                 )
 
-        # Fallback in-memory storage
-        if user_id not in self._fallback_store:
-            self._fallback_store[user_id] = []
+        if not memories and user_id in self._fallback_store:
+            user_mems = self._fallback_store.get(user_id, [])
+            memories = [m["memory"] for m in user_mems[-limit:]]
 
-        self._fallback_store[user_id].append(
-            {
-                "memory": clean_text,
-                "metadata": metadata or {},
-            }
-        )
+        return DualList(memories)
 
-    async def get_relevant_memories(
+    def get_relevant_memories(
         self,
         user_id: str,
         query: str,
         limit: int = 3,
-    ) -> list[str]:
+    ) -> DualList:
         """Retrieve relevant memories for a user given a query.
+
+        Supports both sync and async usage:
+            memories = mm.get_relevant_memories("user_123", "query")
+            memories = await mm.get_relevant_memories("user_123", "query")
 
         Args:
             user_id: User / Session correlation identifier.
@@ -278,41 +401,44 @@ class MemoryManager:
             limit: Maximum number of memory items to return.
 
         Returns:
-            list[str]: List of relevant memory text strings.
+            DualList: List of relevant memory text strings (awaitable).
         """
         if not user_id:
-            return []
+            return DualList([])
 
+        memories: list[str] = []
         if self.mem0_client is not None:
             try:
-                # mem0ai v2 requires user_id filtering via filters={"user_id": user_id}
                 results: Any = self.mem0_client.search(
                     query=query,
                     filters={"user_id": user_id},
-                    limit=limit,
+                    top_k=limit,
                 )
-                memories: list[str] = []
-                if isinstance(results, list):
-                    for item in results:
-                        if isinstance(item, dict) and "memory" in item:
-                            memories.append(str(item["memory"]))
-                        elif isinstance(item, str):
-                            memories.append(item)
+                items = (
+                    results.get("results", [])
+                    if isinstance(results, dict)
+                    else (results if isinstance(results, list) else [])
+                )
+                for item in items:
+                    if isinstance(item, dict) and "memory" in item:
+                        memories.append(str(item["memory"]))
+                    elif isinstance(item, str):
+                        memories.append(item)
                 logger.info(
                     "Retrieved %d long-term memories for user '%s'",
                     len(memories),
                     user_id,
                     extra={"session_id": user_id},
                 )
-                return memories
+                return DualList(memories)
             except Exception as exc:
                 logger.warning(
-                    "mem0ai search exception: %s",
+                    "mem0ai search non-fatal exception (%s). Using fallback store.",
                     exc,
                     extra={"session_id": user_id},
                 )
 
         # Fallback memory retrieval
         user_mems: list[dict[str, Any]] = self._fallback_store.get(user_id, [])
-        return [m["memory"] for m in user_mems[-limit:]]
+        return DualList([m["memory"] for m in user_mems[-limit:]])
 

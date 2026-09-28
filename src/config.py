@@ -37,11 +37,12 @@ class Settings(BaseSettings):
     # --- OpenRouter LLM ---
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-    OPENROUTER_MODEL: str = "openai/gpt-4o-mini"
+    OPENROUTER_MODEL: str = "openai/gpt-4o"
 
     # --- Model Tiering (Latency Optimization) ---
-    FAST_LLM_MODEL: str = "openai/gpt-4o-mini"     # Low-latency: Planner, Verifier
-    HEAVY_LLM_MODEL: str = "openai/gpt-4o-mini"    # High-quality: Data Storyteller, RAG Synthesis
+    FAST_LLM_MODEL: str = "openai/gpt-4o-mini"             # Low-latency: Planner, Title Gen, Verifier
+    HEAVY_LLM_MODEL: str = "openai/gpt-4o"                 # High-quality: Data Storyteller, RAG Synthesis
+    MEM0_LLM_MODEL: str = "openai/gpt-4o-mini"              # Entity & Fact Extraction for Long-term Memory
 
     # --- PostgreSQL + Pgvector ---
     POSTGRES_URL: str = "postgresql://user:password@localhost:5432/multi_agent_db"
@@ -67,7 +68,7 @@ class Settings(BaseSettings):
     RERANK_TOP_K: int = 5
     HYBRID_CANDIDATES_K: int = 10
     MAX_RERANK_TEXT_LENGTH: int = 500
-    RERANKER_TIMEOUT: float = 30.0
+    RERANKER_TIMEOUT: float = 0.8
 
     # --- Internal Security (Inter-service JWT) ---
     INTERNAL_JWT_SECRET: str = ""
