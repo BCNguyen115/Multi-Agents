@@ -138,6 +138,12 @@ def test_migration_search_filters_and_fallbacks_on_a_real_database(monkeypatch):
             indexes = {r["indexname"] for r in await pg.fetch("SELECT indexname FROM pg_indexes WHERE tablename='rag_chunks'")}
             assert "idx_rag_chunks_embedding" not in indexes and {"idx_rag_chunks_hnsw", "idx_rag_chunks_tsv"} <= indexes
 
+            # ensure_schema builds the frozen baseline (English tsv); the gateway and run_ingestion then apply the Alembic
+            # revisions, and the search SQL (simple + unaccent) belongs to revision 0003: do the same here
+            from src.shared.migrations import upgrade_to_head
+
+            await asyncio.to_thread(upgrade_to_head, DSN)
+
             store = KnowledgeStore(pg, TopicLLM())
             hits = await store.search("termination notice period", top_k=5)
             assert hits[0]["content"].startswith("Termination requires ninety days")  # vector AND keywords agree
