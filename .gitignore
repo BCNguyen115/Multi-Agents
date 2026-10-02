@@ -144,6 +144,15 @@ scratch/tmp*
 *.md
 
 # ------------------------------------------------------------------------------
+# 6b. Local-only folders and generated reports (kept on disk, not in the repository)
+# ------------------------------------------------------------------------------
+/legacy/
+/scripts/dev/
+/temp_diagrams/
+/*.docx
+/frontend/public/*.pdf
+
+# ------------------------------------------------------------------------------
 # 7. AI coding tools: installed packs and generated state
 # ------------------------------------------------------------------------------
 # Skill packs are restored from skills-lock.json (tracked); their files are not part of this project.
