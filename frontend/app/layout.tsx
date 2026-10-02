@@ -1,6 +1,9 @@
 import React from 'react';
 import './globals.css';
 import { SkipLink } from '../components/SkipLink';
+import { AuthProvider } from '../context/AuthContext';
+import { AuthModal } from '../components/auth/AuthModal';
+import { ChangePasswordDialog } from '../components/auth/ChangePasswordDialog';
 
 export const metadata = {
   title: 'Multi-Agent Enterprise System',
@@ -22,7 +25,8 @@ export default function RootLayout({
               (function() {
                 try {
                   var theme = localStorage.getItem('theme');
-                  if (theme === 'light') {
+                  var light = theme === 'light' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches);
+                  if (light) {
                     document.documentElement.classList.remove('dark');
                     document.documentElement.classList.add('light');
                     document.documentElement.setAttribute('data-theme', 'light');
@@ -39,7 +43,11 @@ export default function RootLayout({
       </head>
       <body className="bg-background min-h-screen font-sans antialiased text-foreground max-w-full overflow-x-hidden">
         <SkipLink />
-        {children}
+        <AuthProvider>
+          {children}
+          <AuthModal />
+          <ChangePasswordDialog />
+        </AuthProvider>
       </body>
     </html>
   );

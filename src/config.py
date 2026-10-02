@@ -125,7 +125,12 @@ class Settings(BaseSettings):
     # Make the hash with `python -m scripts.make_user`. With an identity provider (AUTH_JWKS_URL) leave this empty.
     AUTH_USERS: list[dict[str, Any]] = []
     AUTH_TOKEN_TTL_MINUTES: int = 480   # lifetime of a token issued by /api/auth/login
+    # Self-service sign-up (POST /api/auth/register): OFF by default, an internal system normally gets its accounts from an
+    # administrator. New accounts get NO roles (no approving, no knowledge upload) and the default tenant/department below.
+    AUTH_ALLOW_REGISTRATION: bool = False
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 10     # sign-in attempts per IP per minute (brute force); 0 = unlimited
+    RATE_LIMIT_REGISTER_PER_MINUTE: int = 5   # sign-up attempts per IP per minute; 0 = unlimited
+    RATE_LIMIT_PASSWORD_PER_MINUTE: int = 5   # password change / reset attempts per IP (reset) or user (change) per minute; 0 = unlimited
     RATE_LIMIT_CHAT_PER_MINUTE: int = 30      # chat / stream / title calls per user (or IP) per minute; 0 = unlimited
     RATE_LIMIT_ANALYZE_PER_MINUTE: int = 10   # uploads / analyses per user (or IP) per minute; 0 = unlimited
     HITL_APPROVER_ROLES: list[str] = ["approver", "admin"]  # roles allowed to approve a sensitive action (authenticated mode)

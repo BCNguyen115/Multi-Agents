@@ -7,12 +7,19 @@ import { ChatMessage } from './ChatMessage';
 import { processCSVWithDuckDB } from '../lib/duckdb';
 import { DOCUMENT_MAX_MB, isDocumentFile, isTabularFile, splitCategoryHint, TABULAR_MAX_MB } from '../lib/fileTypes';
 import { isUnauthorized } from '../lib/authClient';
-import { getLang, t, useLang } from '../lib/i18n';
+import { getLang, t, useLang, type MessageKey } from '../lib/i18n';
 import { fetchSSEStream } from '../lib/sse';
 import { ChatInput } from './ChatInput';
 import { toast } from '../lib/toast';
 import { applyExecuting, applyFinal, applyPevStep, applyPlan, applyVerifying, createInitialPevTraceState } from '../lib/pevTrace';
 import { apiFetch } from '../lib/apiFetch';
+
+/** One-click prompts of the empty chat. `tone` is the hover color of the icon: the agent's state color. */
+const STARTERS: { id: 'Data Agent' | 'RAG Agent' | 'Search Agent'; Icon: typeof BarChart3; tone: string; labelKey: MessageKey; tag: string }[] = [
+  { id: 'Data Agent', Icon: BarChart3, tone: 'group-hover:bg-accent-primary/10 group-hover:text-accent-primary', labelKey: 'chat.starterDataTitle', tag: 'Data' },
+  { id: 'RAG Agent', Icon: FileText, tone: 'group-hover:bg-accent-planner/10 group-hover:text-accent-planner', labelKey: 'chat.starterRagTitle', tag: 'RAG' },
+  { id: 'Search Agent', Icon: Globe, tone: 'group-hover:bg-accent-executor/10 group-hover:text-accent-executor', labelKey: 'chat.starterSearchTitle', tag: 'Search' },
+];
 
 interface ChatInterfaceProps {
   currentAgentMode: string;
@@ -146,6 +153,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     if (m.includes('db') || m.includes('database') || m.includes('sql')) return 'db_agent';
     if (m.includes('integration') || m.includes('api')) return 'integration_agent';
     return null;
+  };
+
+  const runStarter = (agent: 'Data Agent' | 'RAG Agent' | 'Search Agent', labelKey: MessageKey) => {
+    onSelectAgentMode(agent);
+    if (agent === 'Data Agent') {
+      if (attachedFile || activeCSV) void handleSendMessageFromInput(t(getLang(), labelKey), attachedFile || activeCSV?.file || null, agent);
+      else setHeroAlert(t(getLang(), 'chat.attachCsvAbove'));
+      return;
+    }
+    void handleSendMessageFromInput(t(getLang(), labelKey), null, agent);
   };
 
   const handleSendMessageFromInput = async (
@@ -473,8 +490,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       {isInitialState ? (
         /* ── HERO CENTERED LAYOUT (New Chat) ── */
-        <div className="flex-1 flex flex-col items-center justify-center w-full max-w-3xl mx-auto px-4 transition-all duration-300 ease-in-out">
-          <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight text-foreground text-center leading-tight mb-8 animate-fade-in">
+        <div className="relative isolate flex-1 flex flex-col items-center justify-center w-full max-w-3xl mx-auto px-4 transition-all duration-300 ease-in-out">
+          {/* Ambient bloom: a soft light behind the prompt, fading to nothing at the edges (transparent in the light theme) */}
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 -z-10 pointer-events-none"
+            style={{ background: 'radial-gradient(ellipse 65% 50% at 50% 48%, var(--color-bloom, transparent) 0%, transparent 72%)' }}
+          />
+          <h1 className="text-3xl sm:text-4xl font-normal tracking-tight text-foreground text-center leading-tight mb-8 animate-fade-in">
             {t(lang, 'chat.heroTitle')}
           </h1>
 
@@ -506,84 +529,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             />
           </div>
 
-          {/* Quick Starter Prompts (1-Click Actions) */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full mt-6 animate-fade-in">
-            <button
-              type="button"
-              onClick={() => {
-                onSelectAgentMode('Data Agent');
-                if (attachedFile || activeCSV) {
-                  handleSendMessageFromInput(t(getLang(), 'chat.starterDataTitle'), attachedFile || activeCSV?.file || null, 'Data Agent');
-                } else {
-                  setHeroAlert(t(getLang(), 'chat.attachCsvAbove'));
-                }
-              }}
-              className="group p-3.5 bg-surface hover:bg-surface-raised border border-border hover:border-accent-primary/50 rounded-xl text-left transition-all duration-200 hover:shadow-enterprise cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 flex flex-col justify-between space-y-2"
-            >
-              <div className="flex items-center justify-between">
-                <div className="p-2 bg-accent-primary/10 group-hover:bg-accent-primary/20 text-accent-primary rounded-lg transition-colors">
-                  <BarChart3 className="w-4 h-4" />
-                </div>
-                <span className="text-xs font-mono text-foreground-muted uppercase font-semibold">Data Agent</span>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-foreground group-hover:text-accent-primary transition-colors">
-                  {t(lang, 'chat.starterDataTitle')}
-                </p>
-                <p className="text-xs text-foreground-muted mt-1 leading-snug">
-                  {t(lang, 'chat.starterDataDesc')}
-                </p>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                onSelectAgentMode('RAG Agent');
-                handleSendMessageFromInput(t(getLang(), 'chat.starterRagTitle'), null, 'RAG Agent');
-              }}
-              className="group p-3.5 bg-surface hover:bg-surface-raised border border-border hover:border-accent-primary/50 rounded-xl text-left transition-all duration-200 hover:shadow-enterprise cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 flex flex-col justify-between space-y-2"
-            >
-              <div className="flex items-center justify-between">
-                <div className="p-2 bg-accent-planner/10 group-hover:bg-accent-planner/20 text-accent-planner rounded-lg transition-colors">
-                  <FileText className="w-4 h-4" />
-                </div>
-                <span className="text-xs font-mono text-foreground-muted uppercase font-semibold">RAG Agent</span>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-foreground group-hover:text-accent-primary transition-colors">
-                  {t(lang, 'chat.starterRagTitle')}
-                </p>
-                <p className="text-xs text-foreground-muted mt-1 leading-snug">
-                  {t(lang, 'chat.starterRagDesc')}
-                </p>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                onSelectAgentMode('Search Agent');
-                handleSendMessageFromInput(t(getLang(), 'chat.starterSearchTitle'), null, 'Search Agent');
-              }}
-              className="group p-3.5 bg-surface hover:bg-surface-raised border border-border hover:border-accent-primary/50 rounded-xl text-left transition-all duration-200 hover:shadow-enterprise cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 flex flex-col justify-between space-y-2"
-            >
-              <div className="flex items-center justify-between">
-                <div className="p-2 bg-accent-executor/10 group-hover:bg-accent-executor/20 text-accent-executor rounded-lg transition-colors">
-                  <Globe className="w-4 h-4" />
-                </div>
-                <span className="text-xs font-mono text-foreground-muted uppercase font-semibold">Search Agent</span>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-foreground group-hover:text-accent-primary transition-colors">
-                  {t(lang, 'chat.starterSearchTitle')}
-                </p>
-                <p className="text-xs text-foreground-muted mt-1 leading-snug">
-                  {t(lang, 'chat.starterSearchDesc')}
-                </p>
-              </div>
-            </button>
-          </div>
+          {/* Starter prompts: one quiet row each, no boxes */}
+          <ul className="w-full max-w-xl mt-8 space-y-1 animate-fade-in">
+            {STARTERS.map(({ id, Icon, tone, labelKey, tag }) => (
+              <li key={id}>
+                <button
+                  type="button"
+                  onClick={() => runStarter(id, labelKey)}
+                  className="group w-full flex items-center gap-3.5 px-4 py-2.5 rounded-full border border-transparent hover:bg-surface-raised hover:border-border transition-colors duration-150 text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                >
+                  <span className={`p-1.5 rounded-full bg-surface-raised text-foreground-muted transition-colors ${tone}`}>
+                    <Icon className="w-4 h-4" aria-hidden="true" />
+                  </span>
+                  <span className="flex-1 truncate text-sm text-foreground-secondary group-hover:text-foreground transition-colors">{t(lang, labelKey)}</span>
+                  <span className="text-xs font-mono text-foreground-muted px-2 py-0.5 rounded-full bg-surface-raised border border-border">{tag}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       ) : (
         /* ── ACTIVE CHAT WINDOW ── */

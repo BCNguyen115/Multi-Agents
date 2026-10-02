@@ -53,6 +53,7 @@ class Principal:
     department_id: str
     roles: frozenset[str] = frozenset()
     authenticated: bool = False
+    display_name: str = ""  # shown in the UI; the ``name`` claim of a built-in sign-in token, empty otherwise
 
     def session(self, client_session_id: str) -> str:
         """The session key used everywhere behind the gateway: bound to the user when authenticated."""
@@ -148,6 +149,7 @@ def _principal_from_claims(claims: dict[str, Any]) -> Principal:
         department_id=str(claims.get(settings.AUTH_DEPARTMENT_CLAIM) or settings.RLS_DEPARTMENT_ID),
         roles=frozenset(str(r) for r in ([roles] if isinstance(roles, str) else roles)),
         authenticated=True,
+        display_name=str(claims.get("name") or "")[:64],
     )
 
 
@@ -180,7 +182,45 @@ def verify_password(password: str, stored: str) -> bool:
 
 def login_enabled() -> bool:
     """The built-in login works with a shared HS256 secret and a user list (not with an external identity provider)."""
-    return settings.AUTH_MODE == "jwt" and not settings.AUTH_JWKS_URL and bool(settings.AUTH_USERS)
+    return settings.AUTH_MODE == "jwt" and not settings.AUTH_JWKS_URL and (bool(settings.AUTH_USERS) or settings.AUTH_ALLOW_REGISTRATION)
+
+
+def registration_enabled() -> bool:
+    """Self-service sign-up needs the built-in sign-in and the explicit ``AUTH_ALLOW_REGISTRATION`` switch."""
+    return settings.AUTH_MODE == "jwt" and not settings.AUTH_JWKS_URL and settings.AUTH_ALLOW_REGISTRATION
+
+
+def verify_user_row(password: str, user: Optional[dict[str, Any]]) -> bool:
+    """Password check against a stored account, or against a dummy hash when there is none (a miss costs as much as a wrong password)."""
+    global _DUMMY_HASH
+    if not _DUMMY_HASH:
+        _DUMMY_HASH = hash_password("not-a-real-password")
+    ok = verify_password(password, str(user.get("password_hash", "")) if user else _DUMMY_HASH)
+    return bool(user) and ok
+
+
+def new_recovery_key() -> str:
+    """24 hex characters in groups of four (96 bits): shown to the user once, only its scrypt hash is stored."""
+    raw = secrets.token_hex(12)
+    return "-".join(raw[i:i + 4] for i in range(0, len(raw), 4))
+
+
+def _normalize_recovery_key(key: str) -> str:
+    return "".join(c for c in key.lower() if c in "0123456789abcdef")  # case, dashes and spaces do not matter when it is typed back
+
+
+def hash_recovery_key(key: str) -> str:
+    return hash_password(_normalize_recovery_key(key))
+
+
+def verify_recovery_key(key: str, user: Optional[dict[str, Any]]) -> bool:
+    """Does ``key`` match the account's recovery key? A miss (no account, no key set, wrong key) costs the same scrypt."""
+    global _DUMMY_HASH
+    if not _DUMMY_HASH:
+        _DUMMY_HASH = hash_password("not-a-real-password")
+    stored = str((user or {}).get("recovery_hash") or "")
+    ok = verify_password(_normalize_recovery_key(key), stored or _DUMMY_HASH)
+    return bool(stored) and ok
 
 
 def authenticate_user(username: str, password: str) -> Optional[dict[str, Any]]:
@@ -205,6 +245,8 @@ def issue_login_token(user: dict[str, Any]) -> tuple[str, int]:
         settings.AUTH_DEPARTMENT_CLAIM: str(user.get("department_id") or settings.RLS_DEPARTMENT_ID),
         settings.AUTH_ROLES_CLAIM: list(user.get("roles") or []),
     }
+    if user.get("display_name"):
+        claims["name"] = str(user["display_name"])[:64]
     if settings.AUTH_JWT_AUDIENCE:
         claims["aud"] = settings.AUTH_JWT_AUDIENCE
     if settings.AUTH_JWT_ISSUER:

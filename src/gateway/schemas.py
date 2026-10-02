@@ -131,13 +131,39 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=256)
 
 
+class RegisterRequest(BaseModel):
+    """Payload schema for ``POST /api/auth/register`` (only when ``AUTH_ALLOW_REGISTRATION`` is on). Roles are never accepted."""
+
+    username: str = Field(..., min_length=3, max_length=32, pattern=r"^[A-Za-z0-9._-]+$")
+    password: str = Field(..., min_length=10, max_length=256)
+    display_name: str = Field("", max_length=64)
+
+
+class ChangePasswordRequest(BaseModel):
+    """Payload schema for ``POST /api/auth/change-password`` (the signed-in user, with the current password as proof)."""
+
+    current_password: str = Field(..., min_length=1, max_length=256)
+    new_password: str = Field(..., min_length=10, max_length=256)
+
+
+class ResetPasswordRequest(BaseModel):
+    """Payload schema for ``POST /api/auth/reset-password``: the recovery key shown at sign-up is the proof."""
+
+    username: str = Field(..., min_length=3, max_length=32, pattern=r"^[A-Za-z0-9._-]+$")
+    recovery_key: str = Field(..., min_length=8, max_length=64)
+    new_password: str = Field(..., min_length=10, max_length=256)
+
+
 class LoginResponse(BaseModel):
-    """Response schema for ``POST /api/auth/login``: a bearer token and who it belongs to."""
+    """Response schema for ``POST /api/auth/login``: a bearer token and who it belongs to.
+
+    ``recovery_key`` is set only by sign-up and by a password reset: it is shown once and never stored in clear."""
 
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     expires_in: int
     user: dict[str, Any]
+    recovery_key: Optional[str] = None
 
 
 class KnowledgeUploadResponse(BaseModel):

@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { PanelLeft, PenSquare, Search, Pin, MoreVertical, Trash2, Edit3, MessageSquare, Inbox } from 'lucide-react';
 import { FptLogo } from './ui/FptLogo';
+import { UserProfileWidget } from './user/UserProfileWidget';
 import { isDefaultChatTitle, t, useLang, type Lang, type MessageKey } from '../lib/i18n';
 
 /** A chat that still has the default title shows it in the interface language. */
@@ -284,6 +285,11 @@ export function Sidebar({
             </div>
           )
         )}
+      </div>
+
+      {/* 4. USER PROFILE: avatar, status and the settings menu */}
+      <div className="shrink-0 border-t border-border p-2">
+        <UserProfileWidget isCollapsed={!isOpen} />
       </div>
     </aside>
   );

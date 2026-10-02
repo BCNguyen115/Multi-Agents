@@ -246,3 +246,16 @@ Three nodes in fixed order: Planner (amber), Executor (indigo), Verifier (emeral
 - **Don't** introduce raw Tailwind palette colors where a token exists; the interface currently has none (checked 2026-10-02).
 - **Don't** aggregate or compute chart numbers in the browser; draw what the server sent.
 - **Don't** write Vietnamese or English text inside components.
+
+## Variants
+
+### Google Gemini Workspace (Studied DNA)
+- **Source:** Image study (dark & light modes captured 2026-10-02)
+- **Portable Spec:** [design.gemini.md](file:///c:/CaoNguyen_Folder/Python%20Project/Agent/multi_agent_mvp/design.gemini.md)
+- **Genre:** Atmospheric
+- **Macrostructure:** Marquee Hero (conversational zero-state application shell)
+- **Navigation:** N3 Side-rail (collapsible icon dock ↔ drawer)
+- **Footer:** Ft2 Inline single-line (profile/settings cluster)
+- **Geometry:** Pill-first architecture (`border-radius: 9999px` on inputs, active indicators, segmented tabs)
+- **Palette:** Dark slate-indigo base (`oklch(13% 0.015 260)`) with subtle radial illumination bloom; clean white parity in light mode (`oklch(99% 0 0)`).
+

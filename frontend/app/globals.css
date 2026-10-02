@@ -56,6 +56,9 @@
   --brand-primary:        #005697;
   --brand-accent:         #f37021;
 
+  /* ── Ambient bloom behind the empty-chat prompt: none in the light theme ── */
+  --color-bloom:          transparent;
+
   /* ── Ring / Focus ── */
   --ring:                 rgba(37, 99, 235, 0.4);
 
@@ -132,6 +135,9 @@
   /* ── Brand (FPT) ── */
   --brand-primary:        #005697;
   --brand-accent:         #f37021;
+
+  /* ── Ambient bloom: a soft indigo light cone behind the prompt ── */
+  --color-bloom:          oklch(22% 0.060 255);
 
   /* ── Ring / Focus ── */
   --ring:                 rgba(59, 130, 246, 0.5);
@@ -387,7 +393,7 @@ body {
   bottom: 12px;
   width: 3px;
   border-radius: 2px;
-  background: var(--accent-primary);
+  background: var(--kpi-accent, var(--accent-primary)); /* a token, set per card by a class: never a hex */
 }
 
 /* Tabular Nums for KPI values */

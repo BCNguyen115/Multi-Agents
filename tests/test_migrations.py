@@ -15,7 +15,7 @@ HEAD = head_revision()  # every revision is applied by upgrade_to_head, whatever
 
 
 def test_the_history_has_one_head_and_the_baseline_cannot_be_downgraded():
-    assert head_revision() == "0003"
+    assert head_revision() == "0005"
     spec = importlib.util.spec_from_file_location("baseline", ROOT / "migrations" / "versions" / "0001_baseline_rag_chunks.py")
     baseline = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(baseline)

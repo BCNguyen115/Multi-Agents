@@ -67,7 +67,10 @@ from src.gateway.schemas import (  # noqa: F401  (re-exported: tests and callers
     FilterRequest,
     KnowledgeUploadResponse,
     LoginRequest,
+    ChangePasswordRequest,
     LoginResponse,
+    RegisterRequest,
+    ResetPasswordRequest,
     SourceItem,
     TitleRequest,
     TitleResponse,
@@ -76,7 +79,21 @@ from src.ingestion.embedder import IngestionEmbedder
 from src.ingestion.upload import UploadError, ingest_upload
 from src.orchestrator.core import Orchestrator
 from src.registry.manager import AgentRegistry
-from src.shared.auth import Principal, authenticate, authenticate_user, issue_login_token, login_enabled, validate_auth_config
+from src.shared.auth import (
+    Principal,
+    authenticate,
+    authenticate_user,
+    hash_password,
+    hash_recovery_key,
+    issue_login_token,
+    login_enabled,
+    new_recovery_key,
+    registration_enabled,
+    validate_auth_config,
+    verify_recovery_key,
+    verify_user_row,
+)
+from src.shared.user_store import create_user, get_user, set_password
 from src.shared.db_roles import ensure_readonly_role, readonly_dsn
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
@@ -890,7 +907,102 @@ def _who(principal: Principal) -> dict[str, Any]:
         "roles": sorted(principal.roles),
         "can_approve": principal.can_approve,
         "can_manage_knowledge": principal.can_manage_knowledge,
+        "name": principal.display_name,
     }
+
+
+def _session_response(user: dict[str, Any], recovery_key: Optional[str] = None) -> LoginResponse:
+    """The token and the caller's identity for an account that has just proved who it is (sign-in, sign-up or reset)."""
+    token, expires_in = issue_login_token(user)
+    principal = Principal(
+        str(user["username"]),
+        str(user.get("tenant_id") or settings.RLS_TENANT_ID),
+        str(user.get("department_id") or settings.RLS_DEPARTMENT_ID),
+        frozenset(str(r) for r in (user.get("roles") or [])),
+        authenticated=True,
+        display_name=str(user.get("display_name") or ""),
+    )
+    return LoginResponse(access_token=token, expires_in=expires_in, user=_who(principal), recovery_key=recovery_key)
+
+
+async def _registered_user(username: str, password: str) -> Optional[dict[str, Any]]:
+    """A self-registered account with these credentials (always one scrypt, found or not), or ``None``."""
+    try:
+        row = await get_user(pg_client, username)
+    except Exception as exc:  # noqa: BLE001 - a database hiccup must read as "wrong credentials", not as a 500
+        logger.warning("Could not look up registered users: %s", exc)
+        row = None
+    return row if await asyncio.to_thread(verify_user_row, password, row) else None
+
+
+@app.get("/api/auth/config", summary="What the sign-in screen may offer (no secrets, no token needed)")
+async def auth_config() -> dict[str, bool]:
+    return {"login_enabled": login_enabled(), "registration_enabled": registration_enabled()}
+
+
+@app.post("/api/auth/register", response_model=LoginResponse, summary="Create an account and sign in (only with AUTH_ALLOW_REGISTRATION)")
+async def register(body: RegisterRequest, request: Request) -> LoginResponse:
+    """New accounts get no roles and the default tenant/department: they can chat but not approve or manage the knowledge base."""
+    if not registration_enabled():
+        raise HTTPException(status_code=404, detail=msg("register.disabled"))
+    guest = Principal("anonymous", settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
+    await enforce_rate_limit(redis_client, guest, request, "register", settings.RATE_LIMIT_REGISTER_PER_MINUTE)
+    username = body.username.lower()
+    if any(str(u.get("username", "")).lower() == username for u in settings.AUTH_USERS):
+        raise HTTPException(status_code=409, detail=msg("register.taken"))
+    password_hash = await asyncio.to_thread(hash_password, body.password)  # scrypt: off the event loop
+    display_name = body.display_name.strip()
+    recovery_key = new_recovery_key()  # shown once in this response; only its hash is stored
+    recovery_hash = await asyncio.to_thread(hash_recovery_key, recovery_key)
+    created = await create_user(pg_client, username, display_name, password_hash, recovery_hash, settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
+    if not created:
+        raise HTTPException(status_code=409, detail=msg("register.taken"))
+    logger.info("Sign-up: user=%s", username)
+    user = {"username": username, "display_name": display_name, "roles": [], "tenant_id": settings.RLS_TENANT_ID, "department_id": settings.RLS_DEPARTMENT_ID}
+    return _session_response(user, recovery_key=recovery_key)
+
+
+@app.post("/api/auth/reset-password", response_model=LoginResponse, summary="Forgot password: set a new one with the recovery key from sign-up")
+async def reset_password(body: ResetPasswordRequest, request: Request) -> LoginResponse:
+    """The recovery key is single use: a reset spends it and returns a new one (shown once). The caller is signed in afterwards."""
+    if not registration_enabled():  # only self-registered accounts have a recovery key
+        raise HTTPException(status_code=404, detail=msg("register.disabled"))
+    guest = Principal("anonymous", settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
+    await enforce_rate_limit(redis_client, guest, request, "reset", settings.RATE_LIMIT_PASSWORD_PER_MINUTE)
+    try:
+        user = await get_user(pg_client, body.username)
+    except Exception as exc:  # noqa: BLE001 - a database hiccup reads as "wrong key", never as a 500 that tells more
+        logger.warning("Could not look up the account for a reset: %s", exc)
+        user = None
+    if not await asyncio.to_thread(verify_recovery_key, body.recovery_key, user) or user is None:
+        logger.warning("Failed password reset for %r from %s", body.username[:64], request.client.host if request.client else "unknown")
+        raise HTTPException(status_code=400, detail=msg("reset.bad"))
+    new_key = new_recovery_key()
+    password_hash = await asyncio.to_thread(hash_password, body.new_password)
+    recovery_hash = await asyncio.to_thread(hash_recovery_key, new_key)
+    await set_password(pg_client, user["username"], password_hash, recovery_hash)
+    logger.info("Password reset: user=%s", user["username"])
+    return _session_response(user, recovery_key=new_key)
+
+
+@app.post("/api/auth/change-password", summary="Change the signed-in user's password (self-registered accounts)")
+async def change_password(body: ChangePasswordRequest, request: Request, principal: Principal = Depends(authenticate)) -> dict[str, bool]:
+    """Needs the current password. Accounts in ``AUTH_USERS`` live in the environment and are changed by an administrator.
+    A token issued before the change stays valid until it expires (tokens are stateless)."""
+    if not principal.authenticated or not registration_enabled():
+        raise HTTPException(status_code=400, detail=msg("password.managed"))
+    await enforce_rate_limit(redis_client, principal, request, "password", settings.RATE_LIMIT_PASSWORD_PER_MINUTE)
+    user = await get_user(pg_client, principal.user_id)
+    if user is None:  # an AUTH_USERS account
+        raise HTTPException(status_code=400, detail=msg("password.managed"))
+    if not await asyncio.to_thread(verify_user_row, body.current_password, user):
+        logger.warning("Wrong current password on a change attempt: user=%s", principal.user_id)
+        raise HTTPException(status_code=400, detail=msg("password.wrong"))
+    if body.new_password == body.current_password:
+        raise HTTPException(status_code=400, detail=msg("password.same"))
+    await set_password(pg_client, user["username"], await asyncio.to_thread(hash_password, body.new_password))
+    logger.info("Password changed: user=%s", user["username"])
+    return {"ok": True}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse, summary="Sign in with a username and password (jwt mode, AUTH_USERS)")
@@ -902,15 +1014,13 @@ async def login(body: LoginRequest, request: Request) -> LoginResponse:
     guest = Principal("anonymous", settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
     await enforce_rate_limit(redis_client, guest, request, "login", settings.RATE_LIMIT_LOGIN_PER_MINUTE)
     user = await asyncio.to_thread(authenticate_user, body.username, body.password)  # scrypt is CPU-bound: keep it off the event loop
+    if user is None and settings.AUTH_ALLOW_REGISTRATION:
+        user = await _registered_user(body.username, body.password)
     if user is None:
         logger.warning("Failed sign-in for %r from %s", body.username[:64], request.client.host if request.client else "unknown")
         raise HTTPException(status_code=401, detail=msg("login.bad"))
-    token, expires_in = issue_login_token(user)
     logger.info("Sign-in: user=%s tenant=%s", user["username"], user.get("tenant_id") or settings.RLS_TENANT_ID)
-    roles = frozenset(str(r) for r in (user.get("roles") or []))
-    principal = Principal(str(user["username"]), str(user.get("tenant_id") or settings.RLS_TENANT_ID),
-                          str(user.get("department_id") or settings.RLS_DEPARTMENT_ID), roles, authenticated=True)
-    return LoginResponse(access_token=token, expires_in=expires_in, user=_who(principal))
+    return _session_response(user)
 
 
 @app.get("/api/auth/me", summary="Who am I? (the UI uses it to decide between the chat and the login screen)")

@@ -529,7 +529,7 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
         {tableOpen && (
           <div className="p-3">
             {spec.table.truncated && <p className="text-xs text-foreground-muted mb-2">{t('tableNote', { n: spec.table.rows.length.toLocaleString('en-US') })}</p>}
-            <div className={`ag-theme-alpine ${isDark ? 'ag-theme-quartz-dark ag-theme-alpine-dark' : 'ag-theme-quartz'} w-full h-[320px] rounded-xl border border-border overflow-hidden`}>
+            <div className={`${isDark ? 'ag-theme-quartz-dark' : 'ag-theme-quartz'} w-full h-[320px] rounded-xl border border-border overflow-hidden`}>
               <AgGridReact
                 ref={gridRef}
                 rowData={rows}

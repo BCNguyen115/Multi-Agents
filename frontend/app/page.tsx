@@ -7,8 +7,7 @@ import { ChatInterface } from '../components/ChatInterface';
 import { SearchView } from '../components/SearchView';
 import { CommandPalette } from '../components/CommandPalette';
 import { ToastContainer } from '../components/ui/Toast';
-import { fetchMe, logout, redirectToLogin, type Me } from '../lib/authClient';
-import { clearLocalConversations } from '../lib/conversationSync';
+import { useAuth } from '../context/AuthContext';
 import { useConversationSync } from '../lib/useConversationSync';
 import { ChatMessage } from '../lib/types';
 import { safeSaveChatMessagesMap, STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY } from '../lib/storage';
@@ -25,15 +24,8 @@ export default function HomePage() {
   const [viewMode, setViewMode] = useState<'chat' | 'search'>('chat');
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
-  const [me, setMe] = useState<Me | null>(null);
+  const { me, setTheme } = useAuth(); // who is signed in, and the theme (AuthProvider, app/layout.tsx)
   const [lang] = useLang();
-
-  // Who is signed in? Without a valid session (backend running with AUTH_MODE=jwt) go to the login screen.
-  useEffect(() => {
-    fetchMe()
-      .then((current) => (current ? setMe(current) : redirectToLogin()))
-      .catch((error) => console.warn('Could not check the session', error));
-  }, []);
 
   // Initialize sessions & messages from localStorage
   useEffect(() => {
@@ -95,11 +87,6 @@ export default function HomePage() {
     }
   }, [sessions, activeSessionId]);
 
-  const handleLogout = async () => {
-    clearLocalConversations([STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY]); // the next person on this browser must not see these chats
-    await logout();
-  };
-
   // Save sessions & messagesMap to localStorage whenever they update
   useEffect(() => {
     if (sessions.length > 0) {
@@ -133,6 +120,8 @@ export default function HomePage() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+    // handleToggleTheme reads the current theme from <html> and setTheme is stable: subscribing once is enough
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const activeMessages = messagesMap[activeSessionId] || [];
@@ -143,20 +132,8 @@ export default function HomePage() {
 
   const handleToggleTheme = () => {
     const isDark = document.documentElement.classList.contains('dark') || document.documentElement.getAttribute('data-theme') === 'dark';
-    const nextDark = !isDark;
-    if (nextDark) {
-      document.documentElement.classList.add('dark');
-      document.documentElement.classList.remove('light');
-      document.documentElement.setAttribute('data-theme', 'dark');
-      localStorage.setItem('theme', 'dark');
-      toast.info(t(getLang(), 'nav.themeDarkOn'));
-    } else {
-      document.documentElement.classList.remove('dark');
-      document.documentElement.classList.add('light');
-      document.documentElement.setAttribute('data-theme', 'light');
-      localStorage.setItem('theme', 'light');
-      toast.info(t(getLang(), 'nav.themeLightOn'));
-    }
+    setTheme(isDark ? 'light' : 'dark');
+    toast.info(t(getLang(), isDark ? 'nav.themeLightOn' : 'nav.themeDarkOn'));
   };
 
   const handleSelectSession = (id: string) => {
@@ -379,8 +356,6 @@ export default function HomePage() {
         <Header
           currentAgent={currentAgentMode}
           onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-          userName={me?.authenticated ? me.user : null}
-          onLogout={handleLogout}
         />
 
         <ChatInterface

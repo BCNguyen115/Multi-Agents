@@ -178,32 +178,35 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
         </div>
 
         <div className="lg:col-span-3 space-y-6">
-          {/* KPI Cards */}
+          {/* KPI Cards: 112px, a 3px token-colored bar on the left (.kpi-card), figures in tabular mono */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="enterprise-card kpi-card p-4 hover:shadow-enterprise transition-shadow" style={{ '--accent-primary': '#3b82f6' } as React.CSSProperties}>
-              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">{t(lang, 'ent.totalRecords')}</p>
-              <p className="text-2xl font-extrabold text-foreground mt-1 tabular-nums">{totalRowsCount.toLocaleString()}</p>
+            <div className="enterprise-card kpi-card h-[112px] min-h-[112px] pr-4 py-3.5 flex flex-col justify-between overflow-hidden">
+              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider truncate">{t(lang, 'ent.totalRecords')}</p>
+              <p className="text-2xl font-bold font-mono tabular-nums text-foreground tracking-tight">{totalRowsCount.toLocaleString()}</p>
+              <span className="text-xs text-foreground-muted font-mono truncate">{t(lang, 'ent.hintRows')}</span>
             </div>
 
             {primaryNumericCol && (
-              <div className="enterprise-card kpi-card p-4 hover:shadow-enterprise transition-shadow">
-                <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">
+              <div className="enterprise-card kpi-card h-[112px] min-h-[112px] pr-4 py-3.5 flex flex-col justify-between overflow-hidden">
+                <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider truncate" title={t(lang, 'ent.totalOf', { column: primaryNumericCol.replace(/_/g, ' ') })}>
                   {t(lang, 'ent.totalOf', { column: primaryNumericCol.replace(/_/g, ' ') })}
                 </p>
-                <p className="text-2xl font-extrabold text-foreground mt-1 tabular-nums">
+                <p className="text-2xl font-bold font-mono tabular-nums text-foreground tracking-tight truncate">
                   {primarySum.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </p>
+                <span className="text-xs text-foreground-muted font-mono truncate">{t(lang, 'ent.hintSum')}</span>
               </div>
             )}
 
             {primaryNumericCol && (
-              <div className="enterprise-card kpi-card p-4 hover:shadow-enterprise transition-shadow" style={{ '--accent-primary': '#10b981' } as React.CSSProperties}>
-                <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">
+              <div className="enterprise-card kpi-card h-[112px] min-h-[112px] pr-4 py-3.5 flex flex-col justify-between overflow-hidden">
+                <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider truncate" title={t(lang, 'ent.avgOf', { column: primaryNumericCol.replace(/_/g, ' ') })}>
                   {t(lang, 'ent.avgOf', { column: primaryNumericCol.replace(/_/g, ' ') })}
                 </p>
-                <p className="text-2xl font-extrabold text-foreground mt-1 tabular-nums">
+                <p className="text-2xl font-bold font-mono tabular-nums text-foreground tracking-tight truncate">
                   {primaryAvg.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </p>
+                <span className="text-xs text-foreground-muted font-mono truncate">{t(lang, 'ent.hintAvg')}</span>
               </div>
             )}
           </div>
@@ -243,10 +246,12 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
             <TableIcon className="w-4 h-4 text-accent-primary" />
             <span>{t(lang, 'ent.dataTable')}</span>
           </div>
-          <span className="text-xs text-foreground-muted font-mono">ag-grid v31</span>
+          <span className="text-xs text-foreground-muted font-mono tabular-nums">
+            {filteredData.length.toLocaleString()} / {totalRowsCount.toLocaleString()}
+          </span>
         </div>
 
-        <div className={`ag-theme-alpine ${isDark ? 'ag-theme-quartz-dark ag-theme-alpine-dark' : 'ag-theme-quartz'} w-full h-80 rounded-lg overflow-hidden border border-border`}>
+        <div className={`${isDark ? 'ag-theme-quartz-dark' : 'ag-theme-quartz'} w-full h-80 rounded-lg overflow-hidden border border-border`}>
           <AgGridReact
             rowData={filteredData}
             columnDefs={columnDefs}
