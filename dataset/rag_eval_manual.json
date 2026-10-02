@@ -1,0 +1,20 @@
+[
+  {"question": "Thỏa thuận bảo mật LSI-ABC chấm dứt khi nào nếu hai bên ngừng thảo luận về giao dịch?", "file": "Confidentiality-and-Non-Disclo", "phrase": "two (2) years"},
+  {"question": "Bên nhận phải chứng nhận bằng văn bản là đã tuân thủ nghĩa vụ trong vòng bao nhiêu ngày sau yêu cầu của bên tiết lộ (thỏa thuận LSI-ABC)?", "file": "Confidentiality-and-Non-Disclo", "phrase": "within ten (10) days of a written request"},
+  {"question": "Trong mẫu CNDA1218, thông báo gửi bằng thư bảo đảm được coi là đã nhận sau mấy ngày?", "file": "CNDA1218Draft3", "phrase": "seven (7) days after such deposit"},
+  {"question": "Theo mẫu NDA của Hội luật sư thành phố New York, thời hạn nghĩa vụ bảo mật thường kéo dài bao lâu?", "file": "New_York_City_Bar", "phrase": "12 to 24 months"},
+  {"question": "Trong mẫu NDA phụ lục G, bên nhận phải trả lại hoặc huỷ thông tin sau bao lâu kể từ yêu cầu bằng văn bản?", "file": "appendix-g-nda-form", "phrase": "thirty (30) days of a written request"},
+  {"question": "Bên nhận phải giao lại hoặc huỷ tài liệu đánh giá chậm nhất bao nhiêu ngày sau khi Công ty yêu cầu?", "file": "1329919_", "phrase": "no later than 10 days after receipt of the request"},
+  {"question": "Hợp đồng dịch vụ ARLP tự động gia hạn như thế nào và cần báo trước bao lâu để chấm dứt?", "file": "arlp-20251010", "phrase": "thirty (30) days prior to the expiration"},
+  {"question": "Khách hàng có phải trả các khoản phí trên hóa đơn nộp trễ hơn bao nhiêu ngày so với ngày được quyền xuất hóa đơn (hợp đồng Ensemble)?", "file": "d132904dex101", "phrase": "more than 90 days"},
+  {"question": "Hạn thanh toán các khoản không tranh chấp sau khi nhận hóa đơn đúng là bao nhiêu ngày trong hợp đồng Richtech?", "file": "fs12023a2ex10-3_richtech", "phrase": "forty-five (45) days of receipt"},
+  {"question": "Khách hàng có thể chấm dứt chương trình Asset Based mà không mất phí nếu báo trước bao lâu?", "file": "exhibit1021-sx1", "phrase": "one hundred twenty (120) days"},
+  {"question": "Nhà thầu phải thông báo cho FEMA và trả lại thông tin PII trong bao lâu sau khi chấm dứt hợp đồng?", "file": "Attachment+1+-+Statement+of+Work-1", "phrase": "within fourteen (14) days"},
+  {"question": "Jazz Pharmaceuticals thanh toán các khoản không tranh chấp trong bao lâu kể từ khi nhận hóa đơn?", "file": "jazzq42022ex108", "phrase": "thirty (30) days of receipt"},
+  {"question": "Còn việc chứng nhận bằng văn bản là đã làm xong thì phải thực hiện trong bao lâu?", "file": "Confidentiality-and-Non-Disclo", "phrase": "within ten (10) days of a written request",
+   "history": [{"role": "user", "content": "Thỏa thuận bảo mật LSI-ABC quy định gì về việc trả lại hoặc huỷ thông tin bảo mật?"}, {"role": "assistant", "content": "Bên nhận phải trả lại hoặc huỷ thông tin theo yêu cầu của bên tiết lộ."}]},
+  {"question": "Và nghĩa vụ đó kéo dài bao lâu sau khi thỏa thuận kết thúc?", "file": "appendix-g-nda-form", "phrase": "seven (7) years thereafter",
+   "history": [{"role": "user", "content": "Trong mẫu NDA phụ lục G, nhà thầu có phải cho phép bên kia kiểm tra sổ sách không?"}, {"role": "assistant", "content": "Có, trong giờ làm việc và khi được báo trước hợp lý."}]},
+  {"question": "Muốn dừng thì phải báo trước bao lâu?", "file": "arlp-20251010", "phrase": "thirty (30) days prior to the expiration",
+   "history": [{"role": "user", "content": "Hợp đồng dịch vụ ARLP có tự động gia hạn không?"}, {"role": "assistant", "content": "Có, gia hạn theo từng kỳ một năm."}]}
+]

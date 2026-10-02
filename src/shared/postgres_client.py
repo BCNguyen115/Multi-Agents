@@ -14,7 +14,8 @@ Usage:
 """
 
 import logging
-from typing import Any, List, Optional
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, List, Optional
 
 try:
     import asyncpg
@@ -31,6 +32,7 @@ logger: logging.Logger = get_logger(__name__)
 # Default connection / query timeout in seconds.
 _CONNECT_TIMEOUT: float = 10.0
 _QUERY_TIMEOUT: float = 15.0
+SETUP_LOCK_ID: int = 7_234_002  # advisory lock for one-time database setup (extension, base schema): see also migrations/env.py
 
 
 class PostgresClient:
@@ -41,7 +43,7 @@ class PostgresClient:
         pool: The underlying asyncpg connection pool (``None`` before connect).
     """
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, ensure_pgvector: bool = True) -> None:
         """Initialise the client with a connection string.
 
         Args:
@@ -49,6 +51,7 @@ class PostgresClient:
                  ``"postgresql://user:pass@localhost:5432/db"``.
         """
         self.dsn: str = dsn
+        self.ensure_pgvector: bool = ensure_pgvector  # False for read-only roles: they may not run CREATE EXTENSION
         self.pool: Optional[Pool] = None
 
     # ------------------------------------------------------------------
@@ -83,7 +86,8 @@ class PostgresClient:
                 max_inactive_connection_lifetime=max_inactive_connection_lifetime,
                 timeout=_CONNECT_TIMEOUT,
             )
-            await self._ensure_pgvector_extension()
+            if self.ensure_pgvector:
+                await self._ensure_pgvector_extension()
             logger.info(
                 "PostgreSQL connection pool created (min=%d, max=%d, lifetime=%.1fs)",
                 min_size,
@@ -144,10 +148,15 @@ class PostgresClient:
 
         try:
             async with self.pool.acquire() as conn:
-                await conn.execute(
-                    "CREATE EXTENSION IF NOT EXISTS vector;",
-                    timeout=_QUERY_TIMEOUT,
-                )
+                # replicas starting together on an empty database would race on CREATE EXTENSION (duplicate key): take turns
+                await conn.execute("SELECT pg_advisory_lock($1)", SETUP_LOCK_ID)
+                try:
+                    await conn.execute(
+                        "CREATE EXTENSION IF NOT EXISTS vector;",
+                        timeout=_QUERY_TIMEOUT,
+                    )
+                finally:
+                    await conn.execute("SELECT pg_advisory_unlock($1)", SETUP_LOCK_ID)
             logger.info(
                 "pgvector extension verified / activated",
                 extra={"session_id": "SYSTEM"},
@@ -212,6 +221,43 @@ class PostgresClient:
                 extra={"session_id": session_id},
             )
             raise
+
+    async def fetch_scoped(
+        self,
+        query: str,
+        *args: Any,
+        tenant_id: str,
+        department_id: str,
+        session_id: str = "N/A",
+        timeout: float = _QUERY_TIMEOUT,
+    ) -> List[Record]:
+        """``fetch`` inside a transaction that carries the caller's tenant and department for PostgreSQL's own Row-Level Security.
+
+        The values are transaction-local settings (``app.tenant_id`` / ``app.department_id``, see ``db_roles``) that the
+        ``tenant_scope`` policies compare with each row: the database, not only the rewritten SQL, decides which rows are visible.
+        """
+        if self.pool is None:
+            raise RuntimeError("Connection pool is not initialised.")
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("SELECT set_config('app.tenant_id', $1, true), set_config('app.department_id', $2, true)", tenant_id, department_id)
+                    return await conn.fetch(query, *args, timeout=timeout)
+        except asyncpg.PostgresError as exc:
+            logger.error("Scoped query failed: %s | query=%s", exc, query[:120], extra={"session_id": session_id})
+            raise
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Any]:
+        """Yield a pooled connection inside a transaction (commit on success, roll back on any error).
+
+        Used where several statements must succeed or fail together, e.g. replacing all chunks of one document.
+        """
+        if self.pool is None:
+            raise RuntimeError("Connection pool is not initialised.")
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                yield conn
 
     async def execute(
         self,

@@ -13,54 +13,63 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Toolbar button shared by the dashboard header and the data-table header */
+@layer components {
+  .btn-dash {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface-raised hover:bg-surface-overlay text-foreground border border-border rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40;
+  }
+}
+
 /* ── Google Font: Inter (variable weight) ────────────────────────────── */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 
 /* ============================================================================
-   1. CSS CUSTOM PROPERTIES — DARK MODE (Default / First-Class)
+   1. CSS CUSTOM PROPERTIES — LIGHT MODE (Base / Default Root)
    ============================================================================ */
 :root {
-  /* ── Surface Palette (Slate/Zinc — NO pure #000) ── */
-  --background:       #09090b;
-  --background-secondary: #18181b;
-  --surface:          #18181b;
-  --surface-raised:   #27272a;
-  --surface-overlay:  #3f3f46;
-  --foreground:       #fafafa;
-  --foreground-secondary: #a1a1aa;
-  --foreground-muted: #71717a;
+  /* ── Surface Palette (Slate 50/100/200 — WCAG AAA Contrast) ── */
+  --background:           #f8fafc;        /* Slate 50 */
+  --background-secondary: #f1f5f9;        /* Slate 100 */
+  --surface:              #ffffff;        /* Pure White */
+  --surface-raised:       #f1f5f9;        /* Slate 100 */
+  --surface-overlay:      #e2e8f0;        /* Slate 200 */
+  
+  --foreground:           #0f172a;        /* Slate 900 — Chữ chính đậm đà, tương phản tuyệt đối */
+  --foreground-secondary: #334155;        /* Slate 700 — Chữ phụ rõ ràng, không bị mờ nhạt */
+  --foreground-muted:     #3d4a5c;        /* ≥7:1 trên surface / raised / overlay — WCAG AAA */
 
   /* ── Border & Divider ── */
-  --border:           rgba(255, 255, 255, 0.08);
-  --border-strong:    rgba(255, 255, 255, 0.14);
-  --border-focus:     #3b82f6;
+  --border:               #e2e8f0;        /* Slate 200 */
+  --border-strong:        #cbd5e1;        /* Slate 300 */
+  --border-focus:         #3b82f6;
 
   /* ── Accent Colors — Agent State Semantic ── */
-  --accent-planner:   #f59e0b;       /* Amber/Orange — Planner */
-  --accent-executor:  #6366f1;       /* Indigo — Executor */
-  --accent-verifier:  #10b981;       /* Emerald — Verifier */
-  --accent-error:     #f43f5e;       /* Rose — Error/Alert */
-  --accent-primary:   #3b82f6;       /* Blue — Primary interactive */
-  --accent-primary-hover: #2563eb;
+  /* Light-mode accents are 800-level so white text ON them is ≥7:1 (WCAG AAA) */
+  --accent-planner:       #92400e;        /* Amber 800 */
+  --accent-executor:      #4338ca;        /* Indigo 700 */
+  --accent-verifier:      #065f46;        /* Emerald 800 */
+  --accent-error:         #9f1239;        /* Rose 800 */
+  --accent-primary:       #1e40af;        /* Blue 800 */
+  --accent-primary-hover: #1e3a8a;
 
   /* ── Brand (FPT) ── */
-  --brand-primary:    #005697;
-  --brand-accent:     #f37021;
+  --brand-primary:        #005697;
+  --brand-accent:         #f37021;
 
   /* ── Ring / Focus ── */
-  --ring:             #3b82f680;
+  --ring:                 rgba(37, 99, 235, 0.4);
 
   /* ── Shadow Tokens ── */
-  --shadow-sm:        0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md:        0 4px 12px rgba(0, 0, 0, 0.4);
-  --shadow-lg:        0 8px 24px rgba(0, 0, 0, 0.5);
-  --shadow-glow-blue: 0 0 20px rgba(59, 130, 246, 0.15);
-  --shadow-glow-amber:0 0 20px rgba(245, 158, 11, 0.15);
-  --shadow-glow-emerald: 0 0 20px rgba(16, 185, 129, 0.15);
+  --shadow-sm:            0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md:            0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg:            0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-glow-blue:     0 0 20px rgba(37, 99, 235, 0.1);
+  --shadow-glow-amber:    0 0 20px rgba(217, 119, 6, 0.1);
+  --shadow-glow-emerald:  0 0 20px rgba(5, 150, 105, 0.1);
 
   /* ── Typography ── */
-  --font-sans:        'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono:        'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  --font-sans:            'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:            'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
 
   /* ── Spacing (8pt grid) ── */
   --space-1:  4px;
@@ -88,35 +97,54 @@
   --transition-slow:    300ms ease-in-out;
 
   /* ── Color scheme ── */
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 /* ============================================================================
-   2. LIGHT MODE OVERRIDES (WCAG AA Contrast)
+   2. DARK MODE OVERRIDES (Linear/Raycast Zinc Theme)
    ============================================================================ */
-[data-theme="light"],
-.light {
-  --background:       #fafafa;
-  --background-secondary: #ffffff;
-  --surface:          #ffffff;
-  --surface-raised:   #f4f4f5;
-  --surface-overlay:  #e4e4e7;
-  --foreground:       #09090b;
-  --foreground-secondary: #52525b;
-  --foreground-muted: #a1a1aa;
+.dark,
+[data-theme="dark"] {
+  /* ── Surface Palette (Zinc 950/900/800 — NO pure #000) ── */
+  --background:           #09090b;        /* Zinc 950 */
+  --background-secondary: #18181b;        /* Zinc 900 */
+  --surface:              #18181b;        /* Zinc 900 */
+  --surface-raised:       #27272a;        /* Zinc 800 */
+  --surface-overlay:      #3f3f46;        /* Zinc 700 */
+  
+  --foreground:           #f4f4f5;        /* Zinc 100 */
+  --foreground-secondary: #a1a1aa;        /* Zinc 400 */
+  --foreground-muted:     #71717a;        /* Zinc 500 */
 
-  --border:           #e4e4e7;
-  --border-strong:    #d4d4d8;
-  --border-focus:     #3b82f6;
+  /* ── Border & Divider ── */
+  --border:               #27272a;        /* Zinc 800 */
+  --border-strong:        #3f3f46;        /* Zinc 700 */
+  --border-focus:         #3b82f6;
 
-  --shadow-sm:        0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md:        0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg:        0 8px 24px rgba(0, 0, 0, 0.12);
-  --shadow-glow-blue: 0 0 20px rgba(59, 130, 246, 0.1);
-  --shadow-glow-amber:0 0 20px rgba(245, 158, 11, 0.1);
-  --shadow-glow-emerald: 0 0 20px rgba(16, 185, 129, 0.1);
+  /* ── Accent Colors — Agent State Semantic ── */
+  --accent-planner:       #f59e0b;        /* Amber/Orange — Planner */
+  --accent-executor:      #6366f1;        /* Indigo — Executor */
+  --accent-verifier:      #10b981;        /* Emerald — Verifier */
+  --accent-error:         #f43f5e;        /* Rose — Error/Alert */
+  --accent-primary:       #3b82f6;        /* Blue — Primary interactive */
+  --accent-primary-hover: #2563eb;
 
-  color-scheme: light;
+  /* ── Brand (FPT) ── */
+  --brand-primary:        #005697;
+  --brand-accent:         #f37021;
+
+  /* ── Ring / Focus ── */
+  --ring:                 rgba(59, 130, 246, 0.5);
+
+  /* ── Shadow Tokens ── */
+  --shadow-sm:            0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md:            0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg:            0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-glow-blue:     0 0 20px rgba(59, 130, 246, 0.15);
+  --shadow-glow-amber:    0 0 20px rgba(245, 158, 11, 0.15);
+  --shadow-glow-emerald:  0 0 20px rgba(16, 185, 129, 0.15);
+
+  color-scheme: dark;
 }
 
 /* ============================================================================
@@ -277,6 +305,44 @@ body {
   animation: typing-dot 1.2s ease-in-out infinite;
 }
 
+/* Zero-CLS Smooth Grid Accordion Expansion */
+.accordion-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 250ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.accordion-content.expanded {
+  grid-template-rows: 1fr;
+}
+
+.accordion-inner {
+  overflow: hidden;
+}
+
+/* Glassmorphism ECharts Tooltip */
+.echarts-tooltip-glass {
+  background: rgba(24, 24, 27, 0.95) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+  color: #fafafa !important;
+  font-family: var(--font-sans) !important;
+  padding: 8px 12px !important;
+}
+
+/* Pulse subtle ring for active nodes */
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.02); }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
 /* ============================================================================
    7. COMPONENT UTILITY CLASSES
    ============================================================================ */
@@ -353,24 +419,22 @@ body {
 /* ============================================================================
    9. AG-GRID DARK MODE OVERRIDES
    ============================================================================ */
+/* One token-driven mapping for both themes: colors follow --surface/--foreground, so light mode keeps AAA contrast */
+.ag-theme-quartz,
+.ag-theme-alpine,
 .ag-theme-quartz-dark,
 .ag-theme-alpine-dark {
   --ag-background-color: var(--surface);
+  --ag-foreground-color: var(--foreground);
   --ag-header-background-color: var(--surface-raised);
+  --ag-header-foreground-color: var(--foreground);
+  --ag-secondary-foreground-color: var(--foreground-secondary);
   --ag-odd-row-background-color: var(--background-secondary);
-  --ag-row-hover-color: rgba(59, 130, 246, 0.06);
+  --ag-row-hover-color: var(--surface-overlay);
   --ag-border-color: var(--border);
   --ag-font-size: 13px;
   --ag-row-height: 40px;
   --ag-header-height: 44px;
-}
-
-.ag-theme-quartz,
-.ag-theme-alpine {
-  --ag-font-size: 13px;
-  --ag-row-height: 40px;
-  --ag-header-height: 44px;
-  --ag-row-hover-color: rgba(59, 130, 246, 0.04);
 }
 
 /* ============================================================================

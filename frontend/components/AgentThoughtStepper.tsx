@@ -12,6 +12,7 @@ import {
   AlertCircle,
   Brain,
 } from 'lucide-react';
+import { t, useLang } from '../lib/i18n';
 
 interface AgentThoughtStepperProps {
   pevEvents?: {
@@ -28,6 +29,7 @@ export const AgentThoughtStepper: React.FC<AgentThoughtStepperProps> = ({
   pevEvents,
   isStreaming,
 }) => {
+  const [lang] = useLang();
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (!pevEvents && !isStreaming) return null;
@@ -41,13 +43,13 @@ export const AgentThoughtStepper: React.FC<AgentThoughtStepperProps> = ({
   const hasExecuting = Boolean(executing);
   const hasVerifying = Boolean(verifying);
 
-  let currentStatusText = 'Initializing PEV Loop...';
+  let currentStatusText = t(lang, 'pev.status.init');
   if (isStreaming) {
-    if (!hasPlan) currentStatusText = 'Agent planning analysis...';
-    else if (!hasExecuting) currentStatusText = `Planner → Delegating to [${plan?.target_agent || 'Executor'}]...`;
-    else if (!hasVerifying) currentStatusText = 'Executor → Verifier validating response...';
+    if (!hasPlan) currentStatusText = t(lang, 'thought.status.planning');
+    else if (!hasExecuting) currentStatusText = t(lang, 'thought.status.delegating', { agent: plan?.target_agent || 'Executor' });
+    else if (!hasVerifying) currentStatusText = t(lang, 'thought.status.validating');
   } else {
-    currentStatusText = 'PEV Loop completed';
+    currentStatusText = t(lang, 'thought.status.done');
   }
 
   return (
@@ -65,17 +67,17 @@ export const AgentThoughtStepper: React.FC<AgentThoughtStepperProps> = ({
 
         <div className="flex items-center space-x-2">
           {isStreaming ? (
-            <span className="flex items-center space-x-1 bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2 py-0.5 rounded-full font-bold text-[10px] animate-pulse">
+            <span className="flex items-center space-x-1 bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2 py-0.5 rounded-full font-bold text-2xs animate-pulse">
               <Loader2 className="w-3 h-3 animate-spin" />
-              <span>Active</span>
+              <span>{t(lang, 'pev.badge.active')}</span>
             </span>
           ) : (
-            <span className="flex items-center space-x-1 bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 px-2 py-0.5 rounded-full font-bold text-[10px]">
+            <span className="flex items-center space-x-1 bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 px-2 py-0.5 rounded-full font-bold text-2xs">
               <CheckCircle2 className="w-3 h-3" />
-              <span>Verified</span>
+              <span>{t(lang, 'thought.verified')}</span>
             </span>
           )}
-          <button className="text-foreground-muted hover:text-foreground cursor-pointer transition-colors">
+          <button className="text-foreground-muted hover:text-foreground cursor-pointer transition-colors" aria-label={t(lang, 'thought.toggle')}>
             {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
         </div>
@@ -96,8 +98,8 @@ export const AgentThoughtStepper: React.FC<AgentThoughtStepperProps> = ({
           </div>
           <div>
             <div className="font-semibold text-foreground">1. Plan</div>
-            <div className="text-[10px] text-foreground-muted">
-              {plan?.target_agent ? `Target: ${plan.target_agent}` : 'Strategy'}
+            <div className="text-2xs font-mono text-foreground-muted">
+              {plan?.target_agent ? t(lang, 'pev.target', { agent: plan.target_agent }) : t(lang, 'thought.strategy')}
             </div>
           </div>
         </div>
@@ -117,7 +119,7 @@ export const AgentThoughtStepper: React.FC<AgentThoughtStepperProps> = ({
           </div>
           <div>
             <div className="font-semibold text-foreground">2. Execute</div>
-            <div className="text-[10px] text-foreground-muted">
+            <div className="text-2xs font-mono text-foreground-muted">
               {executing?.target_agent || 'Process'}
             </div>
           </div>
@@ -140,8 +142,8 @@ export const AgentThoughtStepper: React.FC<AgentThoughtStepperProps> = ({
           </div>
           <div>
             <div className="font-semibold text-foreground">3. Verify</div>
-            <div className="text-[10px] text-foreground-muted">
-              {verifying ? (verifying.is_verified ? 'Passed' : 'Feedback Loop') : 'Quality'}
+            <div className="text-2xs font-mono text-foreground-muted">
+              {verifying ? (verifying.is_verified ? t(lang, 'thought.passed') : t(lang, 'thought.feedbackLoop')) : t(lang, 'thought.quality')}
             </div>
           </div>
         </div>
@@ -149,57 +151,57 @@ export const AgentThoughtStepper: React.FC<AgentThoughtStepperProps> = ({
 
       {/* Expandable Detail Section */}
       {isExpanded && (
-        <div className="p-4 space-y-3 bg-surface-raised/50 border-t border-border font-mono text-[11px] text-foreground-secondary animate-fade-in">
+        <div className="p-4 space-y-3 bg-surface-raised/50 border-t border-border font-mono text-2xs text-foreground-secondary animate-fade-in">
           <div className="bg-surface p-3 rounded-lg border border-border">
             <div className="font-bold text-accent-planner mb-1 flex items-center gap-1.5 font-sans text-xs">
-              <Compass className="w-3.5 h-3.5" /> Planner Output:
+              <Compass className="w-3.5 h-3.5" /> {t(lang, 'thought.plannerOutput')}
             </div>
             {plan ? (
               <p className="whitespace-pre-wrap">{plan.plan}</p>
             ) : isStreaming && !hasPlan ? (
               <p className="italic text-foreground-muted flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin text-accent-planner" />
-                Đang phân tích câu hỏi và lập kế hoạch...
+                {t(lang, 'pev.planner.working')}
               </p>
             ) : (
-              <p className="italic text-foreground-muted">Chờ thực thi...</p>
+              <p className="italic text-foreground-muted">{t(lang, 'pev.waiting')}</p>
             )}
           </div>
 
           <div className="bg-surface p-3 rounded-lg border border-border">
             <div className="font-bold text-accent-executor mb-1 flex items-center gap-1.5 font-sans text-xs">
-              <Cpu className="w-3.5 h-3.5" /> Executor [{executing?.target_agent || plan?.target_agent || 'Chuyên biệt'}]:
+              <Cpu className="w-3.5 h-3.5" /> Executor [{executing?.target_agent || plan?.target_agent || t(lang, 'pev.agentSpecialized')}]:
             </div>
             {executing ? (
               <p className="whitespace-pre-wrap max-h-40 overflow-y-auto">{executing.execution_result.slice(0, 500)}...</p>
             ) : isStreaming && hasPlan && !hasExecuting ? (
               <p className="italic text-foreground-muted flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin text-accent-executor" />
-                Agent đang thực thi tác vụ...
+                {t(lang, 'pev.executor.working', { agent: plan?.target_agent || t(lang, 'pev.agentSpecialized') })}
               </p>
             ) : (
-              <p className="italic text-foreground-muted">Chờ thực thi...</p>
+              <p className="italic text-foreground-muted">{t(lang, 'pev.waiting')}</p>
             )}
           </div>
 
           <div className="bg-surface p-3 rounded-lg border border-border">
             <div className="font-bold text-accent-verifier mb-1 flex items-center gap-1.5 font-sans text-xs">
-              <ShieldCheck className="w-3.5 h-3.5" /> Verifier Report:
+              <ShieldCheck className="w-3.5 h-3.5" /> {t(lang, 'thought.verifierReport')}
             </div>
             {verifying ? (
               <p className="whitespace-pre-wrap">
-                Quality: <span className={verifying.is_verified ? 'text-accent-verifier font-bold' : 'text-accent-error font-bold'}>
-                  {verifying.is_verified ? 'VERIFIED PASSED' : 'REJECTED'}
+                {t(lang, 'thought.qualityLabel')} <span className={verifying.is_verified ? 'text-accent-verifier font-bold' : 'text-accent-error font-bold'}>
+                  {verifying.is_verified ? t(lang, 'thought.verifiedPassed') : t(lang, 'thought.rejected')}
                 </span>
-                {verifying.verifier_feedback && ` | Feedback: ${verifying.verifier_feedback}`}
+                {verifying.verifier_feedback && ` | ${t(lang, 'thought.feedbackLabel', { text: verifying.verifier_feedback })}`}
               </p>
             ) : isStreaming && hasExecuting && !hasVerifying ? (
               <p className="italic text-foreground-muted flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin text-accent-verifier" />
-                Đang đối soát và kiểm định tính trung thực...
+                {t(lang, 'pev.verifier.working')}
               </p>
             ) : (
-              <p className="italic text-foreground-muted">Chờ thực thi...</p>
+              <p className="italic text-foreground-muted">{t(lang, 'pev.waiting')}</p>
             )}
           </div>
 

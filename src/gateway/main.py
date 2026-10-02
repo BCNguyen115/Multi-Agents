@@ -21,7 +21,7 @@ import os
 import uuid
 import warnings
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Literal, Optional
 
 from src.shared.telemetry import disable_telemetry
 disable_telemetry()
@@ -41,27 +41,54 @@ warnings.filterwarnings(
     message=".*unauthenticated requests to the HF Hub.*",
 )
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+import openai
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from src.agents.data_agent.agent import DataAnalystAgent
+from src.agents.data_agent.i18n import tr
 from src.agents.db_agent.agent import DatabaseAgent
 from src.agents.integration_agent.agent import IntegrationAgent
 from src.agents.rag_agent.agent import RAGAgent
 from src.agents.rag_agent.knowledge import KnowledgeStore
 from src.agents.search_agent.agent import SearchAgent
 from src.config import settings
+from src.gateway.conversations import router as conversations_router
+from src.gateway.knowledge import describe_upload, router as knowledge_router
+from src.gateway.schemas import (  # noqa: F401  (re-exported: tests and callers use them as main.<Name>)
+    AnalyzeResponse,
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
+    ChatRequest,
+    ChatResponse,
+    FilterRequest,
+    KnowledgeUploadResponse,
+    LoginRequest,
+    LoginResponse,
+    SourceItem,
+    TitleRequest,
+    TitleResponse,
+)
+from src.ingestion.embedder import IngestionEmbedder
+from src.ingestion.upload import UploadError, ingest_upload
 from src.orchestrator.core import Orchestrator
 from src.registry.manager import AgentRegistry
+from src.shared.auth import Principal, authenticate, authenticate_user, issue_login_token, login_enabled, validate_auth_config
+from src.shared.db_roles import ensure_readonly_role, readonly_dsn
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
 from src.shared.mcp_client import MCPClient
 from src.shared.memory_manager import MemoryManager
+from src.shared.migrations import upgrade_to_head
 from src.shared.postgres_client import PostgresClient
+from src.shared.history_summary import persist_turn
+from src.shared.rate_limit import enforce as enforce_rate_limit
 from src.shared.redis_client import RedisClient
-from src.shared.csv_sanitizer import clean_csv_content
+from src.shared.csv_sanitizer import DatasetReadError, clean_csv_content
+from src.shared.messages import msg, pick_lang, reset_lang, set_lang
 from src.shared.security import (
     generate_canary_token,
     inspect_prompt_safety,
@@ -81,113 +108,8 @@ redis_client: RedisClient = RedisClient(url=settings.REDIS_URL)
 # These will be assigned during the ``lifespan`` startup phase.
 orchestrator: Orchestrator | None = None
 llm_client: LLMClient | None = None
-
-
-# ---------------------------------------------------------------------------
-# Request / Response schemas
-# ---------------------------------------------------------------------------
-
-
-class SourceItem(BaseModel):
-    """Citation source item schema.
-
-    Attributes:
-        file: Source document filename.
-        section: Section title.
-        category: Document category (e.g. nda, msa, sow).
-    """
-
-    file: str
-    section: str
-    category: str | None = None
-
-
-class ChatRequest(BaseModel):
-    """Payload schema for ``POST /api/chat``.
-
-    Attributes:
-        query: The user's natural-language question.
-        session_id: A unique session identifier for conversation tracking.
-    """
-
-    query: str = Field(..., min_length=1, description="User query text")
-    session_id: str = Field(
-        ..., min_length=1, description="Session correlation ID"
-    )
-    agent_mode: str | None = Field(
-        default=None, description="Optional forced agent mode (e.g. search_agent)"
-    )
-
-
-class ChatResponse(BaseModel):
-    """Response schema for ``POST /api/chat``.
-
-    Attributes:
-        session_id: Echo of the request session ID.
-        response: The agent's textual response.
-        sources: List of document citations used to generate the answer.
-        pev_trace: LangGraph PEV trace metadata.
-    """
-
-    session_id: str
-    response: str
-    sources: list[SourceItem] = Field(default_factory=list)
-    pev_trace: dict[str, Any] | None = None
-
-
-class AnalyzeResponse(BaseModel):
-    """Response schema for ``POST /api/analyze``.
-
-    Attributes:
-        session_id: Echo of the request session ID.
-        explanation: Natural-language explanation of the analysis.
-        generated_code: Executable Python code (legacy/fallback).
-        dashboard_spec: Standardized JSON Spec for dynamic dashboard rendering.
-        pev_trace: LangGraph PEV trace metadata.
-    """
-
-    session_id: str
-    explanation: str
-    generated_code: str = ""
-    dashboard_spec: dict[str, Any] | None = None
-    metadata: dict[str, Any] | None = None
-    pev_trace: dict[str, Any] | None = None
-
-
-class TitleRequest(BaseModel):
-    """Payload schema for ``POST /api/chat/title``."""
-
-    query: str = Field(..., min_length=1, description="User query text")
-    session_id: str | None = Field(
-        default=None, description="Optional session correlation ID"
-    )
-
-
-class TitleResponse(BaseModel):
-    """Response schema for ``POST /api/chat/title``."""
-
-    title: str
-
-
-class ApprovalDecisionRequest(BaseModel):
-    """Payload schema for ``POST /api/chat/approve``."""
-
-    session_id: str = Field(..., description="Session correlation ID")
-    action_id: str = Field(..., description="Action ID requiring approval")
-    decision: str = Field(..., description="Decision: 'approve' or 'reject'")
-    feedback: Optional[str] = Field(default=None, description="Optional operator rejection reason")
-
-
-class ApprovalDecisionResponse(BaseModel):
-    """Response schema for ``POST /api/chat/approve``."""
-
-    status: str
-    action_id: str
-    decision: str
-    message: Optional[str] = None
-    response: Optional[str] = None
-    data: Optional[Any] = None
-
+knowledge_store: KnowledgeStore | None = None        # retrieval side of the knowledge base
+knowledge_embedder: IngestionEmbedder | None = None  # write side: chat uploads
 
 
 # ---------------------------------------------------------------------------
@@ -206,11 +128,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Yields:
         None
     """
-    global orchestrator, llm_client  # noqa: PLW0603
+    global orchestrator, llm_client, knowledge_store, knowledge_embedder  # noqa: PLW0603
 
     # ---- STARTUP ----
     if getattr(settings, "HF_TOKEN", None):
         os.environ["HF_TOKEN"] = settings.HF_TOKEN
+
+    validate_auth_config()  # raises on an unsafe configuration: better to fail at start than to serve unprotected
 
     logger.info("Starting up — connecting to databases…", extra={"session_id": "SYSTEM"})
 
@@ -238,6 +162,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Build MCP Client (Layer 3 Tools)
     mcp_client: MCPClient = MCPClient(pg_client=pg_client)
+    db_mcp_client: MCPClient = mcp_client  # what the Database Agent runs its (LLM-written) SQL through
+    if settings.DB_AGENT_PASSWORD:
+        # Fail closed: if the read-only role was asked for and cannot be set up, do not quietly fall back to the admin account.
+        await ensure_readonly_role(pg_client, settings.DB_AGENT_ROLE, settings.DB_AGENT_PASSWORD, settings.DB_AGENT_TABLES)
+        db_pg_client = PostgresClient(dsn=readonly_dsn(settings.POSTGRES_URL, settings.DB_AGENT_ROLE, settings.DB_AGENT_PASSWORD), ensure_pgvector=False)
+        await db_pg_client.connect(min_size=1, max_size=5)
+        db_mcp_client = MCPClient(pg_client=db_pg_client, scoped=True)  # PostgreSQL's own RLS policies see the caller's tenant/department
+    else:
+        logger.warning("DB_AGENT_PASSWORD is not set: the Database Agent runs SQL with the application's own database account", extra={"session_id": "SYSTEM"})
 
     # Build Long-term Memory Manager (Layer 2 Memory) & Pre-load Models
     memory_manager: MemoryManager = MemoryManager(settings=settings)
@@ -247,15 +180,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("MemoryManager warmup notice (non-fatal): %s", exc, extra={"session_id": "SYSTEM"})
 
     # Build KnowledgeStore & RAGAgent
-    knowledge_store: KnowledgeStore = KnowledgeStore(
+    knowledge_store = KnowledgeStore(
         pg=pg_client, llm_client=llm_client
     )
-    await knowledge_store.ensure_table()
+    app.state.knowledge_store = knowledge_store
+    knowledge_embedder = IngestionEmbedder(  # same model and code path as scripts/run_ingestion.py
+        pg=pg_client, openai_client=openai.AsyncOpenAI(api_key=settings.OPENROUTER_API_KEY, base_url=settings.OPENROUTER_BASE_URL)
+    )
+    try:
+        await knowledge_store.ensure_schema()
+    except Exception as exc:  # RAG then answers with an error message; the other agents keep working
+        logger.error("rag_chunks schema check failed: %s", exc, extra={"session_id": "SYSTEM"})
+    if settings.AUTO_MIGRATE:
+        # versioned changes after the baseline; replicas starting together are serialised by an advisory lock. A failed
+        # migration stops the start: serving on a half-migrated schema would corrupt data later, not now.
+        revision = await asyncio.to_thread(upgrade_to_head)
+        logger.info("Database schema at revision %s", revision, extra={"session_id": "SYSTEM"})
 
     rag_agent: RAGAgent = RAGAgent(
         knowledge_store=knowledge_store,
         llm_client=llm_client,
         model=settings.OPENROUTER_MODEL,
+        redis_client=redis_client,  # conversation history: follow-up questions are rewritten as standalone ones
     )
 
     # Build DataAnalystAgent (with Tool Delegation via MCP & Redis Session State)
@@ -268,7 +214,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Build DatabaseAgent
     db_agent: DatabaseAgent = DatabaseAgent(
-        mcp_client=mcp_client,
+        mcp_client=db_mcp_client,
         llm_client=llm_client,
         model=settings.OPENROUTER_MODEL,
     )
@@ -301,6 +247,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings=settings,
         llm_client=llm_client,
         memory_manager=memory_manager,
+        redis_client=redis_client,  # pending HITL approvals survive a restart and work across replicas
     )
 
     logger.info("Startup complete — system ready (4-Layer Framework active)", extra={"session_id": "SYSTEM"})
@@ -327,9 +274,43 @@ app: FastAPI = FastAPI(
     lifespan=lifespan,
 )
 
+app.state.pg_client = pg_client  # the conversations router reads it from here
+app.include_router(conversations_router)
+app.include_router(knowledge_router)
+
+
+async def limit_chat(request: Request, principal: Principal = Depends(authenticate)) -> None:
+    await enforce_rate_limit(redis_client, principal, request, "chat", settings.RATE_LIMIT_CHAT_PER_MINUTE)
+
+
+async def limit_analyze(request: Request, principal: Principal = Depends(authenticate)) -> None:
+    await enforce_rate_limit(redis_client, principal, request, "analyze", settings.RATE_LIMIT_ANALYZE_PER_MINUTE)
+
+
+@app.middleware("http")
+async def reject_oversized_uploads(request: Request, call_next):
+    """Answer 413 from the Content-Length header alone, before a huge multipart body is parsed and spooled."""
+    limit_mb: int | None = {"/api/analyze": settings.DATA_MAX_FILE_MB, "/api/knowledge/upload": settings.KNOWLEDGE_MAX_FILE_MB}.get(request.url.path)
+    if limit_mb is not None:
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit_mb * 1024 * 1024 * 1.1 + 65536:  # + multipart overhead
+            return JSONResponse(status_code=413, content={"detail": msg("file.too_big", mb=limit_mb)})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def ui_language(request: Request, call_next):
+    """Messages the gateway writes follow the interface language the browser sends (``X-UI-Lang``, else Accept-Language)."""
+    token = set_lang(pick_lang(request.headers.get("x-ui-lang") or request.headers.get("accept-language")))
+    try:
+        return await call_next(request)
+    finally:
+        reset_lang(token)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -343,11 +324,12 @@ app.add_middleware(
 
 @app.post(
     "/api/chat/stream",
+    dependencies=[Depends(limit_chat)],
     summary="Send a chat message with real-time SSE PEV Loop event streaming",
 )
-async def chat_stream(request: ChatRequest, raw_request: Request) -> EventSourceResponse:
+async def chat_stream(request: ChatRequest, raw_request: Request, principal: Principal = Depends(authenticate)) -> EventSourceResponse:
     """Stream PEV Loop events (plan, executing, verifying, final_response) via SSE."""
-    session_id: str = request.session_id
+    session_id: str = principal.session(request.session_id)
     query: str = request.query
 
     # Dedicated Gateway Guardrail — Prompt Injection Scan
@@ -360,7 +342,7 @@ async def chat_stream(request: ChatRequest, raw_request: Request) -> EventSource
         )
         raise HTTPException(
             status_code=400,
-            detail=f"Cảnh báo bảo mật: Phát hiện dấu hiệu Prompt Injection ({violation_label}). Yêu cầu bị từ chối.",
+            detail=msg("security.injection", label=violation_label),
         )
 
     # Dynamic Nonce Delimiter Packaging
@@ -377,8 +359,23 @@ async def chat_stream(request: ChatRequest, raw_request: Request) -> EventSource
         logger.error("Orchestrator not initialised", extra={"session_id": session_id})
         raise HTTPException(
             status_code=503,
-            detail="Service is starting up. Please try again shortly.",
+            detail=msg("service.starting"),
         )
+
+    async def remember_turn(event: dict[str, Any]) -> None:
+        """Persist the finished turn (like /api/chat does) so follow-up questions have their context."""
+        if event.get("event") != "final_response":
+            return
+        try:
+            answer: str = json.loads(event["data"]).get("response", "")
+            try:
+                parsed = json.loads(answer)
+                answer = parsed.get("answer") or parsed.get("explanation") or answer if isinstance(parsed, dict) else answer
+            except (json.JSONDecodeError, TypeError):
+                pass
+            await persist_turn(redis_client, llm_client, session_id, query, answer)
+        except Exception as exc:  # noqa: BLE001 - history is non-critical
+            logger.warning("Could not persist the streamed turn: %s", exc, extra={"session_id": session_id})
 
     async def safe_stream_wrapper():
         try:
@@ -386,6 +383,7 @@ async def chat_stream(request: ChatRequest, raw_request: Request) -> EventSource
                 query=wrapped_query,
                 session_id=session_id,
                 agent_mode=request.agent_mode,
+                target_agent=request.target_agent,
             ):
                 if await raw_request.is_disconnected():
                     logger.info(
@@ -416,6 +414,7 @@ async def chat_stream(request: ChatRequest, raw_request: Request) -> EventSource
                         return
 
                 yield event
+                await remember_turn(event)
                 await asyncio.sleep(0.01)  # Bắt buộc: nhường quyền cho event loop flush TCP socket
         except Exception as exc:
             logger.error(
@@ -455,10 +454,11 @@ async def chat_stream(request: ChatRequest, raw_request: Request) -> EventSource
 
 @app.post(
     "/api/chat/title",
+    dependencies=[Depends(limit_chat)],
     response_model=TitleResponse,
     summary="Generate a concise smart conversation title from the initial user query",
 )
-async def generate_chat_title(request: TitleRequest) -> TitleResponse:
+async def generate_chat_title(request: TitleRequest, principal: Principal = Depends(authenticate)) -> TitleResponse:
     """Generate a concise 3-6 word title summarizing the user's intent using FAST_LLM_MODEL."""
     raw_query: str = request.query.strip()
     session_id: str = request.session_id or "TITLE_GEN"
@@ -520,8 +520,9 @@ async def generate_chat_title(request: TitleRequest) -> TitleResponse:
         return TitleResponse(title=title_text)
     except (asyncio.TimeoutError, Exception) as exc:
         logger.warning(
-            "Failed or timed out generating smart title via LLM (%s); falling back to raw query",
-            exc,
+            "Smart title via LLM unavailable (%s: %s); using the raw query as the title",
+            type(exc).__name__,
+            exc or "no answer within 2.5s",
             extra={"session_id": session_id},
         )
         return TitleResponse(title=fallback_title)
@@ -529,11 +530,12 @@ async def generate_chat_title(request: TitleRequest) -> TitleResponse:
 
 @app.post(
     "/api/chat",
+    dependencies=[Depends(limit_chat)],
     response_model=ChatResponse,
     summary="Send a chat message to the Multi-Agent system",
 )
 
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(request: ChatRequest, principal: Principal = Depends(authenticate)) -> ChatResponse:
     """Handle an incoming chat request.
 
     Flow:
@@ -551,7 +553,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
     Raises:
         HTTPException: 503 if the Orchestrator is unavailable.
     """
-    session_id: str = request.session_id
+    session_id: str = principal.session(request.session_id)
     query: str = request.query
 
     # Dedicated Gateway Guardrail — Prompt Injection Scan
@@ -564,7 +566,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
         raise HTTPException(
             status_code=400,
-            detail=f"Cảnh báo bảo mật: Phát hiện dấu hiệu Prompt Injection ({violation_label}). Yêu cầu bị từ chối.",
+            detail=msg("security.injection", label=violation_label),
         )
 
     # Dynamic Nonce Delimiter Packaging
@@ -586,34 +588,17 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
         raise HTTPException(
             status_code=503,
-            detail="Service is starting up. Please try again shortly.",
+            detail=msg("service.starting"),
         )
 
     try:
-        # --- 1. Load conversation history from Redis ---
-        try:
-            history: list[dict[str, str]] = await redis_client.get_history(
-                session_id=session_id
-            )
-            logger.debug(
-                "Loaded %d history messages",
-                len(history),
-                extra={"session_id": session_id},
-            )
-        except Exception as exc:
-            logger.warning(
-                "Could not load history from Redis (continuing without): %s",
-                exc,
-                extra={"session_id": session_id},
-            )
-            history = []
-
-        # --- 2. Delegate to Orchestrator ---
+        # --- 1. Delegate to Orchestrator (agents that need the chat history, e.g. RAG, read it from Redis themselves) ---
         try:
             raw_response: str = await orchestrator.handle_request(
                 query=wrapped_query,
                 session_id=session_id,
                 agent_mode=request.agent_mode,
+                target_agent=request.target_agent,
             )
         except Exception as exc:
             logger.error(
@@ -657,18 +642,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         # --- 3. Save to conversation history (max 5 turns) ---
         try:
-            await redis_client.append_to_history(
-                session_id=session_id,
-                role="user",
-                content=query,
-                max_turns=5,
-            )
-            await redis_client.append_to_history(
-                session_id=session_id,
-                role="assistant",
-                content=final_answer,
-                max_turns=5,
-            )
+            await persist_turn(redis_client, llm_client, session_id, query, final_answer)
         except Exception as exc:
             logger.warning(
                 "Failed to persist history to Redis (non-critical): %s",
@@ -684,7 +658,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
 
         return ChatResponse(
-            session_id=session_id,
+            session_id=request.session_id,
             response=final_answer,
             sources=[SourceItem(**src) for src in sources_list],
             pev_trace=pev_trace,
@@ -700,24 +674,30 @@ async def chat(request: ChatRequest) -> ChatResponse:
     response_model=ApprovalDecisionResponse,
     summary="Human-in-the-Loop approval endpoint for sensitive database & API operations",
 )
-async def chat_approve(request: ApprovalDecisionRequest) -> ApprovalDecisionResponse:
+async def chat_approve(request: ApprovalDecisionRequest, principal: Principal = Depends(authenticate)) -> ApprovalDecisionResponse:
     """Process human confirmation or rejection of sensitive operations (HITL Gate)."""
     if orchestrator is None:
         raise HTTPException(
             status_code=503,
-            detail="Orchestrator is starting up. Please try again shortly.",
+            detail=msg("service.starting"),
         )
+    session_id: str = principal.session(request.session_id)
+    if not principal.can_approve:
+        logger.warning(
+            "HITL decision refused: user=%s has none of the approver roles %s (action_id=%s)",
+            principal.user_id, settings.HITL_APPROVER_ROLES, request.action_id, extra={"session_id": session_id},
+        )
+        raise HTTPException(status_code=403, detail=msg("forbidden.approve"))
 
+    # Audit trail: who decided what, for which action
     logger.info(
-        "Received /api/chat/approve: session_id=%s, action_id=%s, decision=%s",
-        request.session_id,
-        request.action_id,
-        request.decision,
-        extra={"session_id": request.session_id},
+        "HITL decision: user=%s tenant=%s action_id=%s decision=%s",
+        principal.user_id, principal.tenant_id, request.action_id, request.decision,
+        extra={"session_id": session_id},
     )
 
     result = await orchestrator.handle_approval_decision(
-        session_id=request.session_id,
+        session_id=session_id,
         action_id=request.action_id,
         decision=request.decision,
         feedback=request.feedback,
@@ -726,7 +706,7 @@ async def chat_approve(request: ApprovalDecisionRequest) -> ApprovalDecisionResp
     if result.get("status") == "error":
         raise HTTPException(
             status_code=404,
-            detail=result.get("message", "Yêu cầu phê duyệt không tồn tại."),
+            detail=result.get("message", msg("approval.unknown")),
         )
 
     return ApprovalDecisionResponse(
@@ -741,19 +721,23 @@ async def chat_approve(request: ApprovalDecisionRequest) -> ApprovalDecisionResp
 
 @app.post(
     "/api/analyze",
+    dependencies=[Depends(limit_analyze)],
     response_model=AnalyzeResponse,
     summary="Analyze uploaded CSV data and generate executive dashboard spec",
 )
 async def analyze_csv(
     file: Optional[UploadFile] = File(None, description="Optional CSV file to upload and analyze"),
-    query: str = Form("Hãy phân tích toàn bộ dữ liệu file này", description="Analysis prompt"),
+    query: str = Form("Hãy phân tích dữ liệu và dựng dashboard cho file này", description="Analysis prompt"),
     session_id: str = Form(default_factory=lambda: str(uuid.uuid4()), description="Session correlation ID"),
+    principal: Principal = Depends(authenticate),
 ) -> AnalyzeResponse:
     """Upload a CSV file or analyze previously uploaded CSV in current session."""
+    client_session_id: str = session_id
+    session_id = principal.session(client_session_id)
     if orchestrator is None:
         raise HTTPException(
             status_code=503,
-            detail="Service is starting up. Please try again shortly.",
+            detail=msg("service.starting"),
         )
 
     # Dedicated Gateway Guardrail — Prompt Injection Scan
@@ -766,7 +750,7 @@ async def analyze_csv(
         )
         raise HTTPException(
             status_code=400,
-            detail=f"Cảnh báo bảo mật: Phát hiện dấu hiệu Prompt Injection ({violation_label}). Yêu cầu bị từ chối.",
+            detail=msg("security.injection", label=violation_label),
         )
 
     request_id: str = str(uuid.uuid4())
@@ -784,30 +768,24 @@ async def analyze_csv(
 
         # --- 1. Read CSV content if file provided ---
         if file is not None:
-            raw_bytes: bytes = await file.read()
             filename = file.filename or "uploaded.csv"
+            limit_bytes: int = settings.DATA_MAX_FILE_MB * 1024 * 1024
+            buffer = bytearray()
+            while chunk := await file.read(1024 * 1024):  # never hold more than the limit (+1 chunk) in memory
+                buffer += chunk
+                if len(buffer) > limit_bytes:
+                    raise HTTPException(status_code=413, detail=msg("csv.too_big", name=filename, mb=settings.DATA_MAX_FILE_MB))
+            raw_bytes: bytes = bytes(buffer)
 
-            # Sanitize CSV: auto-detect encoding, clean headers, remove empty rows
+            # Normalise any supported format (CSV/TSV/Excel/Parquet/JSON, any encoding) into UTF-8 CSV.
+            # Original headers are kept: the data agent derives safe identifiers and display labels itself.
             try:
-                csv_content = clean_csv_content(raw_bytes)
-            except Exception as sanitize_exc:
-                logger.warning(
-                    "CSV sanitization failed, falling back to raw decode: %s",
-                    sanitize_exc,
-                    extra={"session_id": session_id},
-                )
-                try:
-                    csv_content = raw_bytes.decode("utf-8")
-                except UnicodeDecodeError:
-                    csv_content = raw_bytes.decode("latin-1", errors="replace")
-
-            # Cache file in Redis for session context retention
-            if redis_client is not None and csv_content:
-                await redis_client.set_active_file(
-                    session_id=session_id,
-                    filename=filename,
-                    csv_content=csv_content,
-                )
+                csv_content = clean_csv_content(raw_bytes, filename=filename, sanitize_headers=False)
+            except (DatasetReadError, ValueError) as read_exc:
+                logger.info("Unreadable upload '%s': %s", filename, read_exc, extra={"session_id": session_id})
+                reason = tr("vi", f"err.{read_exc.code}") if isinstance(read_exc, DatasetReadError) else str(read_exc)
+                raise HTTPException(status_code=400, detail=msg("csv.unreadable", name=filename, reason=reason)) from read_exc
+            # The data agent caches the active file for follow-up questions (session context).
         else:
             # Attempt recovery from Redis
             if redis_client is not None:
@@ -861,46 +839,6 @@ async def analyze_csv(
         except (json.JSONDecodeError, TypeError):
             explanation = raw_response
 
-        # --- 4. Guarantee Full Dataset Integrity in dashboard_spec ---
-        if dashboard_spec and isinstance(dashboard_spec, dict) and csv_content:
-            try:
-                import io
-                import pandas as pd
-                csv_df = pd.read_csv(io.StringIO(csv_content))
-                total_csv_len = len(csv_df)
-                existing_rows = (
-                    dashboard_spec.get("raw_data")
-                    or dashboard_spec.get("rawRows")
-                    or dashboard_spec.get("rows")
-                    or (dashboard_spec.get("table", {}).get("rows") if isinstance(dashboard_spec.get("table"), dict) else [])
-                    or []
-                )
-                if len(existing_rows) < total_csv_len:
-                    full_records = csv_df.head(10000).to_dict(orient="records")
-                    dashboard_spec["raw_data"] = full_records
-                    dashboard_spec["rawData"] = full_records
-                    dashboard_spec["rawRows"] = full_records
-                    dashboard_spec["rows"] = full_records
-                    dashboard_spec["totalRows"] = total_csv_len
-                    dashboard_spec["total_rows"] = total_csv_len
-                    if "table" not in dashboard_spec or not isinstance(dashboard_spec["table"], dict):
-                        dashboard_spec["table"] = {}
-                    dashboard_spec["table"]["rows"] = full_records
-                    dashboard_spec["table"]["totalRows"] = total_csv_len
-                    dashboard_spec["table"]["total_rows"] = total_csv_len
-                    logger.info(
-                        "Gateway enriched dashboard_spec with full %d CSV records (was %d)",
-                        len(full_records),
-                        len(existing_rows),
-                        extra={"session_id": session_id},
-                    )
-            except Exception as enrich_err:
-                logger.warning(
-                    "Gateway CSV full-dataset enrichment skipped: %s",
-                    enrich_err,
-                    extra={"session_id": session_id},
-                )
-
         if not explanation:
             explanation = "Đã phân tích xong dữ liệu." if dashboard_spec else raw_response[:1000]
 
@@ -920,7 +858,7 @@ async def analyze_csv(
         )
 
         return AnalyzeResponse(
-            session_id=session_id,
+            session_id=client_session_id,
             explanation=explanation,
             generated_code=generated_code,
             dashboard_spec=dashboard_spec,
@@ -934,12 +872,114 @@ async def analyze_csv(
         logger.exception("CSV Analysis Failed: %s", e, extra={"session_id": session_id})
         raise HTTPException(
             status_code=400,
-            detail="Phân tích dữ liệu CSV thất bại. Vui lòng kiểm tra định dạng file và thử lại.",
+            detail=msg("csv.failed"),
         )
     finally:
         target_llm_client = llm_client or (orchestrator.llm_client if orchestrator and hasattr(orchestrator, "llm_client") else None)
         if target_llm_client:
             await target_llm_client.flush_async()
+
+
+def _who(principal: Principal) -> dict[str, Any]:
+    """What the UI needs to know about the caller (no secrets)."""
+    return {
+        "authenticated": principal.authenticated,
+        "user": principal.user_id,
+        "tenant_id": principal.tenant_id,
+        "department_id": principal.department_id,
+        "roles": sorted(principal.roles),
+        "can_approve": principal.can_approve,
+        "can_manage_knowledge": principal.can_manage_knowledge,
+    }
+
+
+@app.post("/api/auth/login", response_model=LoginResponse, summary="Sign in with a username and password (jwt mode, AUTH_USERS)")
+async def login(body: LoginRequest, request: Request) -> LoginResponse:
+    """Check the credentials against ``AUTH_USERS`` and return a short-lived bearer token."""
+    if not login_enabled():
+        raise HTTPException(status_code=404, detail=msg("login.disabled"))
+    # throttle per client IP; this route is reachable without a token, so it is the brute-force target
+    guest = Principal("anonymous", settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
+    await enforce_rate_limit(redis_client, guest, request, "login", settings.RATE_LIMIT_LOGIN_PER_MINUTE)
+    user = await asyncio.to_thread(authenticate_user, body.username, body.password)  # scrypt is CPU-bound: keep it off the event loop
+    if user is None:
+        logger.warning("Failed sign-in for %r from %s", body.username[:64], request.client.host if request.client else "unknown")
+        raise HTTPException(status_code=401, detail=msg("login.bad"))
+    token, expires_in = issue_login_token(user)
+    logger.info("Sign-in: user=%s tenant=%s", user["username"], user.get("tenant_id") or settings.RLS_TENANT_ID)
+    roles = frozenset(str(r) for r in (user.get("roles") or []))
+    principal = Principal(str(user["username"]), str(user.get("tenant_id") or settings.RLS_TENANT_ID),
+                          str(user.get("department_id") or settings.RLS_DEPARTMENT_ID), roles, authenticated=True)
+    return LoginResponse(access_token=token, expires_in=expires_in, user=_who(principal))
+
+
+@app.get("/api/auth/me", summary="Who am I? (the UI uses it to decide between the chat and the login screen)")
+async def whoami(principal: Principal = Depends(authenticate)) -> dict[str, Any]:
+    return _who(principal)
+
+
+@app.post(
+    "/api/knowledge/upload",
+    dependencies=[Depends(limit_analyze)],
+    response_model=KnowledgeUploadResponse,
+    summary="Add or update a PDF/DOCX in the RAG knowledge base (used from the chat box)",
+)
+async def upload_knowledge(
+    file: UploadFile = File(..., description="PDF or DOCX document"),
+    session_id: str = Form(default_factory=lambda: str(uuid.uuid4()), description="Session correlation ID"),
+    category: Optional[str] = Form(None, description="Document category (nda, msa, ...); inferred when omitted"),
+    principal: Principal = Depends(authenticate),
+) -> KnowledgeUploadResponse:
+    """Chunk by section (200-600 characters), embed and store a document exactly like the folder ingestion does."""
+    scoped_session: str = principal.session(session_id)
+    if knowledge_embedder is None or knowledge_store is None:
+        raise HTTPException(status_code=503, detail=msg("service.starting"))
+    if not principal.can_manage_knowledge:
+        logger.warning(
+            "Knowledge upload refused: user=%s has none of the roles %s", principal.user_id, settings.KNOWLEDGE_UPLOAD_ROLES,
+            extra={"session_id": scoped_session},
+        )
+        raise HTTPException(status_code=403, detail=msg("forbidden.knowledge"))
+
+    limit_bytes: int = settings.KNOWLEDGE_MAX_FILE_MB * 1024 * 1024
+    buffer = bytearray()
+    while block := await file.read(1024 * 1024):  # never hold more than the limit (+1 block) in memory
+        buffer += block
+        if len(buffer) > limit_bytes:
+            raise HTTPException(status_code=413, detail=msg("file.too_big", mb=settings.KNOWLEDGE_MAX_FILE_MB))
+
+    try:
+        result = await ingest_upload(
+            knowledge_embedder, file.filename or "", bytes(buffer), category=category, dataset_dir=settings.KNOWLEDGE_DIR,
+            known_categories=await knowledge_store.known_categories(scoped_session), max_chunks=settings.KNOWLEDGE_MAX_CHUNKS,
+            session_id=scoped_session, llm_client=llm_client,
+        )
+    except UploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - embedding API / database failure: nothing was half-written (one transaction)
+        logger.error("Knowledge upload failed: %s", exc, extra={"session_id": scoped_session})
+        raise HTTPException(status_code=502, detail=msg("upload.failed")) from exc
+
+    knowledge_store.invalidate_categories()  # a new category must be recognisable in questions straight away
+    logger.info(
+        "Knowledge upload by user=%s tenant=%s: %s -> %s (%s)", principal.user_id, principal.tenant_id, result["filename"], result["doc_key"], result["status"],
+        extra={"session_id": scoped_session},
+    )
+    return KnowledgeUploadResponse(session_id=session_id, message=describe_upload(result), **{k: v for k, v in result.items() if k in KnowledgeUploadResponse.model_fields})
+
+
+@app.post("/api/analyze/filter", summary="Recompute a dashboard's charts and KPIs for filtered rows")
+async def filter_dashboard(request: FilterRequest, principal: Principal = Depends(authenticate)) -> dict[str, Any]:
+    """Cross-filtering: charts are recomputed by the same compiler and re-verified against the filtered rows."""
+    agent = orchestrator.registry.lookup("data_agent") if orchestrator is not None else None
+    if agent is None or not hasattr(agent, "filter_dashboard"):
+        raise HTTPException(status_code=503, detail=msg("service.starting"))
+    try:
+        return await agent.filter_dashboard(principal.session(request.session_id), request.chart_specs, request.filters, request.language, request.focus)
+    except LookupError:
+        raise HTTPException(status_code=404, detail=msg("analyze.no_active")) from None
+    except (ValueError, TypeError) as exc:  # invalid filter column / malformed chart spec
+        raise HTTPException(status_code=422, detail=msg("filter.invalid", reason=exc)) from exc
 
 
 @app.get("/health", summary="Health check")
@@ -951,3 +991,45 @@ async def health_check() -> dict[str, str]:
     """
     return {"status": "ok"}
 
+
+_READY_TIMEOUT_SECONDS: float = 2.0
+
+
+async def _probe(check) -> str:
+    """"ok" or a short reason; never raises and never waits longer than the readiness timeout."""
+    try:
+        await asyncio.wait_for(check(), timeout=_READY_TIMEOUT_SECONDS)
+        return "ok"
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"[:120] or "error"
+
+
+@app.get("/ready", summary="Readiness: can this instance serve requests right now?")
+async def readiness() -> JSONResponse:
+    """200 when PostgreSQL and Redis answer; 503 otherwise. ``/health`` only says the process is alive.
+
+    The reranker is reported but does not fail readiness: without it retrieval falls back to the fused order
+    (slower to converge on the best chunk, still correct), so the instance is *degraded*, not unavailable.
+    """
+
+    async def postgres() -> None:
+        await pg_client.fetch("SELECT 1")
+
+    async def redis() -> None:
+        if redis_client.client is None:
+            raise ConnectionError("not connected")
+        await redis_client.client.ping()
+
+    async def reranker() -> None:
+        import httpx
+
+        url = settings.RERANKER_ENDPOINT.rsplit("/", 1)[0] + "/health"
+        async with httpx.AsyncClient(timeout=_READY_TIMEOUT_SECONDS) as http:
+            (await http.get(url)).raise_for_status()
+
+    names = ("postgres", "redis", "reranker")
+    results = await asyncio.gather(*(_probe(c) for c in (postgres, redis, reranker)))
+    checks = dict(zip(names, results))
+    ready = checks["postgres"] == "ok" and checks["redis"] == "ok" and orchestrator is not None
+    status = "ready" if ready and checks["reranker"] == "ok" else ("degraded" if ready else "unavailable")
+    return JSONResponse(status_code=200 if ready else 503, content={"status": status, "orchestrator": orchestrator is not None, "checks": checks})

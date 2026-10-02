@@ -24,7 +24,8 @@ def inject_row_level_security(
     """Inject Row-Level Security (RLS) constraints into a SQL statement AST.
 
     Traverses all ``exp.Select`` nodes (main queries, subqueries, CTEs) and adds
-    ``(department_id = :department_id OR tenant_id = :tenant_id)`` to each WHERE clause.
+    ``department_id = :department_id AND tenant_id = :tenant_id`` to each WHERE clause (both must match: OR would let a
+    row of the caller's tenant in another department, or of another tenant in the caller's department, through).
 
     Args:
         sql: The incoming sanitized SQL query string.
@@ -56,20 +57,12 @@ def inject_row_level_security(
         return expression.sql(dialect=read_only_dialect)
 
     for select in select_nodes:
-        # Construct RLS predicate: (department_id = :dept OR tenant_id = :tenant)
-        rls_cond = exp.Or(
-            this=exp.EQ(
-                this=exp.Column(this=exp.to_identifier("department_id")),
-                expression=exp.Literal.string(safe_dept),
-            ),
-            expression=exp.EQ(
-                this=exp.Column(this=exp.to_identifier("tenant_id")),
-                expression=exp.Literal.string(safe_tenant),
-            ),
-        )
-
-        # Inject into WHERE clause without dropping existing conditions
-        select.where(rls_cond, copy=False)
+        # Two AND-ed predicates, appended to any existing WHERE (which is kept as is)
+        for column, value in (("department_id", safe_dept), ("tenant_id", safe_tenant)):
+            select.where(
+                exp.EQ(this=exp.Column(this=exp.to_identifier(column)), expression=exp.Literal.string(value)),
+                copy=False,
+            )
 
     secured_sql = expression.sql(dialect=read_only_dialect)
     logger.debug("Injected RLS AST: '%s' -> '%s'", sql[:80], secured_sql[:120])

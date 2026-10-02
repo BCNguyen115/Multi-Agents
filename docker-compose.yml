@@ -1,30 +1,53 @@
+# Production-like stack. Secrets come from `.env` (copy .env.example) — none are hardcoded here.
+#   docker compose up -d --build                                                  # run
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build     # hot-reload backend
+#
+# NOTE: the compose project name is intentionally not pinned, so existing named volumes keep working.
+
+x-restart: &restart
+  restart: unless-stopped
+
+# Shared Postgres/Redis wiring for both Langfuse containers
+x-langfuse-env: &langfuse-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-agentdb}?schema=langfuse&connection_limit=25
+  DIRECT_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agentdb}?schema=langfuse
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_CONNECTION_STRING: redis://redis:6379
+  REDIS_AUTH: ""
+  NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?Set LANGFUSE_NEXTAUTH_SECRET in .env}
+  SALT: ${LANGFUSE_SALT:?Set LANGFUSE_SALT in .env}
+  TELEMETRY_ENABLED: "false"
+
 services:
-  # 1. PostgreSQL với pgvector extension (Tối ưu connection pool & shutdown sạch)
+  # 1. PostgreSQL + pgvector
   postgres:
-    image: ankane/pgvector:latest
+    <<: *restart
+    image: ${POSTGRES_IMAGE:-ankane/pgvector:latest}  # pin a tag per environment; a major-version change needs a dump/restore
     container_name: agent_postgres
     command: postgres -c max_connections=250 -c shared_buffers=256MB -c idle_in_transaction_session_timeout=60000
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: adminpassword
-      POSTGRES_DB: agentdb
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-agentdb}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"   # host access for local tooling only
     volumes:
       - postgres_data:/var/lib/postgresql/data
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin -d agentdb"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # 2. Redis Cache & State Store (Database 0 cho cache, Database 1 cho Langfuse Queue - Không dùng Password)
+  # 2. Redis — cache / session state (DB 0) and Langfuse queue
   redis:
-    image: redis:alpine
+    <<: *restart
+    image: redis:8-alpine  # the existing redis_data volume was written by Redis 8 (RDB v15); an older major cannot load it
     container_name: agent_redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -33,74 +56,90 @@ services:
       timeout: 3s
       retries: 5
 
-  # 3. FastAPI Backend Gateway & Orchestrator
+  # 3. Backend: FastAPI gateway + PEV orchestrator
   backend:
-    build: .
+    <<: *restart
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_BROWSER: ${INSTALL_BROWSER:-true}
+    image: agent-backend:latest
     container_name: agent_backend
-    command: uvicorn src.gateway.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 300 --limit-concurrency 100
+    env_file:
+      - path: .env
+        required: false
+    environment:   # service-network values override anything in .env
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agentdb}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_HOST: http://langfuse-web:3000
+      MEM0_VECTOR_STORE: pgvector   # long-term memory in PostgreSQL: it survives restarts
+      DB_AGENT_PASSWORD: ${DB_AGENT_PASSWORD:-}   # >= 16 chars: the Database Agent then runs SQL as a read-only role
+      RERANKER_ENDPOINT: http://tei-reranker:80/rerank
+      SANDBOX_URL: http://python-sandbox:8080     # LLM-written analysis code runs there, not next to the API's secrets
+      SANDBOX_SECRET: ${SANDBOX_SECRET:?set SANDBOX_SECRET in .env (at least 16 random characters)}
+    networks: [default, sandbox_net]
     ports:
-      - "8000:8000"
-    environment:
-      - PYTHONPATH=/app
-      - POSTGRES_URL=postgresql://admin:adminpassword@postgres:5432/agentdb
-      - REDIS_URL=redis://redis:6379/0
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
-      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openai/gpt-4o}
-      - FAST_LLM_MODEL=${FAST_LLM_MODEL:-openai/gpt-4o-mini}
-      - HEAVY_LLM_MODEL=${HEAVY_LLM_MODEL:-openai/gpt-4o}
-      - MEM0_LLM_MODEL=${MEM0_LLM_MODEL:-openai/gpt-4o-mini}
-      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-true}
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-lf-345be264-d4ff-4e7a-9da8-6277fb4fd3c1}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-sk-lf-f005fbbe-3bfe-49b3-abb5-7f5d5f53b544}
-      - LANGFUSE_HOST=${LANGFUSE_HOST:-http://langfuse-web:3000}
-      - LANGFUSE_DEBUG=${LANGFUSE_DEBUG:-true}
-      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
-      - RERANKER_ENDPOINT=${RERANKER_ENDPOINT:-http://tei-reranker:80/rerank}
-      - RERANK_TOP_K=${RERANK_TOP_K:-5}
-      - HYBRID_CANDIDATES_K=${HYBRID_CANDIDATES_K:-10}
+      - "127.0.0.1:8000:8000"   # the browser talks to the frontend (Next rewrites /api); expose this only behind an authenticating proxy
     volumes:
-      - ./dataset:/app/dataset
-      - ./src:/app/src
-      - ./.env:/app/.env
+      - ./dataset:/app/dataset   # documents for ingestion; ingestion writes its walkthrough report here
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      langfuse-web:   # tracing is optional: start after it is up so the keys are checked against a live server, but never block on it
+        condition: service_healthy
+        required: false
 
-  # 4. Next.js 14 App Router UI (Layer 1 Frontend)
+  # 4. Frontend: Next.js 14 (rewrites /api/* to the backend)
   frontend:
-    build: ./frontend
+    <<: *restart
+    build:
+      context: ./frontend
+      args:
+        API_URL: http://backend:8000
+    image: agent-frontend:latest
     container_name: agent_frontend
+    environment:
+      API_URL: http://backend:8000
     ports:
       - "3001:3000"
-    environment:
-      - API_URL=http://backend:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
-  # 5. Langfuse Web — LLM Observability & Tracing (Layer 4)
+  # 5. Langfuse web — LLM observability
   langfuse-web:
+    <<: *restart
     image: langfuse/langfuse:2
     container_name: agent_langfuse_web
     ports:
-      - "3005:3000"
+      - "127.0.0.1:3005:3000"
     environment:
-      DATABASE_URL: postgresql://admin:adminpassword@postgres:5432/agentdb?schema=langfuse&connection_limit=25
-      DIRECT_URL: postgresql://admin:adminpassword@postgres:5432/agentdb?schema=langfuse
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_URL: redis://redis:6379
-      REDIS_CONNECTION_STRING: redis://redis:6379
-      REDIS_AUTH: ""
+      <<: *langfuse-env
       NEXTAUTH_URL: http://localhost:3005
-      NEXTAUTH_SECRET: my-langfuse-secret-key-change-me
-      SALT: my-langfuse-salt-change-me
-      TELEMETRY_ENABLED: "false"
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+      # Headless provisioning (created once, skipped when they already exist): the project's API keys are the SAME
+      # LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY the backend uses, so tracing works without clicking through the UI.
+      LANGFUSE_INIT_ORG_ID: multi-agent
+      LANGFUSE_INIT_ORG_NAME: Multi-Agent
+      LANGFUSE_INIT_PROJECT_ID: multi-agent-mvp
+      LANGFUSE_INIT_PROJECT_NAME: Multi-Agent MVP
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@example.com}
+      LANGFUSE_INIT_USER_NAME: Admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://$$(hostname -i):3000/api/public/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
     stop_grace_period: 20s
     depends_on:
       postgres:
@@ -108,22 +147,14 @@ services:
       redis:
         condition: service_healthy
 
-  # 5b. Langfuse Worker — Async Queue & Background Processing
+  # 5b. Langfuse worker — async queue
   langfuse-worker:
+    <<: *restart
     image: langfuse/langfuse-worker:2
     container_name: agent_langfuse_worker
     environment:
-      DATABASE_URL: postgresql://admin:adminpassword@postgres:5432/agentdb?schema=langfuse&connection_limit=25
-      DIRECT_URL: postgresql://admin:adminpassword@postgres:5432/agentdb?schema=langfuse
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_URL: redis://redis:6379
-      REDIS_CONNECTION_STRING: redis://redis:6379
-      REDIS_AUTH: ""
+      <<: *langfuse-env
       NEXT_MANUAL_SIGHANDLE: "true"
-      NEXTAUTH_SECRET: my-langfuse-secret-key-change-me
-      SALT: my-langfuse-salt-change-me
-      TELEMETRY_ENABLED: "false"
     stop_grace_period: 20s
     depends_on:
       postgres:
@@ -131,28 +162,47 @@ services:
       redis:
         condition: service_healthy
 
-  # 6. TEI Reranker Service (Text Embeddings Inference)
+  # 6. TEI cross-encoder reranker
   tei-reranker:
+    <<: *restart
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.2
     container_name: agent_reranker
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     volumes:
       - reranker_data:/data
     command: --model-id BAAI/bge-reranker-base --auto-truncate
 
-  # 7. Secure Python Sandbox Container (Option 2 - Self-hosted Fallback)
+  # 7. Analysis sandbox: runs the Data Agent's LLM-written pandas code (src/agents/data_agent/sandbox_server.py).
+  # It sits on an internal-only network (no route to the internet, no database, no Redis): only the backend can reach it,
+  # and every request must carry an HMAC signature made with SANDBOX_SECRET.
   python-sandbox:
-    image: python:3.12-slim
+    <<: *restart
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    image: agent-sandbox:latest
     container_name: agent_python_sandbox
-    command: python -c "import time; time.sleep(86400)"
-    network_mode: none
+    environment:
+      SANDBOX_SECRET: ${SANDBOX_SECRET:?set SANDBOX_SECRET in .env (at least 16 random characters)}
+      MPLCONFIGDIR: /tmp/mpl
+    networks: [sandbox_net]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 256M
-    restart: unless-stopped
+          cpus: "1.0"
+          memory: 1g
+          pids: 128
+
+networks:
+  sandbox_net:
+    internal: true   # no gateway: containers on it cannot reach the internet
 
 volumes:
   postgres_data:

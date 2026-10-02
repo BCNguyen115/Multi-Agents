@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Search, X, MessageSquare, Clock, ChevronRight, Inbox, Command } from 'lucide-react';
 import { ChatSession } from './Sidebar';
+import { isDefaultChatTitle, t, useLang } from '../lib/i18n';
 
 interface SearchViewProps {
   sessions: ChatSession[];
@@ -11,6 +12,7 @@ interface SearchViewProps {
 }
 
 export function SearchView({ sessions, onSelectSession, onClose }: SearchViewProps) {
+  const [lang] = useLang();
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -47,12 +49,12 @@ export function SearchView({ sessions, onSelectSession, onClose }: SearchViewPro
       const diffMins = Math.floor(diffMs / 60000);
       const diffHrs = Math.floor(diffMs / 3600000);
       const diffDays = Math.floor(diffMs / 86400000);
-      if (diffMins < 1) return 'Vừa xong';
-      if (diffMins < 60) return `${diffMins} phút trước`;
-      if (diffHrs < 24) return `${diffHrs} giờ trước`;
-      if (diffDays === 1) return 'Hôm qua';
-      if (diffDays < 7) return `${diffDays} ngày trước`;
-      return d.toLocaleDateString('vi-VN');
+      if (diffMins < 1) return t(lang, 'time.justNow');
+      if (diffMins < 60) return t(lang, 'time.minutesAgo', { count: diffMins });
+      if (diffHrs < 24) return t(lang, 'time.hoursAgo', { count: diffHrs });
+      if (diffDays === 1) return t(lang, 'time.yesterday');
+      if (diffDays < 7) return t(lang, 'time.daysAgo', { count: diffDays });
+      return d.toLocaleDateString(lang === 'vi' ? 'vi-VN' : 'en-GB');
     } catch {
       return dateStr;
     }
@@ -66,9 +68,9 @@ export function SearchView({ sessions, onSelectSession, onClose }: SearchViewPro
       }}
       role="dialog"
       aria-modal="true"
-      aria-label="Command Palette Tìm kiếm hội thoại"
+      aria-label={t(lang, 'search.dialog')}
     >
-      <div className="w-full max-w-2xl bg-surface border border-border-strong rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[75vh] animate-scale-up">
+      <div className="w-full max-w-2xl bg-surface border border-border-strong rounded-2xl shadow-lg overflow-hidden flex flex-col max-h-[75vh] animate-scale-up">
         {/* Search Input Bar */}
         <div className="flex items-center gap-3 px-4 py-3.5 border-b border-border bg-surface-raised/40 shrink-0">
           <Search className="w-5 h-5 text-accent-primary shrink-0" />
@@ -77,7 +79,7 @@ export function SearchView({ sessions, onSelectSession, onClose }: SearchViewPro
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Tìm kiếm cuộc trò chuyện (nhấn ESC để thoát)..."
+            placeholder={t(lang, 'search.placeholder')}
             className="flex-1 bg-transparent text-foreground placeholder-foreground-muted text-sm focus:outline-none"
           />
           {query && (
@@ -85,7 +87,8 @@ export function SearchView({ sessions, onSelectSession, onClose }: SearchViewPro
               type="button"
               onClick={() => setQuery('')}
               className="text-foreground-muted hover:text-foreground p-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary/40"
-              title="Xóa tìm kiếm"
+              title={t(lang, 'search.clear')}
+              aria-label={t(lang, 'search.clear')}
             >
               <X className="w-4 h-4" />
             </button>
@@ -100,7 +103,7 @@ export function SearchView({ sessions, onSelectSession, onClose }: SearchViewPro
           {filteredSessions.length > 0 ? (
             <>
               <div className="px-2 py-1 text-xs text-foreground-muted font-semibold flex items-center justify-between">
-                <span>{query ? `${filteredSessions.length} kết quả phù hợp` : `${sessions.length} cuộc trò chuyện`}</span>
+                <span>{query ? t(lang, 'search.results', { count: filteredSessions.length }) : t(lang, 'search.total', { count: sessions.length })}</span>
                 <span className="flex items-center gap-1 text-xs font-mono">
                   <Command className="w-3 h-3" /> K
                 </span>
@@ -116,8 +119,8 @@ export function SearchView({ sessions, onSelectSession, onClose }: SearchViewPro
                     <MessageSquare className="w-4 h-4 text-foreground-muted group-hover:text-accent-primary transition-colors" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p title={session.title} className="text-sm font-semibold text-foreground truncate group-hover:text-accent-primary transition-colors">
-                      {session.title}
+                    <p title={isDefaultChatTitle(session.title) ? t(lang, 'chat.newTitle') : session.title} className="text-sm font-semibold text-foreground truncate group-hover:text-accent-primary transition-colors">
+                      {isDefaultChatTitle(session.title) ? t(lang, 'chat.newTitle') : session.title}
                     </p>
                     <div className="flex items-center gap-2 mt-0.5">
                       <Clock className="w-3 h-3 text-foreground-muted" />
@@ -126,7 +129,7 @@ export function SearchView({ sessions, onSelectSession, onClose }: SearchViewPro
                       </span>
                       {session.isPinned && (
                         <span className="text-xs bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2 py-0.2 rounded-full font-semibold">
-                          Đã ghim
+                          {t(lang, 'sidebar.pinned')}
                         </span>
                       )}
                     </div>
@@ -140,9 +143,9 @@ export function SearchView({ sessions, onSelectSession, onClose }: SearchViewPro
               <div className="w-14 h-14 rounded-2xl bg-surface-raised flex items-center justify-center mb-3">
                 <Inbox className="w-7 h-7 text-foreground-muted" />
               </div>
-              <p className="text-sm font-semibold text-foreground-secondary mb-1">Không tìm thấy kết quả</p>
+              <p className="text-sm font-semibold text-foreground-secondary mb-1">{t(lang, 'search.noResults')}</p>
               <p className="text-xs text-foreground-muted">
-                {query ? `Không có cuộc trò chuyện nào khớp với "${query}"` : 'Chưa có cuộc trò chuyện nào'}
+                {query ? t(lang, 'search.noMatch', { query }) : t(lang, 'search.noChats')}
               </p>
             </div>
           )}

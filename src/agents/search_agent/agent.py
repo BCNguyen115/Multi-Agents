@@ -10,7 +10,7 @@ from typing import Any
 
 from src.agents.base_agent import BaseAgent
 from src.config import Settings
-from src.orchestrator.verifier import audit_context_safety
+from src.shared.security import audit_context_safety
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
 from src.shared.security import unwrap_user_input
@@ -177,6 +177,9 @@ class SearchAgent(BaseAgent):
                 for res in search_results
             ]
             _, sanitized_contents, audit_findings = audit_context_safety(raw_contents)
+            # the title is attacker-controlled text too and goes into the same envelope
+            _, sanitized_titles, title_findings = audit_context_safety([res.get("title", "") for res in search_results])
+            audit_findings += title_findings
             if audit_findings:
                 logger.warning(
                     "SearchAgent audit detected %d unsafe web snippets: %s",
@@ -188,7 +191,7 @@ class SearchAgent(BaseAgent):
             # Combine context into Zero-Trust Data Spotlighting Envelopes
             context_blocks: list[str] = []
             for idx, res in enumerate(search_results):
-                title = res["title"]
+                title = sanitized_titles[idx] or res["title"]
                 url = res["url"]
                 clean_content = (
                     sanitized_contents[idx]

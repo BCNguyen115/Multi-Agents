@@ -27,17 +27,19 @@ Workflow Architecture:
     └── NO  (Retry < 2)   ──► Return to Executor with Verifier Feedback
 ```
 
-Checkpointer: Uses ``MemorySaver`` for state persistence per ``session_id``.
+No checkpointer: every request builds its whole state from scratch and nothing reads a saved one back, while ``MemorySaver``
+kept every checkpoint (CSV contents included) of every session in RAM forever. Conversation context lives in Redis history.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import re
+import time
 import uuid
 from typing import Any, AsyncGenerator, Literal, Optional
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from src.agents.base_agent import BaseAgent
@@ -47,19 +49,48 @@ from src.orchestrator.prompt_templates import (
     build_planner_prompt,
     build_verifier_prompt,
 )
+from src.orchestrator.approvals import ApprovalMixin
+from src.orchestrator.common import _DEFAULT_MAX_RETRIES, _build_pev_trace, _initial_state  # noqa: F401  (re-exported: tests and callers import them from here)
 from src.orchestrator.state import AgentState
+from src.orchestrator.streaming import StreamingMixin
 from src.registry.manager import AgentRegistry
+from src.shared import answer_stream
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
+from src.shared.messages import msg
+from src.shared.intents import is_dashboard_request as _is_dashboard_request
 from src.shared.memory_manager import MemoryManager
+from src.shared.auth import current_scope, memory_user_id
+from src.shared.security import unwrap_user_input
 
 logger: logging.Logger = get_logger(__name__)
 
 # Default max retries for Verifier rejection
-_DEFAULT_MAX_RETRIES: int = 2
+
+# mem0 does an LLM/embedding round trip per call
+_MEMORY_WRITE_TIMEOUT: float = 30.0
+_MEMORY_READ_TIMEOUT: float = 5.0  # the planner waits for this one, so keep it short
+
+_AUTO_MODES: tuple[str, ...] = ("auto", "all agents", "all_agents", "none", "")
+# UI mode string -> agent, first substring match wins
+_FORCED_ROUTES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("rag",), "rag_agent"),
+    (("search",), "search_agent"),
+    (("data",), "data_agent"),
+    (("db", "database", "sql"), "db_agent"),
+    (("integration", "api"), "integration_agent"),
+)
+_FORCED_PLANS: dict[str, str] = {
+    "rag_agent": "Tra cứu và trích xuất tài liệu nội bộ để trả lời câu hỏi: '{query}'.",
+    "search_agent": "Tìm kiếm thông tin trên Internet thời gian thực về: '{query}'.",
+    "db_agent": "Truy vấn cơ sở dữ liệu quan hệ PostgreSQL để trả lời: '{query}'.",
+    "integration_agent": "Kết nối và gọi API dịch vụ ngoài để xử lý: '{query}'.",
+}
 
 
-class Orchestrator:
+
+
+class Orchestrator(ApprovalMixin, StreamingMixin):
     """Enterprise Autonomous Orchestrator running on LangGraph PEV State Machine.
 
     Attributes:
@@ -68,7 +99,6 @@ class Orchestrator:
         llm_client: Centralised ``LLMClient`` for LLM operations.
         memory_manager: Long-term ``MemoryManager`` instance.
         model: Model identifier.
-        checkpointer: LangGraph ``MemorySaver`` checkpointer.
         graph: Compiled LangGraph runnable workflow.
     """
 
@@ -78,6 +108,7 @@ class Orchestrator:
         settings: Settings,
         llm_client: Optional[LLMClient] = None,
         memory_manager: Optional[MemoryManager] = None,
+        redis_client: Optional[Any] = None,
     ) -> None:
         """Initialise the LangGraph Orchestrator.
 
@@ -86,6 +117,8 @@ class Orchestrator:
             settings: Application settings.
             llm_client: Centralised LLM client (optional).
             memory_manager: Long-term memory manager (optional).
+            redis_client: When given, pending Human-in-the-Loop approvals are also kept in Redis, so they survive a
+                restart and can be approved on any replica (the in-process dict stays as the fast path / fallback).
         """
         self.registry: AgentRegistry = registry
         self.settings: Settings = settings
@@ -97,11 +130,12 @@ class Orchestrator:
 
         # Pending Human-in-the-Loop approvals storage
         self.pending_approvals: dict[str, dict[str, Any]] = {}
+        self.redis_client: Optional[Any] = redis_client
+        self._background_tasks: set[asyncio.Task[None]] = set()  # strong refs: the loop only keeps weak ones
 
         # --------------------------------------------------------------
         # LangGraph StateGraph Construction
         # --------------------------------------------------------------
-        self.checkpointer: MemorySaver = MemorySaver()
         workflow: StateGraph = StateGraph(AgentState)
 
         # Add Nodes
@@ -124,7 +158,7 @@ class Orchestrator:
             },
         )
 
-        self.graph: Any = workflow.compile(checkpointer=self.checkpointer)
+        self.graph: Any = workflow.compile()
 
         logger.info(
             "LangGraph Orchestrator (PEV Loop) initialised (model=%s, agents=%d)",
@@ -144,6 +178,7 @@ class Orchestrator:
         csv_content: str | None = None,
         csv_filename: str | None = None,
         agent_mode: str | None = None,
+        target_agent: str | None = None,
     ) -> str:
         """Route a user request through the LangGraph PEV workflow.
 
@@ -153,35 +188,23 @@ class Orchestrator:
             csv_content: Optional raw CSV file content.
             csv_filename: Optional original filename of the uploaded CSV.
             agent_mode: Optional explicit mode identifier (e.g. 'search_agent').
+            target_agent: Optional explicit target agent (e.g. 'rag_agent').
 
         Returns:
             str: Final response from the PEV state machine.
         """
         logger.info(
-            "LangGraph Orchestrator received request (query_len=%d, has_csv=%s, mode=%s)",
+            "LangGraph Orchestrator received request (query_len=%d, has_csv=%s, mode=%s, target_agent=%s)",
             len(query),
             bool(csv_content),
             agent_mode,
+            target_agent,
             extra={"session_id": session_id},
         )
 
-        initial_state: AgentState = {
-            "query": query,
-            "session_id": session_id,
-            "csv_content": csv_content,
-            "csv_filename": csv_filename,
-            "agent_mode": agent_mode,
-            "messages": [],
-            "team_memory": {},
-            "plan": "",
-            "target_agent": "",
-            "execution_result": "",
-            "final_response": "",
-            "is_verified": False,
-            "verifier_feedback": "",
-            "retry_count": 0,
-            "max_retries": _DEFAULT_MAX_RETRIES,
-        }
+        initial_state = _initial_state(
+            query, session_id, csv_content, csv_filename, agent_mode, target_agent
+        )
 
         request_id = str(uuid.uuid4())
         langfuse_handler = self.llm_client.get_langfuse_callback(
@@ -217,38 +240,14 @@ class Orchestrator:
 
             # Circuit Breaker: Annotate response if Verifier exhausted retries
             if not is_verified and retry_count >= final_state.get("max_retries", _DEFAULT_MAX_RETRIES):
-                warning_note = (
-                    "\n\n> **Cảnh báo:** Kết quả này chưa được kiểm duyệt đầy đủ "
-                    f"sau {retry_count} lần thử. Vui lòng kiểm tra lại thông tin trước khi sử dụng.\n\n"
-                )
                 logger.warning(
                     "PEV Loop: Max retries exhausted (retries=%d, verified=%s) — returning raw result with warning",
                     retry_count, is_verified,
                     extra={"session_id": session_id},
                 )
-                response_text = warning_note + response_text
+                response_text = self._annotate_unverified(response_text, retry_count)
 
-            pev_trace = {
-                "status": "Verified" if is_verified else "Warning",
-                "planner": {
-                    "node": "Planner Node",
-                    "target_agent": target_agent,
-                    "plan_summary": plan if len(plan) <= 200 else f"{plan[:200]}...",
-                    "status": "completed"
-                },
-                "executor": {
-                    "node": "Executor Node",
-                    "agent_used": target_agent,
-                    "execution_summary": f"Thực thi thành công trên Agent [{target_agent}].",
-                    "status": "completed"
-                },
-                "verifier": {
-                    "node": "Verifier Node",
-                    "is_verified": is_verified,
-                    "verifier_feedback": verifier_fb if verifier_fb else "Kiểm duyệt thành công: Kết quả hợp lệ 100%.",
-                    "status": "completed"
-                }
-            }
+            pev_trace = _build_pev_trace(target_agent, plan, is_verified, verifier_fb)
 
             # Embed pev_trace into JSON payload
             try:
@@ -271,15 +270,7 @@ class Orchestrator:
                 extra={"session_id": session_id},
             )
 
-            # Store memory async for future personalization
-            try:
-                await self.memory_manager.add_memory(
-                    user_id=session_id,
-                    text=f"User asked: '{query}' -> Target Agent: '{final_state.get('target_agent')}'",
-                )
-            except Exception as mem_err:
-                logger.warning("Failed to store memory: %s", mem_err)
-
+            self._remember_in_background(session_id, query)
             return response_text
 
         except Exception as exc:
@@ -288,449 +279,37 @@ class Orchestrator:
                 exc,
                 extra={"session_id": session_id},
             )
-            return (
-                "Đã xảy ra lỗi trong quá trình thực thi hệ thống PEV. "
-                "Vui lòng thử lại sau."
-            )
+            return msg("orch.pev_error")
         finally:
             if self.llm_client:
                 await self.llm_client.flush_async()
 
-    async def handle_approval_decision(
-        self,
-        session_id: str,
-        action_id: str,
-        decision: str,
-        feedback: Optional[str] = None,
-    ) -> dict[str, Any]:
-        """Handle human approval decision for a paused sensitive operation (HITL Gate).
+    async def _memory_call(self, fn: Any, *args: Any, timeout: float, **kwargs: Any) -> Any:
+        """Run a ``MemoryManager`` call in a worker thread. mem0 is synchronous (each call makes LLM/embedding requests
+        that take seconds): run inline it freezes the whole event loop, and ``wait_for`` cannot interrupt it."""
+        result = await asyncio.wait_for(asyncio.to_thread(fn, *args, **kwargs), timeout)
+        if inspect.isawaitable(result) and not isinstance(result, (list, dict)):  # async fakes; the real Dual* types are plain containers
+            result = await result
+        return result
 
-        Args:
-            session_id: Session correlation ID.
-            action_id: Unique action identifier for the pending approval.
-            decision: 'approve' to execute or 'reject' to abort.
-            feedback: Optional feedback/reason provided by human operator.
+    def _remember_in_background(self, session_id: str, query: str) -> None:
+        """Long-term memory extraction calls an LLM; the user must never wait for it (or for its retries).
 
-        Returns:
-            dict[str, Any]: Execution status, summary response, and metadata.
+        The text is what the user actually wrote (the gateway's nonce wrapper removed): mem0 extracts facts and
+        preferences from it, and extracts nothing from routing logs.
         """
-        logger.info(
-            "HITL Decision received: action_id=%s, decision=%s, session_id=%s",
-            action_id, decision, session_id,
-            extra={"session_id": session_id},
-        )
+        text: str = unwrap_user_input(query)[0]
+        owner: str = memory_user_id(session_id)  # resolved now, in the request's context
 
-        record = self.pending_approvals.get(action_id)
-        if not record:
-            # Fallback scan across pending approvals for matching session
-            for act_id, rec in list(self.pending_approvals.items()):
-                if rec.get("payload", {}).get("session_id") == session_id:
-                    record = rec
-                    action_id = act_id
-                    break
-
-        if not record:
-            return {
-                "status": "error",
-                "action_id": action_id,
-                "message": f"Yêu cầu phê duyệt '{action_id}' không tồn tại hoặc đã được xử lý.",
-            }
-
-        # Remove from pending queue
-        self.pending_approvals.pop(action_id, None)
-        saved_state: AgentState = record.get("state", {})
-        payload: dict[str, Any] = record.get("payload", {})
-        agent_name: str = payload.get("agent", "")
-
-        if decision.lower() == "reject":
-            reject_msg = (
-                f"Tác vụ [{action_id}] đã bị từ chối thực thi bởi quản trị viên. "
-                f"Lý do: {feedback or 'Người dùng đã hủy yêu cầu.'}"
-            )
-            return {
-                "status": "rejected",
-                "action_id": action_id,
-                "decision": "reject",
-                "message": reject_msg,
-                "response": reject_msg,
-            }
-
-        # User approved: execute operation
-        agent = self.registry.lookup(agent_name)
-        if not agent:
-            return {
-                "status": "error",
-                "action_id": action_id,
-                "message": f"Agent '{agent_name}' không tồn tại trong hệ thống.",
-            }
-
-        query = saved_state.get("query", "")
-        try:
-            if agent_name == "integration_agent":
-                req_payload = payload.get("payload", {})
-                url = req_payload.get("url", "")
-                method = req_payload.get("method", "GET")
-                body = req_payload.get("payload")
-
-                mcp_res = await agent.mcp_client.execute_rest_request(
-                    url=url, method=method, payload=body, session_id=session_id
-                )
-                try:
-                    res_dict = json.loads(mcp_res)
-                except Exception:
-                    res_dict = {"status": "success", "data": mcp_res}
-
-                status_code = res_dict.get("status_code", 200)
-                data = res_dict.get("data", {})
-                exec_summary = (
-                    f"**Đã phê duyệt & thực thi thành công API ({method} {url}):**\n\n"
-                    f"- **Status Code:** HTTP {status_code}\n"
-                    f"- **Kết quả:**\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
-                )
-                return {
-                    "status": "success",
-                    "action_id": action_id,
-                    "decision": "approve",
-                    "response": exec_summary,
-                    "data": data,
-                }
-
-            elif agent_name == "db_agent":
-                sql = payload.get("payload", {}).get("sql", "")
-                if not sql:
-                    sql_res, _ = await agent.generate_sql(query, session_id)
-                    sql = sql_res
-
-                from src.agents.db_agent.rls_transformer import inject_row_level_security
-                secured_sql = inject_row_level_security(
-                    sql, tenant_id="tenant_enterprise", department_id="dept_general"
-                )
-                mcp_res = await agent.mcp_client.execute_sql_query(
-                    query_sql=secured_sql, session_id=session_id
-                )
-                try:
-                    res_dict = json.loads(mcp_res)
-                except Exception:
-                    res_dict = {"status": "success", "data": mcp_res}
-
-                data = res_dict.get("data", [])
-                exec_summary = (
-                    f"**Đã phê duyệt & thực thi thành công truy vấn SQL:**\n\n"
-                    f"- **SQL:** `{secured_sql}`\n"
-                    f"- **Số dòng trả về:** {len(data)}\n"
-                    f"- **Dữ liệu:**\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
-                )
-                return {
-                    "status": "success",
-                    "action_id": action_id,
-                    "decision": "approve",
-                    "response": exec_summary,
-                    "data": data,
-                }
-            else:
-                exec_res = await agent.process_request(query, session_id)
-                return {
-                    "status": "success",
-                    "action_id": action_id,
-                    "decision": "approve",
-                    "response": exec_res,
-                }
-
-        except Exception as exec_err:
-            logger.error("Execution error after approval: %s", exec_err, extra={"session_id": session_id})
-            return {
-                "status": "error",
-                "action_id": action_id,
-                "message": f"Lỗi khi thực thi tác vụ sau khi phê duyệt: {exec_err}",
-            }
-
-    async def handle_stream_request(
-        self,
-        query: str,
-        session_id: str,
-        csv_content: str | None = None,
-        csv_filename: str | None = None,
-        agent_mode: str | None = None,
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """Route a request through PEV workflow and stream SSE events.
-
-        Yields SSE dicts with keys 'event' and 'data'.
-        """
-        logger.info(
-            "LangGraph Orchestrator stream request (query_len=%d, mode=%s)",
-            len(query),
-            agent_mode,
-            extra={"session_id": session_id},
-        )
-
-        initial_state: AgentState = {
-            "query": query,
-            "session_id": session_id,
-            "csv_content": csv_content,
-            "csv_filename": csv_filename,
-            "agent_mode": agent_mode,
-            "messages": [],
-            "team_memory": {},
-            "plan": "",
-            "target_agent": "",
-            "execution_result": "",
-            "final_response": "",
-            "is_verified": False,
-            "verifier_feedback": "",
-            "retry_count": 0,
-            "max_retries": _DEFAULT_MAX_RETRIES,
-        }
-
-        request_id = str(uuid.uuid4())
-        langfuse_handler = self.llm_client.get_langfuse_callback(
-            session_id=session_id,
-            user_id=session_id,
-            trace_name=f"pev_loop_stream_{agent_mode or 'auto'}",
-            tags=["pev_loop_stream", agent_mode or "auto"],
-            metadata={"request_id": request_id, "query": query[:120]},
-        )
-        config: dict[str, Any] = {
-            "configurable": {"thread_id": session_id}
-        }
-        if langfuse_handler:
-            config["callbacks"] = [langfuse_handler]
-
-        try:
-            # Yield initial active state for Planner Node
-            yield {
-                "event": "pev_step",
-                "data": json.dumps({
-                    "step": "planner",
-                    "status": "active",
-                    "target": agent_mode or "",
-                    "logs": "Đang phân tích yêu cầu và lập kế hoạch...",
-                }, ensure_ascii=False),
-            }
-            await asyncio.sleep(0.01)
-
-            async for event_data in self.graph.astream(initial_state, config=config):
-                for node_name, node_state in event_data.items():
-                    if node_name == "planner":
-                        target = node_state.get("target_agent", "")
-                        plan_str = node_state.get("plan", "")
-
-                        # 1. Phát event kết thúc Planner
-                        yield {
-                            "event": "plan",
-                            "data": json.dumps({
-                                "plan": plan_str,
-                                "target_agent": target,
-                            }, ensure_ascii=False),
-                        }
-                        await asyncio.sleep(0.01)
-
-                        yield {
-                            "event": "pev_step",
-                            "data": json.dumps({
-                                "step": "planner",
-                                "status": "completed",
-                                "target": target,
-                                "logs": f"Planner đã hoàn tất -> Kế hoạch giao cho [{target}].",
-                            }, ensure_ascii=False),
-                        }
-                        await asyncio.sleep(0.01)
-
-                        # 2. BẮT BUỘC PHÁT NGAY TRƯỚC KHI EXECUTOR BẮT ĐẦU:
-                        yield {
-                            "event": "pev_step",
-                            "data": json.dumps({
-                                "step": "executor",
-                                "status": "active",
-                                "target": target,
-                                "target_agent": target,
-                                "logs": f"Agent [{target}] đang thực thi tác vụ...",
-                            }, ensure_ascii=False),
-                        }
-                        await asyncio.sleep(0.01)
-
-                        # Phát sub-event tiến độ để thanh trạng thái nhấp nháy hoạt động
-                        yield {
-                            "event": "executing",
-                            "data": json.dumps({
-                                "status": "fetching_data",
-                                "target_agent": target,
-                                "message": f"Agent [{target}] đang khởi động và truy vấn dữ liệu...",
-                            }, ensure_ascii=False),
-                        }
-                        await asyncio.sleep(0.01)
-
-                    elif node_name == "executor":
-                        target = node_state.get("target_agent", "")
-                        exec_res = node_state.get("execution_result", "")
-                        requires_approval = node_state.get("requires_human_approval", False)
-                        approval_payload = node_state.get("approval_payload")
-
-                        if requires_approval and approval_payload:
-                            yield {
-                                "event": "human_approval_required",
-                                "data": json.dumps(approval_payload, ensure_ascii=False),
-                            }
-                            await asyncio.sleep(0.01)
-
-                            yield {
-                                "event": "pev_step",
-                                "data": json.dumps({
-                                    "step": "executor",
-                                    "status": "active",
-                                    "target": target,
-                                    "logs": f"Tác vụ nhạy cảm trên [{target}] đang chờ phê duyệt từ người dùng...",
-                                }, ensure_ascii=False),
-                            }
-                            await asyncio.sleep(0.01)
-
-                        # 1. Phát event hoàn tất Executor:
-                        yield {
-                            "event": "executing",
-                            "data": json.dumps({
-                                "target_agent": target,
-                                "execution_result": exec_res,
-                                "status": "completed",
-                            }, ensure_ascii=False),
-                        }
-                        await asyncio.sleep(0.01)
-
-                        yield {
-                            "event": "pev_step",
-                            "data": json.dumps({
-                                "step": "executor",
-                                "status": "completed",
-                                "target": target,
-                                "logs": f"Executor [{target}] đã hoàn tất xử lý tác vụ.",
-                            }, ensure_ascii=False),
-                        }
-                        await asyncio.sleep(0.01)
-
-                        # 2. BẮT BUỘC PHÁT NGAY TRƯỚC KHI VERIFIER BẮT ĐẦU:
-                        yield {
-                            "event": "pev_step",
-                            "data": json.dumps({
-                                "step": "verifier",
-                                "status": "active",
-                                "target": target,
-                                "logs": "Verifier đang kiểm định chất lượng phản hồi và đối soát kế hoạch...",
-                            }, ensure_ascii=False),
-                        }
-                        await asyncio.sleep(0.01)
-
-                    elif node_name == "verifier":
-                        is_v = node_state.get("is_verified", False)
-                        fb = node_state.get("verifier_feedback", "")
-                        retries = node_state.get("retry_count", 0)
-
-                        yield {
-                            "event": "verifying",
-                            "data": json.dumps({
-                                "is_verified": is_v,
-                                "verifier_feedback": fb,
-                                "retry_count": retries,
-                            }, ensure_ascii=False),
-                        }
-                        await asyncio.sleep(0.01)
-
-                        yield {
-                            "event": "pev_step",
-                            "data": json.dumps({
-                                "step": "verifier",
-                                "status": "completed" if is_v else "retry",
-                                "feedback": fb,
-                                "logs": "Verifier đã hoàn tất kiểm định." if is_v else f"Verifier yêu cầu chỉnh sửa (Lần {retries}).",
-                            }, ensure_ascii=False),
-                        }
-                        await asyncio.sleep(0.01)
-
-            final_checkpoint = await self.graph.aget_state(config)
-            final_values = final_checkpoint.values if final_checkpoint else {}
-            response_text = (
-                final_values.get("final_response")
-                or final_values.get("execution_result")
-                or GRACEFUL_DECLINE_MESSAGE
-            )
-            is_v = final_values.get("is_verified", True)
-            retries = final_values.get("retry_count", 0)
-            max_retries = final_values.get("max_retries", _DEFAULT_MAX_RETRIES)
-
-            # Circuit Breaker: Annotate response if Verifier exhausted retries
-            if not is_v and retries >= max_retries:
-                warning_note = (
-                    "\n\n> **Cảnh báo:** Kết quả này chưa được kiểm duyệt đầy đủ "
-                    f"sau {retries} lần thử. Vui lòng kiểm tra lại thông tin trước khi sử dụng.\n\n"
-                )
-                if warning_note not in response_text:
-                    response_text = warning_note + response_text
-                logger.warning(
-                    "Stream PEV Loop: Max retries exhausted (retries=%d, verified=%s) — annotated response",
-                    retries, is_v,
-                    extra={"session_id": session_id},
-                )
-
-            yield {
-                "event": "pev_step",
-                "data": json.dumps({
-                    "step": "completed",
-                    "status": "verified" if is_v else "warning",
-                }, ensure_ascii=False),
-            }
-            await asyncio.sleep(0.01)
-
-            target_agent = final_values.get("target_agent", "")
-            plan_str = final_values.get("plan", "")
-            verifier_fb = final_values.get("verifier_feedback", "")
-
-            pev_trace = {
-                "status": "Verified" if is_v else "Warning",
-                "planner": {
-                    "node": "Planner Node",
-                    "target_agent": target_agent,
-                    "plan_summary": plan_str if len(plan_str) <= 200 else f"{plan_str[:200]}...",
-                    "status": "completed",
-                },
-                "executor": {
-                    "node": "Executor Node",
-                    "agent_used": target_agent,
-                    "execution_summary": f"Thực thi thành công trên Agent [{target_agent}].",
-                    "status": "completed",
-                },
-                "verifier": {
-                    "node": "Verifier Node",
-                    "is_verified": is_v,
-                    "verifier_feedback": verifier_fb if verifier_fb else "Kiểm duyệt thành công: Kết quả hợp lệ 100%.",
-                    "status": "completed",
-                },
-            }
-
-            yield {
-                "event": "final_response",
-                "data": json.dumps({
-                    "response": response_text,
-                    "target_agent": target_agent,
-                    "is_verified": is_v,
-                    "pev_trace": pev_trace,
-                }, ensure_ascii=False),
-            }
-            await asyncio.sleep(0.01)
-
+        async def store() -> None:
             try:
-                await self.memory_manager.add_memory(
-                    user_id=session_id,
-                    text=f"User asked: '{query}' -> Target Agent: '{final_values.get('target_agent')}'",
-                )
-            except Exception as mem_err:
-                logger.warning("Failed to store memory in stream: %s", mem_err)
+                await self._memory_call(self.memory_manager.add_memory, user_id=owner, text=text, timeout=_MEMORY_WRITE_TIMEOUT)
+            except Exception as mem_err:  # noqa: BLE001 - personalisation is best effort
+                logger.warning("Failed to store memory: %s", mem_err or type(mem_err).__name__, extra={"session_id": session_id})
 
-        except Exception as exc:
-            logger.error("LangGraph streaming error: %s", exc, extra={"session_id": session_id})
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": f"Lỗi thực thi PEV Loop: {exc}"}, ensure_ascii=False),
-            }
-        finally:
-            if self.llm_client:
-                await self.llm_client.flush_async()
+        task = asyncio.get_running_loop().create_task(store())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def _determine_fallback_route(
         self, query: str, csv_content: Optional[str] = None
@@ -740,13 +319,7 @@ class Orchestrator:
 
         # 1. File CSV đính kèm
         if csv_content:
-            is_viz = any(
-                kw in q_lower
-                for kw in ["dashboard", "biểu đồ", "chart", "vẽ", "trực quan hóa", "dựng báo cáo", "phân bố", "tỷ trọng"]
-            ) and not any(
-                neg in q_lower
-                for neg in ["không cần biểu đồ", "không dựng dashboard", "không vẽ chart", "dạng văn bản", "chỉ tóm tắt", "dạng text"]
-            )
+            is_viz = _is_dashboard_request(query)
             plan = "Phân tích dữ liệu từ file CSV qua Dashboard." if is_viz else "Phân tích dữ liệu từ file CSV và tổng hợp kết quả."
             return "data_agent", plan, is_viz
 
@@ -796,38 +369,50 @@ class Orchestrator:
             # Retrieve long-term memories safely
             memories: list[str] = []
             try:
-                memories = await self.memory_manager.get_relevant_memories(
-                    user_id=session_id, query=query, limit=3
+                memories = await self._memory_call(
+                    self.memory_manager.get_relevant_memories,
+                    user_id=memory_user_id(session_id), query=unwrap_user_input(query)[0], limit=3, timeout=_MEMORY_READ_TIMEOUT,
                 )
             except Exception as mem_err:
                 logger.warning("Planner memory retrieval exception: %s", mem_err, extra={"session_id": session_id})
 
             memory_str: str = "\n".join(f"- {m}" for m in memories) if memories else "None"
 
-            # Force-route to search_agent if explicitly requested in agent_mode
-            agent_mode: Optional[str] = state.get("agent_mode")
-            if agent_mode == "search_agent" or (agent_mode and "search" in agent_mode.lower()):
+            # Forced agent (UI mode) has absolute priority over LLM routing
+            forced_agent: Optional[str] = (
+                state.get("forced_target_agent")
+                or state.get("target_agent")
+                or state.get("agent_mode")
+            )
+            fa_norm = (forced_agent or "").strip().lower()
+            if fa_norm not in _AUTO_MODES:
+                chosen_agent = next(
+                    (agent for keys, agent in _FORCED_ROUTES if any(k in fa_norm for k in keys)),
+                    forced_agent,
+                )
                 logger.info(
-                    "Planner: Mode forced -> Target agent = 'search_agent'",
+                    "Planner: Mode forced by user -> Target agent = '%s' (bypassing LLM classification)",
+                    chosen_agent,
                     extra={"session_id": session_id},
                 )
+                is_viz = chosen_agent == "data_agent" and _is_dashboard_request(query)
+                if chosen_agent == "data_agent":
+                    plan = f"Phân tích dữ liệu tệp CSV và {'trực quan hóa qua Dashboard' if is_viz else 'tóm tắt kết quả'}."
+                else:
+                    plan = _FORCED_PLANS.get(chosen_agent, "Thực thi yêu cầu với {agent}: '{query}'.").format(
+                        agent=chosen_agent, query=query
+                    )
                 return {
-                    "plan": f"Tìm kiếm thông tin trên Internet về: '{query}'.",
-                    "target_agent": "search_agent",
-                    "requires_dashboard": False,
+                    "plan": plan,
+                    "target_agent": chosen_agent,
+                    "requires_dashboard": is_viz,
                     "team_memory": {"long_term_memories": memories},
                 }
 
             # Force-route to data_agent if CSV is provided with intent-aware dashboard check
             if csv_content:
                 query_lower = query.lower()
-                is_viz = any(
-                    kw in query_lower
-                    for kw in ["dashboard", "biểu đồ", "chart", "vẽ", "trực quan hóa", "dựng báo cáo", "phân bố", "tỷ trọng"]
-                ) and not any(
-                    neg in query_lower
-                    for neg in ["không cần biểu đồ", "không dựng dashboard", "không vẽ chart", "dạng văn bản", "chỉ tóm tắt", "dạng text", "tóm tắt văn bản"]
-                )
+                is_viz = _is_dashboard_request(query)
                 if is_viz:
                     logger.info(
                         "Planner: CSV attached with visual request -> Target 'data_agent', requires_dashboard=True",
@@ -1057,7 +642,8 @@ class Orchestrator:
                 except Exception as err:
                     return {"agent": target, "task": sub_q, "error": str(err), "result": f"Lỗi: {err}"}
 
-            parallel_outputs = await asyncio.gather(*[run_subtask(t) for t in sub_tasks])
+            with answer_stream.suspended():  # sub-answers are merged by the synthesis below: none of them is "the answer" to preview
+                parallel_outputs = await asyncio.gather(*[run_subtask(t) for t in sub_tasks])
             synthesized = await self._synthesize_parallel_outputs(query, parallel_outputs, session_id)
             return {
                 "execution_result": synthesized,
@@ -1106,7 +692,7 @@ class Orchestrator:
         # 2a. Integration Agent: Mutation HTTP methods require human approval
         if target_agent_name == "integration_agent":
             if is_approved is False:
-                reject_msg = f"Tác vụ gọi API đã bị từ chối bởi người dùng: {human_feedback or 'Người dùng đã hủy lệnh.'}"
+                reject_msg = msg("orch.api_rejected", reason=human_feedback or msg("orch.cancelled_command"))
                 return {
                     "execution_result": json.dumps({"status": "rejected", "message": reject_msg}, ensure_ascii=False),
                     "final_response": reject_msg,
@@ -1121,7 +707,7 @@ class Orchestrator:
                         "session_id": session_id,
                         "agent": "integration_agent",
                         "action_type": "api_mutation",
-                        "description": explanation or f"Thực hiện gọi REST API {method} tới {url}",
+                        "description": explanation or msg("orch.api_desc", method=method, url=url),
                         "payload": {
                             "url": url,
                             "method": method,
@@ -1129,10 +715,8 @@ class Orchestrator:
                         },
                         "risk_level": "high",
                     }
-                    self.pending_approvals[action_id] = {
-                        "state": state,
-                        "payload": approval_payload,
-                    }
+                    self._store_pending(action_id, state, approval_payload)
+                    await self._persist_pending(action_id)
                     logger.warning(
                         "HITL Gate Triggered: Integration mutating request '%s %s' paused for approval (action_id=%s)",
                         method, url, action_id,
@@ -1141,20 +725,20 @@ class Orchestrator:
                     pause_res = json.dumps({
                         "requires_human_approval": True,
                         "approval_payload": approval_payload,
-                        "message": "Tác vụ gọi API này làm thay đổi dữ liệu và yêu cầu sự phê duyệt từ quản trị viên trước khi thực thi.",
+                        "message": msg("orch.api_needs_approval"),
                     }, ensure_ascii=False)
                     return {
                         "requires_human_approval": True,
                         "approval_payload": approval_payload,
                         "action_id": action_id,
                         "execution_result": pause_res,
-                        "final_response": "Tác vụ gọi API này làm thay đổi dữ liệu và yêu cầu sự phê duyệt từ quản trị viên trước khi thực thi.",
+                        "final_response": msg("orch.api_needs_approval"),
                     }
 
         # 2b. Database Agent: Sensitive table/column queries require human approval
         elif target_agent_name == "db_agent":
             if is_approved is False:
-                reject_msg = f"Truy vấn SQL đã bị từ chối bởi người dùng: {human_feedback or 'Người dùng đã hủy lệnh.'}"
+                reject_msg = msg("orch.sql_rejected", reason=human_feedback or msg("orch.cancelled_command"))
                 return {
                     "execution_result": json.dumps({"status": "rejected", "message": reject_msg}, ensure_ascii=False),
                     "final_response": reject_msg,
@@ -1169,17 +753,15 @@ class Orchestrator:
                         "session_id": session_id,
                         "agent": "db_agent",
                         "action_type": "sensitive_db_query",
-                        "description": explanation or "Truy vấn dữ liệu tài chính/bảng lương/nhân sự nhạy cảm",
+                        "description": explanation or msg("orch.sql_desc"),
                         "payload": {
                             "sql": sql_preview,
                             "query": exec_query,
                         },
                         "risk_level": "critical",
                     }
-                    self.pending_approvals[action_id] = {
-                        "state": state,
-                        "payload": approval_payload,
-                    }
+                    self._store_pending(action_id, state, approval_payload)
+                    await self._persist_pending(action_id)
                     logger.warning(
                         "HITL Gate Triggered: Sensitive SQL query paused for approval (action_id=%s): %s",
                         action_id, sql_preview[:80],
@@ -1188,14 +770,14 @@ class Orchestrator:
                     pause_res = json.dumps({
                         "requires_human_approval": True,
                         "approval_payload": approval_payload,
-                        "message": "Truy vấn SQL này chạm vào bảng hoặc dữ liệu nhạy cảm (bảng lương/tài chính/nhân sự) và yêu cầu sự phê duyệt của người dùng trước khi thực thi.",
+                        "message": msg("orch.sql_needs_approval"),
                     }, ensure_ascii=False)
                     return {
                         "requires_human_approval": True,
                         "approval_payload": approval_payload,
                         "action_id": action_id,
                         "execution_result": pause_res,
-                        "final_response": "Truy vấn SQL này chạm vào bảng hoặc dữ liệu nhạy cảm (bảng lương/tài chính/nhân sự) và yêu cầu sự phê duyệt của người dùng trước khi thực thi.",
+                        "final_response": msg("orch.sql_needs_approval"),
                     }
 
         requires_dashboard = state.get("requires_dashboard")
@@ -1236,6 +818,99 @@ class Orchestrator:
                 "final_response": "Đã xảy ra lỗi trong quá trình xử lý yêu cầu.",
             }
 
+    @staticmethod
+    def _rag_verdict(verification: dict[str, Any], retry_count: int) -> dict[str, Any]:
+        """Verdict on a RAG answer from the agent's own checks: it must cite sources and use only numbers that
+        appear in them. "Nothing found" is a valid answer; a retrieval error is worth one more try."""
+        status = verification.get("status")
+        if status == "not_found":
+            return {"is_verified": True, "verifier_feedback": ""}
+        problems: list[str] = []
+        if status == "error":
+            problems.append("không truy xuất được tài liệu")
+        else:
+            if not verification.get("grounded"):
+                problems.append("câu trả lời chưa trích dẫn nguồn dạng [n]")
+            if verification.get("unsupported_numbers"):
+                problems.append("các con số " + ", ".join(map(str, verification["unsupported_numbers"])) + " không có trong nguồn")
+        if not problems:
+            return {"is_verified": True, "verifier_feedback": ""}
+        feedback = "; ".join(problems) + ". Chỉ dùng thông tin và con số có trong nguồn và luôn trích dẫn [n]."
+        return {"is_verified": False, "verifier_feedback": feedback, "retry_count": retry_count + 1}
+
+    @staticmethod
+    def _db_verdict(parsed: dict[str, Any], retry_count: int) -> dict[str, Any]:
+        """Deterministic check on a db_agent answer: every number in its prose must come from the rows it returned,
+        the row count or the SQL itself (``LIMIT 5``, ``2024``). The LLM judge still runs after it (does the SQL
+        answer the question?); this only stops invented figures. Nothing to check when no rows came back."""
+        from src.agents.data_agent.grounding import _walk, extract_numbers, numbers_grounded
+
+        rows = parsed.get("data")
+        if not isinstance(rows, list) or not rows:
+            return {"is_verified": True, "verifier_feedback": ""}
+        sql = str(parsed.get("sql") or "")
+        prose = str(parsed.get("answer") or "").replace(f"`{sql}`", " ")
+        numbers: list[float] = [float(parsed["row_count"])] if isinstance(parsed.get("row_count"), (int, float)) else []
+        strings: list[str] = []
+        _walk(rows, numbers, strings)
+        numbers += [value for value, _, _ in extract_numbers(sql)]
+        ok, unmatched = numbers_grounded(prose, [], extra_numbers=numbers, extra_strings=strings, literals=())
+        if ok:
+            return {"is_verified": True, "verifier_feedback": ""}
+        feedback = "các con số " + ", ".join(unmatched) + " không có trong kết quả truy vấn. Chỉ nêu số có trong dữ liệu trả về."
+        return {"is_verified": False, "verifier_feedback": feedback, "retry_count": retry_count + 1}
+
+    @staticmethod
+    def _annotate_unverified(response_text: str, retries: int) -> str:
+        """Warn that a result never passed verification without breaking JSON payloads (answer + sources,
+        dashboard spec): the note goes into the human-readable field, plain text just gets it prepended."""
+        marker = "chưa được kiểm duyệt đầy đủ"
+        note = f"> **Cảnh báo:** Kết quả này {marker} sau {retries} lần thử. Vui lòng kiểm tra lại thông tin trước khi sử dụng."
+        if marker in response_text:
+            return response_text
+        try:
+            parsed = json.loads(response_text)
+        except (json.JSONDecodeError, TypeError):
+            return f"\n\n{note}\n\n{response_text}"
+        if isinstance(parsed, dict):
+            for key in ("answer", "explanation", "content"):
+                if isinstance(parsed.get(key), str):
+                    parsed[key] = f"{note}\n\n{parsed[key]}"
+                    break
+            else:
+                parsed["warning"] = note
+            parsed["unverified"] = True
+            return json.dumps(parsed, ensure_ascii=False)
+        return f"\n\n{note}\n\n{response_text}"
+
+    @staticmethod
+    def _audit_dashboard(csv_content: Optional[str], parsed: dict[str, Any], retry_count: int) -> Optional[dict[str, Any]]:
+        """Recompute the dashboard from the uploaded file (never from rows the agent shipped: a spec cannot
+        vouch for its own data). Returns a verifier-node update, or ``None`` when there is nothing to audit
+        against."""
+        from src.agents.data_agent.ingest import safe_read_csv
+        from src.orchestrator.verifier import auto_remediate_chart_specs, verify_dashboard_spec
+
+        spec = parsed["dashboard_spec"]
+        if not csv_content:  # follow-up restored from the session cache: the agent's inline verification is the evidence
+            trace = parsed.get("pev_trace") or {}
+            verified = bool(trace.get("is_verified", True))
+            return {"is_verified": verified, "verifier_feedback": "" if verified else "; ".join(trace.get("error_feedback", []))}
+        df = safe_read_csv(csv_content)
+        if df.empty:
+            return None
+        is_valid, audit_msg = verify_dashboard_spec(df, spec)
+        if is_valid:
+            return {"is_verified": True, "verifier_feedback": ""}
+        if retry_count >= 1:  # deterministic repair before giving up (avoids tripping the circuit breaker)
+            repaired = auto_remediate_chart_specs(df, spec)
+            if verify_dashboard_spec(df, repaired)[0]:
+                parsed["dashboard_spec"] = repaired
+                new_result = json.dumps(parsed, ensure_ascii=False)
+                return {"execution_result": new_result, "final_response": new_result, "is_verified": True, "verifier_feedback": "", "retry_count": retry_count}
+        logger.warning("Strict Verifier Audit failed: %s", audit_msg)
+        return {"is_verified": False, "verifier_feedback": audit_msg, "retry_count": retry_count + 1}
+
     async def _verifier_node(self, state: AgentState) -> dict[str, Any]:
         """Verifier Node — Evaluates execution_result against user query & plan."""
         query: str = state.get("query", "")
@@ -1256,25 +931,29 @@ class Orchestrator:
                 "verifier_feedback": "",
             }
 
-        # Strict Schema Audit for CSV Data Agent results
+        # Strict schema audit for data-agent results: deterministic, so no LLM judge is needed once it passes.
         csv_content = state.get("csv_content")
-        if csv_content and result:
+        try:
+            parsed_res = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            parsed_res = None
+        if isinstance(parsed_res, dict) and parsed_res.get("type") == "error":
+            return {"is_verified": True, "verifier_feedback": ""}  # a clear user-facing error is the correct answer
+        if isinstance(parsed_res, dict) and isinstance(parsed_res.get("verification"), dict):
+            return self._rag_verdict(parsed_res["verification"], retry_count)  # deterministic: no LLM judge
+        if isinstance(parsed_res, dict) and "sql" in parsed_res and isinstance(parsed_res.get("data"), list):  # db_agent
+            db_verdict = self._db_verdict(parsed_res, retry_count)
+            if not db_verdict["is_verified"]:  # invented figures: no point asking the judge, retry with the feedback
+                return db_verdict
+        if isinstance(parsed_res, dict) and parsed_res.get("dashboard_spec"):
             try:
-                from src.agents.data_agent.agent import safe_read_csv
-                from src.orchestrator.verifier import verify_dashboard_spec
-                df = safe_read_csv(csv_content)
-                parsed_res = json.loads(result)
-                if isinstance(parsed_res, dict) and "dashboard_spec" in parsed_res and parsed_res["dashboard_spec"]:
-                    is_valid, audit_msg = verify_dashboard_spec(df, parsed_res["dashboard_spec"])
-                    if not is_valid:
-                        logger.warning("Strict Verifier Audit failed: %s", audit_msg)
-                        return {
-                            "is_verified": False,
-                            "verifier_feedback": audit_msg,
-                            "retry_count": retry_count + 1,
-                        }
-            except Exception as audit_err:
-                logger.warning("Verifier schema audit exception: %s", audit_err)
+                verdict = await asyncio.to_thread(self._audit_dashboard, csv_content, parsed_res, retry_count)
+            except Exception as audit_err:  # noqa: BLE001 - an audit crash must not block the answer
+                logger.warning("Verifier schema audit exception: %s", audit_err, extra={"session_id": session_id})
+                verdict = None
+            if verdict is not None:
+                logger.info("Strict audit verdict: is_verified=%s", verdict.get("is_verified"), extra={"session_id": session_id})
+                return verdict
 
         verifier_prompt: str = build_verifier_prompt(
             query=query,
@@ -1337,20 +1016,9 @@ class Orchestrator:
         retry_count: int = state.get("retry_count", 0)
         max_retries: int = state.get("max_retries", _DEFAULT_MAX_RETRIES)
 
-        if is_verified or retry_count >= max_retries:
-            # If exiting due to max retries (not verified), annotate the response
-            if not is_verified and retry_count >= max_retries:
-                current_response: str = state.get("final_response", "")
-                warning_prefix: str = (
-                    "\n\n> **Cảnh báo:** Kết quả này chưa được kiểm duyệt đầy đủ "
-                    f"sau {retry_count} lần thử. Vui lòng kiểm tra lại thông tin trước khi sử dụng.\n\n"
-                )
-                if warning_prefix not in current_response:
-                    # Note: TypedDict state is immutable in LangGraph routing,
-                    # so annotation is handled in handle_request post-processing.
-                    pass
-            return "end"
-        return "continue_executor"
+        # Warning annotation on exhausted retries is applied in handle_request / handle_stream_request
+        # (routing functions cannot mutate LangGraph state).
+        return "end" if is_verified or retry_count >= max_retries else "continue_executor"
 
     # ------------------------------------------------------------------
     # JSON Parsing Helpers

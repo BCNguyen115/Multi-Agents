@@ -9,30 +9,52 @@ Provides:
   3. ``list_tools``: Self-describing tool registry for LLM agents.
 """
 
+import asyncio
+import ipaddress
 import json
 import logging
 import re
+import socket
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
+from src.config import settings
+from src.shared.auth import current_scope
 from src.shared.logger import get_logger
 from src.shared.postgres_client import PostgresClient
 
 logger: logging.Logger = get_logger(__name__)
 
-# Allowed domains for Enterprise integration tools
-ALLOWED_DOMAINS: set[str] = {
-    "localhost",
-    "127.0.0.1",
-    "[::1]",
-    "api.enterprise.internal",
-    "jsonplaceholder.typicode.com",
-    "httpbin.org",
-    "example.com",
-}
+# Hosts that are meant to be local/private: exempt from the "must resolve to a public address" check below
+_LOCAL_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "[::1]"})
+
+
+def _is_internal_host(hostname: str) -> bool:
+    return hostname in _LOCAL_HOSTS or hostname.endswith(".internal")
+
+
+async def resolves_to_private_address(hostname: str) -> bool:
+    """True when ``hostname`` (a public-looking, allow-listed name) points at a private/loopback/link-local/reserved
+    address: DNS pointing an allowed name at the cloud metadata service (169.254.169.254) or an internal host is the classic
+    SSRF route past a hostname allow-list. An unresolvable name counts as blocked.
+
+    Limitation: the address is checked here and resolved again by the HTTP client (DNS rebinding in between is possible);
+    pinning the checked address would need a custom transport.
+    """
+    if _is_internal_host(hostname):
+        return False
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(hostname.strip("[]"), None, type=socket.SOCK_STREAM)
+    except OSError:
+        return True
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split("%")[0])
+        if not address.is_global:
+            return True
+    return False
 
 _SHELL_INJECTION_CHARS = re.compile(r"[;`|$\n\r]|&&|\|\||\$\(")
 _PATH_TRAVERSAL_CHARS = re.compile(r"\.\./|\.\.\\|%2e%2e|/\.\.", re.IGNORECASE)
@@ -65,7 +87,7 @@ class RESTToolInput(BaseModel):
         if not hostname:
             raise ValueError("Invalid URL: missing hostname.")
 
-        if hostname not in ALLOWED_DOMAINS and not hostname.endswith(".internal"):
+        if hostname not in {h.lower() for h in settings.INTEGRATION_ALLOWED_HOSTS} and not hostname.endswith(".internal"):
             raise ValueError(f"Domain '{hostname}' is not in the trusted enterprise whitelist.")
 
         return clean_url
@@ -109,14 +131,18 @@ class MCPClient:
         http_client: Async ``httpx.AsyncClient`` instance for REST calls.
     """
 
-    def __init__(self, pg_client: Optional[PostgresClient] = None) -> None:
+    def __init__(self, pg_client: Optional[PostgresClient] = None, scoped: bool = False) -> None:
         """Initialise the MCP Client.
 
         Args:
             pg_client: Optional pre-connected PostgresClient.
+            scoped: Run every query inside a transaction that carries the current caller's tenant/department, so the
+                database's own Row-Level Security policies apply (use with the read-only role, see ``db_roles``).
         """
         self.pg_client: Optional[PostgresClient] = pg_client
-        self.http_client: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0)
+        self.scoped: bool = scoped
+        # No redirects: an allow-listed host must not be able to bounce the request to one that is not
+        self.http_client: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
 
     # ------------------------------------------------------------------
     # MCP Database Tool Execution
@@ -188,9 +214,15 @@ class MCPClient:
             )
 
         try:
-            records = await self.pg_client.fetch(
-                clean_query, *query_params, session_id=session_id
-            )
+            if self.scoped:
+                tenant_id, department_id = current_scope()
+                records = await self.pg_client.fetch_scoped(
+                    clean_query, *query_params, tenant_id=tenant_id, department_id=department_id, session_id=session_id
+                )
+            else:
+                records = await self.pg_client.fetch(
+                    clean_query, *query_params, session_id=session_id
+                )
             # Convert Record objects to list of dicts
             results: list[dict[str, Any]] = [dict(record) for record in records]
 
@@ -274,6 +306,14 @@ class MCPClient:
                     "status": "error",
                     "message": f"Security policy violation in REST request: {val_err}",
                 },
+                ensure_ascii=False,
+            )
+
+        host = (urlparse(target_url).hostname or "").lower()
+        if await resolves_to_private_address(host):
+            logger.warning("MCP Security: %s resolves to a private or unresolvable address, request refused", host, extra={"session_id": session_id})
+            return json.dumps(
+                {"status": "error", "message": f"Security policy: '{host}' resolves to a private or unresolvable address."},
                 ensure_ascii=False,
             )
 

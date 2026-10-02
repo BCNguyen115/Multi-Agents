@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-02T09:30:00Z",
+  "title": "Design System: Multi-Agent Enterprise System",
+  "extensions": {
+    "colorMeta": {
+      "primary": { "role": "primary", "displayName": "Interface Blue", "canonical": "#3b82f6", "tonalRamp": ["#172554", "#1e3a8a", "#1d4ed8", "#2563eb", "#3b82f6", "#60a5fa", "#93c5fd", "#dbeafe"] },
+      "planner": { "role": "secondary", "displayName": "Planner Amber", "canonical": "#f59e0b", "tonalRamp": ["#451a03", "#78350f", "#b45309", "#d97706", "#f59e0b", "#fbbf24", "#fcd34d", "#fef3c7"] },
+      "executor": { "role": "secondary", "displayName": "Executor Indigo", "canonical": "#6366f1", "tonalRamp": ["#1e1b4b", "#312e81", "#4338ca", "#4f46e5", "#6366f1", "#818cf8", "#a5b4fc", "#e0e7ff"] },
+      "verifier": { "role": "secondary", "displayName": "Verifier Emerald", "canonical": "#10b981", "tonalRamp": ["#022c22", "#064e3b", "#047857", "#059669", "#10b981", "#34d399", "#6ee7b7", "#d1fae5"] },
+      "error": { "role": "secondary", "displayName": "Alert Rose", "canonical": "#f43f5e", "tonalRamp": ["#4c0519", "#881337", "#be123c", "#e11d48", "#f43f5e", "#fb7185", "#fda4af", "#ffe4e6"] },
+      "brand-fpt-blue": { "role": "tertiary", "displayName": "FPT Blue", "canonical": "#005697", "tonalRamp": ["#002949", "#003e6d", "#004880", "#005697", "#3b7cb0", "#9cc3e6", "#e0effe", "#f0f7ff"] },
+      "background": { "role": "neutral", "displayName": "Ink Base", "canonical": "#09090b", "tonalRamp": ["#09090b", "#18181b", "#27272a", "#3f3f46", "#71717a", "#a1a1aa", "#d4d4d8", "#f4f4f5"] },
+      "surface": { "role": "neutral", "displayName": "Panel Zinc", "canonical": "#18181b", "tonalRamp": ["#09090b", "#18181b", "#27272a", "#3f3f46", "#71717a", "#a1a1aa", "#d4d4d8", "#f4f4f5"] }
+    },
+    "typographyMeta": {
+      "body": { "displayName": "Body", "purpose": "Chat answers and prose, Inter 400 at 1rem / 1.6." },
+      "label": { "displayName": "Label", "purpose": "Toolbar buttons, chips, table and chart headers." },
+      "micro": { "displayName": "Micro", "purpose": "Badges and metadata at 10px." },
+      "data": { "displayName": "Data", "purpose": "File sizes, counts, SQL and identifiers in JetBrains Mono with tabular figures." }
+    },
+    "shadows": [
+      { "name": "hairline", "value": "0 1px 2px rgba(0, 0, 0, 0.3)", "purpose": "Toolbar buttons (0.05 alpha in light)." },
+      { "name": "lift", "value": "0 4px 12px rgba(0, 0, 0, 0.4)", "purpose": "Card hover and the chat field (0.08 alpha in light)." },
+      { "name": "float", "value": "0 8px 24px rgba(0, 0, 0, 0.5)", "purpose": "Menus and overlays (0.12 alpha in light)." },
+      { "name": "glow-blue", "value": "0 0 20px rgba(59, 130, 246, 0.15)", "purpose": "A running step; never at rest." },
+      { "name": "glow-amber", "value": "0 0 20px rgba(245, 158, 11, 0.15)", "purpose": "Planner running." },
+      { "name": "glow-emerald", "value": "0 0 20px rgba(16, 185, 129, 0.15)", "purpose": "Verifier running." }
+    ],
+    "motion": [
+      { "name": "transition-fast", "value": "150ms ease-out", "purpose": "Hover and focus on buttons and cards." },
+      { "name": "transition-normal", "value": "200ms ease-out", "purpose": "Chat field expansion, fade-in." },
+      { "name": "transition-slow", "value": "300ms ease-in-out", "purpose": "Accordion and larger reveals." },
+      { "name": "pulse-glow", "value": "2s ease-in-out infinite", "purpose": "Active agent step ring." },
+      { "name": "accordion", "value": "250ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Zero-layout-shift grid-row expansion." }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Toolbar Button",
+      "kind": "button",
+      "refersTo": "button-toolbar",
+      "description": "Secondary action in dashboard and table headers (the btn-dash pattern).",
+      "html": "<button class=\"ds-btn\">Export</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #27272a; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; font: 600 12px/1.5 Inter, system-ui, sans-serif; box-shadow: 0 1px 2px rgba(0,0,0,0.3); cursor: pointer; transition: background 150ms ease-out; } .ds-btn:hover { background: #3f3f46; } .ds-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(59,130,246,0.4); }"
+    },
+    {
+      "name": "Chat Field",
+      "kind": "input",
+      "refersTo": "chat-input-collapsed",
+      "description": "The one input of the product: a round pill that grows into a 20px-radius field when it holds text or a file.",
+      "html": "<div class=\"ds-chat\"><span class=\"ds-chat-plus\">+</span><span class=\"ds-chat-ph\">Ask anything about your data or documents</span></div>",
+      "css": ".ds-chat { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 16px; background: #18181b; color: #f4f4f5; border: 1px solid #27272a; border-radius: 9999px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); font: 400 16px/1.6 Inter, system-ui, sans-serif; transition: border-color 200ms ease-out, box-shadow 200ms ease-out; } .ds-chat:focus-within, .ds-chat:hover { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.2); } .ds-chat-plus { color: #a1a1aa; } .ds-chat-ph { color: #71717a; }"
+    },
+    {
+      "name": "File Chip",
+      "kind": "chip",
+      "refersTo": "chat-input-expanded",
+      "description": "An attached CSV or document with its size in tabular mono.",
+      "html": "<span class=\"ds-chip\">sales_2026.csv <span class=\"ds-chip-size\">(240KB)</span></span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.15); border-radius: 8px; color: #f4f4f5; font: 500 12px/1.5 Inter, system-ui, sans-serif; } .ds-chip-size { color: #71717a; font: 400 12px 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Enterprise Card",
+      "kind": "card",
+      "refersTo": "card-enterprise",
+      "description": "The container for charts, tables and story blocks: flat, bordered, lifts only on hover.",
+      "html": "<div class=\"ds-card\"><strong>Revenue by region</strong><p>Chart area</p></div>",
+      "css": ".ds-card { padding: 16px; background: #18181b; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; font: 400 14px/1.6 Inter, system-ui, sans-serif; transition: border-color 150ms ease-out, box-shadow 150ms ease-out; } .ds-card:hover { border-color: #3f3f46; box-shadow: 0 4px 12px rgba(0,0,0,0.4); } .ds-card p { margin: 8px 0 0; color: #a1a1aa; }"
+    },
+    {
+      "name": "KPI Card",
+      "kind": "card",
+      "refersTo": "card-kpi",
+      "description": "One headline number with a 3px blue accent bar on the left; the value uses tabular figures.",
+      "html": "<div class=\"ds-kpi\"><span class=\"ds-kpi-label\">Total revenue</span><span class=\"ds-kpi-value\">1,250,000</span></div>",
+      "css": ".ds-kpi { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 4px; min-height: 112px; padding: 0 16px 0 16px; background: #18181b; border: 1px solid #27272a; border-radius: 12px; } .ds-kpi::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 2px; background: #3b82f6; } .ds-kpi-label { color: #a1a1aa; font: 600 12px/1.5 Inter, system-ui, sans-serif; } .ds-kpi-value { color: #f4f4f5; font: 700 28px/1.2 Inter, system-ui, sans-serif; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Risk Badge",
+      "kind": "custom",
+      "refersTo": "approval-card",
+      "description": "Risk level on the approval card: critical red, high amber, otherwise blue (15% fill, 30% border).",
+      "html": "<span class=\"ds-risk ds-risk-critical\">CRITICAL</span>",
+      "css": ".ds-risk { display: inline-block; padding: 2px 8px; border-radius: 6px; border: 1px solid; font: 600 10px/14px Inter, system-ui, sans-serif; letter-spacing: 0.04em; } .ds-risk-critical { background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.3); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Clear Ledger",
+    "overview": "A ledger is trusted because every figure sits where it can be read and checked. The interface behaves the same way: flat surfaces separated by thin borders, numbers set in tabular figures, and the verification state of every answer visible next to the answer. The product's promise is that nothing is shown unchecked, so the design spends its contrast on the facts (numbers, sources, approval decisions) and keeps everything around them quiet.\n\nDark is the default (zinc 950 base, never pure black); a light theme mirrors every token and is tuned for AAA text contrast. Shapes are soft (8 to 20px radii, a fully round chat field) so a dense data tool still feels approachable. Color is functional: one interactive blue, and four state colors that mean Planner, Executor, Verifier and Error and nothing else. The FPT identity is carried by the logo, which is a binding commitment.",
+    "keyCharacteristics": [
+      "Flat at rest; depth comes from borders and four surface tones, not from shadow.",
+      "Soft, friendly shapes on a dense, numeric workspace.",
+      "Four state colors with fixed meanings; everything else is neutral.",
+      "Numbers use tabular figures; charts only draw numbers the server computed.",
+      "Dark-first, light theme at parity, reduced motion respected."
+    ],
+    "rules": [
+      { "name": "The Four Meanings Rule", "body": "Amber, indigo, emerald and rose mean Planner, Executor, Verifier and Error. They never decorate and never mark an unrelated category.", "section": "colors" },
+      { "name": "The Token Rule", "body": "Interface colors come from the CSS variables through the Tailwind token names (bg-surface, text-foreground-muted, border-border). A raw palette class is a drift, not a style.", "section": "colors" },
+      { "name": "The No Pure Black Rule", "body": "The darkest surface is #09090b.", "section": "colors" },
+      { "name": "The Tabular Rule", "body": "Any number a person compares (KPI, table column, file size) uses tabular figures.", "section": "typography" },
+      { "name": "The Both Languages Rule", "body": "Vietnamese strings run longer than English; type and containers are sized so either fits without truncating meaning.", "section": "typography" },
+      { "name": "The Flat-By-Default Rule", "body": "No shadow at rest. Hover, focus and \"running\" are the only reasons for one.", "section": "elevation" },
+      { "name": "The Running Glow Rule", "body": "A glow means that step is active right now; a finished step is still.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do read every color from the tokens (bg-surface, text-foreground-secondary, border-border, accent-*) so the dark and light themes stay in sync.",
+      "Do keep dark and light at parity: any new token needs both values, and light text on accent fills must be at least 7:1.",
+      "Do use tabular figures for numbers people compare.",
+      "Do make a preview look like a preview until the verified final_response replaces it.",
+      "Do keep all interface text in the locale dictionaries (vi and en) and size containers for the longer Vietnamese string.",
+      "Do honor prefers-reduced-motion: animations collapse to near-zero and the glow stops.",
+      "Do keep the FPT logo on the interface."
+    ],
+    "donts": [
+      "Don't use pure black or pure white as a page base in the dark theme (base is #09090b).",
+      "Don't give a resting surface a shadow; use border and tone.",
+      "Don't reuse amber, indigo, emerald or rose for anything except their state meaning.",
+      "Don't introduce raw Tailwind palette colors where a token exists; the interface currently has none (checked 2026-10-02).",
+      "Don't aggregate or compute chart numbers in the browser; draw what the server sent.",
+      "Don't write Vietnamese or English text inside components."
+    ]
+  }
+}

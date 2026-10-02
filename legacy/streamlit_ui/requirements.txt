@@ -1,0 +1,5 @@
+# Legacy Streamlit test harness only (not part of the production stack)
+-r ../../requirements.txt
+streamlit>=1.36.0
+streamlit-aggrid>=0.3.1
+plotly>=5.18.0

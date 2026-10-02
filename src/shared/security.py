@@ -467,6 +467,109 @@ def _semantic_intent_classification(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+# ---------------------------------------------------------------------------
+# Pre-Execution Indirect Prompt Injection Audit (documents, web pages, dataset-derived text)
+# ---------------------------------------------------------------------------
+
+_INDIRECT_INJECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(
+            r"\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions?|prompts?|rules?)\b",
+            re.IGNORECASE,
+        ),
+        "Instruction Override in external document",
+    ),
+    (
+        re.compile(
+            r"\b(?:bỏ qua|hủy bỏ|xóa bỏ)\s+(?:toàn bộ\s+)?(?:hướng dẫn|quy tắc|chỉ thị|chính sách)\b",
+            re.IGNORECASE,
+        ),
+        "Vietnamese Instruction Override in external document",
+    ),
+    (
+        re.compile(
+            r"\bdisregard\s+(?:all\s+)?(?:rules?|safety|constraints?)\b",
+            re.IGNORECASE,
+        ),
+        "Safety Constraint Disregard in external document",
+    ),
+    (
+        re.compile(
+            r"\b(?:you are now|acting as|operate as|system mode:)\b",
+            re.IGNORECASE,
+        ),
+        "Persona Hijack / Role Switching in external document",
+    ),
+    (
+        re.compile(
+            r"\b(?:send|exfiltrate|transmit|post)\s+(?:all\s+)?(?:data|secrets?|passwords?|keys?|tokens?)\s+(?:to|via)\b",
+            re.IGNORECASE,
+        ),
+        "Data Exfiltration Directive in external document",
+    ),
+    (
+        re.compile(
+            r"(?:curl\s+https?://|wget\s+https?://|webhook|https?://[a-zA-Z0-9.-]+\.ngrok\.io|https?://webhook\.site)",
+            re.IGNORECASE,
+        ),
+        "External Call / Webhook Trigger in external document",
+    ),
+    (
+        re.compile(
+            r"\b(?:CANARY_SECRET_|ADMIN_ACCESS_OVERRIDE|system_prompt_dump)\b",
+            re.IGNORECASE,
+        ),
+        "Canary Probing or System Exfiltration in external document",
+    ),
+]
+
+
+def audit_context_safety(
+    context_chunks: list[str],
+) -> tuple[bool, list[str], list[str]]:
+    """Pre-Execution Audit: scan retrieved/derived text chunks for indirect prompt injection.
+
+    Args:
+        context_chunks: Raw document, web or dataset-derived text chunks.
+
+    Returns:
+        ``(all_safe, sanitized_chunks, audit_findings)`` — unsafe chunks are replaced by a neutral notice.
+    """
+    if not context_chunks:
+        return True, [], []
+
+    all_safe: bool = True
+    sanitized_chunks: list[str] = []
+    audit_findings: list[str] = []
+
+    for idx, chunk in enumerate(context_chunks):
+        if not chunk or not isinstance(chunk, str):
+            sanitized_chunks.append("")  # keep the output aligned with the input, callers index into it
+            continue
+
+        # same evasion defence as direct input (homoglyphs, zero-width characters, split lines, decomposed accents);
+        # the chunk that is returned stays as it was written
+        scanned = _normalize_for_safety_check(chunk)
+        chunk_threats: list[str] = [label for pattern, label in _INDIRECT_INJECTION_PATTERNS if pattern.search(scanned)]
+        if chunk_threats:
+            all_safe = False
+            threat_summary = ", ".join(chunk_threats)
+            finding_msg = f"Chunk #{idx + 1} blocked by Security Audit: {threat_summary}"
+            audit_findings.append(finding_msg)
+            logger.warning(
+                "Indirect Injection Detected during Pre-Execution Audit: %s",
+                finding_msg,
+                extra={"session_id": "SECURITY_AUDIT"},
+            )
+            sanitized_chunks.append(
+                f"[BẢO MẬT ZERO-TRUST: Đoạn trích này đã bị vô hiệu hóa do chứa chỉ thị không an toàn ({threat_summary})]"
+            )
+        else:
+            sanitized_chunks.append(chunk)
+
+    return all_safe, sanitized_chunks, audit_findings
+
+
 def inspect_prompt_safety(query: str) -> tuple[bool, str]:
     """Inspect user input query against direct prompt injection, jailbreaks & semantic attacks.
 

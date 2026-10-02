@@ -1,0 +1,172 @@
+# CI: backend tests (with a real pgvector database for the RAG integration test), frontend checks, image builds.
+# Not yet run on GitHub itself. Its steps were run locally in Linux containers that mirror the jobs (python:3.12 with a
+# pgvector/pgvector:pg16 database for `backend`, node:20 for `frontend`): 564 backend tests (one Linux-only sandbox bug
+# found and fixed that way), lint, `docker compose config`, and the frontend install/lint/tsc/tests/build all pass.
+# What a local run cannot show: GitHub-hosted runner differences (disk, caches, network) and the `images` job.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: # starts the `rag-eval` retrieval-quality gate by hand (Actions tab -> CI -> Run workflow)
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      RAG_TEST_DSN: postgresql://ci:ci@localhost:5432/ci
+      LANGFUSE_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements.lock
+      - name: torch CPU build (as in the Dockerfile; PyPI's default wheel drags in ~5 GB of CUDA libraries nothing here uses)
+        run: pip install "torch==$(grep -E '^torch==' requirements.lock | cut -d= -f3)" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install (pinned versions from requirements.lock)
+        run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: spaCy model used by mem0's NLP extras
+        run: |
+          python -m spacy download en_core_web_sm \
+            || pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+      - name: Enable pgvector in the test database
+        run: PGPASSWORD=ci psql -h localhost -U ci -d ci -c "CREATE EXTENSION IF NOT EXISTS vector"
+      - name: Lint (real bugs only, see pyproject.toml)
+        run: ruff check src scripts tests
+      - name: docker-compose.yml is valid (placeholders for the secrets it requires)
+        run: docker compose config -q
+        env:
+          POSTGRES_PASSWORD: ci
+          LANGFUSE_NEXTAUTH_SECRET: ci
+          LANGFUSE_SALT: ci
+          SANDBOX_SECRET: ci-sandbox-secret-0123456789
+      - name: Tests
+        run: python -m pytest tests -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: npm run build
+
+  rag-eval:
+    # Retrieval-quality gate (hit@5 / MRR of the planner mode on the real corpus and the hand-written questions). Manual
+    # only: it ingests dataset/ with the embedding model, starts the TEI reranker and calls OpenRouter (secret
+    # OPENROUTER_API_KEY), so it is slow and costs a few cents. The thresholds sit a little below the numbers measured
+    # locally (hit@5 0.587, MRR 0.443: docs/RAG_REVIEW_AND_FIXES.md); raise them when retrieval improves.
+    # Not yet run on GitHub: only its commands were run locally.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      POSTGRES_URL: postgresql://ci:ci@localhost:5432/ci
+      RERANKER_ENDPOINT: http://localhost:8080/rerank
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      LANGFUSE_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements.lock
+      - name: torch CPU build (as in the Dockerfile)
+        run: pip install "torch==$(grep -E '^torch==' requirements.lock | cut -d= -f3)" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install (pinned versions from requirements.lock)
+        run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: Enable pgvector
+        run: PGPASSWORD=ci psql -h localhost -U ci -d ci -c "CREATE EXTENSION IF NOT EXISTS vector"
+      - name: TEI cross-encoder reranker (same image and model as docker-compose.yml)
+        run: |
+          docker run -d --name tei -p 8080:80 ghcr.io/huggingface/text-embeddings-inference:cpu-1.2 \
+            --model-id BAAI/bge-reranker-base --auto-truncate
+          for i in $(seq 1 60); do curl -sf http://localhost:8080/health && break; sleep 5; done
+      - name: Ingest dataset/
+        run: python -m scripts.run_ingestion
+      - name: Retrieval gate
+        run: python -m scripts.run_rag_eval --manual --rerank --min-hit5 0.55 --min-mrr 0.40 --baseline reports/rag_eval_baseline.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rag-eval-report
+          path: reports/rag_eval.*
+
+  images:
+    # Slow (dependency layers): only on main, and without Chromium so the crawler-less image builds quickly.
+    if: github.event_name == 'push'
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: INSTALL_BROWSER=false
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sandbox
+          push: false
+          cache-from: type=gha,scope=sandbox
+          cache-to: type=gha,mode=max,scope=sandbox
+      - uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          build-args: API_URL=http://backend:8000
+          push: false
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend

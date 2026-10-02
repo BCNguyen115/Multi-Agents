@@ -42,6 +42,8 @@ class AgentState(TypedDict, total=False):
     retry_count: int
     max_retries: int
     agent_mode: Optional[str]
+    target_agent: str
+    forced_target_agent: Optional[str]
     requires_dashboard: Optional[bool]
 
     # Human-in-the-Loop (HITL) fields

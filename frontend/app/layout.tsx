@@ -1,5 +1,6 @@
 import React from 'react';
 import './globals.css';
+import { SkipLink } from '../components/SkipLink';
 
 export const metadata = {
   title: 'Multi-Agent Enterprise System',
@@ -37,6 +38,7 @@ export default function RootLayout({
         />
       </head>
       <body className="bg-background min-h-screen font-sans antialiased text-foreground max-w-full overflow-x-hidden">
+        <SkipLink />
         {children}
       </body>
     </html>

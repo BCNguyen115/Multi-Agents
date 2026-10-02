@@ -1,0 +1,32 @@
+# Several backend replicas behind one load balancer, to test what must be shared between replicas
+# (Redis: sessions, rate limits, pending approvals; PostgreSQL: knowledge base, conversations, memory).
+#
+# Run it as a SEPARATE compose project so it never touches the stack you use (own containers, own volumes, own network):
+#   docker compose -p scaletest -f docker-compose.yml -f docker-compose.scale.yml up -d --scale backend=3 backend lb
+#   python -m scripts.replica_check --base http://127.0.0.1:8100
+#   python -m scripts.loadtest --base http://127.0.0.1:8100 --users 40 --duration 15
+#   docker compose -p scaletest -f docker-compose.yml -f docker-compose.scale.yml down -v
+#
+# The override removes what cannot exist twice: fixed container names and host ports. The test stack starts with an empty
+# database (no documents): it checks sharing and load, not answer quality.
+services:
+  postgres:
+    container_name: !reset null
+    ports: !reset []
+  redis:
+    container_name: !reset null
+    ports: !reset []
+  backend:
+    container_name: !reset null
+    ports: !reset []
+    volumes: !reset []
+    environment:
+      DB_AGENT_PASSWORD: ""   # the read-only role is not what this test is about
+  lb:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./deploy/nginx-scale.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8100:80"
+    depends_on:
+      - backend

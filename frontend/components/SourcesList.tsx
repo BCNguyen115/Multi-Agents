@@ -3,6 +3,8 @@
 import React, { useState } from 'react';
 import { BookOpen, ChevronDown, ChevronUp, FileText, Globe, ExternalLink } from 'lucide-react';
 import { SourceItem } from '../lib/types';
+import { t, useLang } from '../lib/i18n';
+import { PageViewer } from './PageViewer';
 
 function extractDomain(urlStr?: string): string {
   if (!urlStr) return 'web.src';
@@ -15,7 +17,9 @@ function extractDomain(urlStr?: string): string {
 }
 
 export function SourcesList({ sources }: { sources: SourceItem[] }) {
+  const [lang] = useLang();
   const [isOpen, setIsOpen] = useState(true);
+  const [viewing, setViewing] = useState<SourceItem | null>(null);
 
   if (!sources || sources.length === 0) return null;
 
@@ -45,7 +49,7 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
       >
         <span className="flex items-center gap-1.5 text-xs font-bold">
           <BookOpen className="w-4 h-4 text-accent-primary" />
-          Nguồn trích dẫn ({sources.length}):
+          {t(lang, 'sources.title', { count: sources.length })}
         </span>
         <span className="text-foreground-muted">
           {isOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -59,7 +63,7 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
               {webSources.map((src, idx) => {
                 const targetUrl = src.url || (src.file.startsWith('http') ? src.file : '#');
-                const title = src.title || src.section || src.file || 'Web article';
+                const title = src.title || src.section || src.file || t(lang, 'sources.webArticle');
                 const domain = src.domain || extractDomain(targetUrl);
 
                 return (
@@ -101,7 +105,8 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
           {docSources.length > 0 && (
             <div className="space-y-2">
               {docSources.map((src, idx) => {
-                const fileName = src.file || 'Cited document';
+                const fileName = src.file || t(lang, 'sources.citedDocument');
+                const canPreview = Boolean(src.page && src.category && /\.pdf$/i.test(src.file));
                 const category = (src.category || 'GENERAL').toUpperCase();
 
                 let categoryBadgeStyle = 'bg-accent-primary/10 text-accent-primary border-accent-primary/20';
@@ -112,7 +117,12 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
                 return (
                   <div key={`doc-${idx}`} className="p-2.5 bg-surface-raised border border-border rounded-lg text-xs hover:bg-surface-overlay/30 transition-colors">
                     <div className="flex items-center justify-between font-medium text-foreground gap-2 mb-1">
-                      <span className="truncate flex items-center gap-1.5 font-semibold">
+                      <span className="truncate flex items-center gap-1.5 font-semibold" title={fileName}>
+                        {src.cite !== undefined && (
+                          <span className="shrink-0 rounded bg-accent-primary/10 px-1.5 py-0.5 font-mono text-2xs font-bold text-accent-primary" data-testid="source-cite">
+                            [{src.cite}]
+                          </span>
+                        )}
                         <FileText className="w-3.5 h-3.5 text-accent-primary shrink-0" />
                         {fileName}
                       </span>
@@ -120,9 +130,23 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
                         {category}
                       </span>
                     </div>
-                    {src.section && (
-                      <p className="mt-1 text-foreground-muted italic border-l-2 border-accent-primary pl-2.5 py-0.5 line-clamp-3 bg-surface/50 rounded-r-md text-xs leading-relaxed">
-                        &quot;{src.section}&quot;
+                    {(src.section || src.page) && (
+                      <p className="flex items-center gap-2 text-2xs text-foreground-muted">
+                        <span>{[src.section, src.page ? t(lang, 'sources.page', { page: src.page }) : ''].filter(Boolean).join(' · ')}</span>
+                        {canPreview && (
+                          <button
+                            type="button"
+                            onClick={() => setViewing(src)}
+                            className="rounded px-1.5 py-0.5 font-semibold text-accent-primary hover:bg-accent-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                          >
+                            {t(lang, 'source.viewPage', { page: src.page as number })}
+                          </button>
+                        )}
+                      </p>
+                    )}
+                    {src.snippet && (
+                      <p className="mt-1 text-foreground-muted italic border-l border-border-strong pl-2.5 py-0.5 line-clamp-3 bg-surface/50 rounded-r-md text-xs leading-relaxed">
+                        &quot;{src.snippet}&quot;
                       </p>
                     )}
                   </div>
@@ -131,6 +155,15 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
             </div>
           )}
         </div>
+      )}
+      {viewing && (
+        <PageViewer
+          docKey={`${viewing.category}/${viewing.file}`}
+          fileName={viewing.file}
+          page={viewing.page as number}
+          snippet={viewing.snippet}
+          onClose={() => setViewing(null)}
+        />
       )}
     </div>
   );

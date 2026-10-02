@@ -98,6 +98,27 @@ def redact_pii(text: str) -> str:
 
 
 
+def vector_store_config(cfg: Any) -> dict[str, Any]:
+    """mem0's ``vector_store`` section: PostgreSQL/pgvector (persistent) or an in-process Qdrant (lost on restart)."""
+    if getattr(cfg, "MEM0_VECTOR_STORE", "memory") == "pgvector":
+        return {
+            "provider": "pgvector",
+            "config": {
+                "connection_string": cfg.POSTGRES_URL,
+                "collection_name": cfg.MEM0_PG_COLLECTION,
+                "embedding_model_dims": 1536,  # text-embedding-3-small
+            },
+        }
+    config: dict[str, Any] = {"on_disk": False}
+    try:
+        from qdrant_client import QdrantClient
+
+        config["client"] = QdrantClient(location=":memory:")
+    except Exception:  # noqa: BLE001 - mem0 then builds its own local store
+        pass
+    return {"provider": "qdrant", "config": config}
+
+
 class DualResult(dict):
     """A dictionary that can also be awaited in async contexts."""
 
@@ -165,12 +186,7 @@ class MemoryManager:
                 or "openai/gpt-4o-mini"
             )
 
-            vector_store_cfg: dict[str, Any] = {"on_disk": False}
-            try:
-                from qdrant_client import QdrantClient
-                vector_store_cfg["client"] = QdrantClient(location=":memory:")
-            except Exception:
-                pass
+            vector_store: dict[str, Any] = vector_store_config(cfg)
 
             mem0_config: dict[str, Any] = {
                 "llm": {
@@ -192,10 +208,7 @@ class MemoryManager:
                         "openai_base_url": cfg.OPENROUTER_BASE_URL,
                     },
                 },
-                "vector_store": {
-                    "provider": "qdrant",
-                    "config": vector_store_cfg,
-                },
+                "vector_store": vector_store,
             }
 
             try:

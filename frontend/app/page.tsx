@@ -5,8 +5,17 @@ import { Sidebar, ChatSession } from '../components/Sidebar';
 import { Header } from '../components/Header';
 import { ChatInterface } from '../components/ChatInterface';
 import { SearchView } from '../components/SearchView';
+import { CommandPalette } from '../components/CommandPalette';
+import { ToastContainer } from '../components/ui/Toast';
+import { fetchMe, logout, redirectToLogin, type Me } from '../lib/authClient';
+import { clearLocalConversations } from '../lib/conversationSync';
+import { useConversationSync } from '../lib/useConversationSync';
 import { ChatMessage } from '../lib/types';
 import { safeSaveChatMessagesMap, STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY } from '../lib/storage';
+import { exportDashboardToPDF, exportDashboardToPPTX } from '../lib/exportEngine';
+import { toast } from '../lib/toast';
+import { getLang, isDefaultChatTitle, t, useLang } from '../lib/i18n';
+import { apiFetch } from '../lib/apiFetch';
 
 export default function HomePage() {
   const [currentAgentMode, setCurrentAgentMode] = useState<string>('RAG Agent');
@@ -14,7 +23,17 @@ export default function HomePage() {
   const [activeSessionId, setActiveSessionId] = useState<string>('');
   const [messagesMap, setMessagesMap] = useState<Record<string, ChatMessage[]>>({});
   const [viewMode, setViewMode] = useState<'chat' | 'search'>('chat');
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
+  const [me, setMe] = useState<Me | null>(null);
+  const [lang] = useLang();
+
+  // Who is signed in? Without a valid session (backend running with AUTH_MODE=jwt) go to the login screen.
+  useEffect(() => {
+    fetchMe()
+      .then((current) => (current ? setMe(current) : redirectToLogin()))
+      .catch((error) => console.warn('Could not check the session', error));
+  }, []);
 
   // Initialize sessions & messages from localStorage
   useEffect(() => {
@@ -30,7 +49,7 @@ export default function HomePage() {
         const defaultId = `session-${Date.now()}`;
         const defaultSession: ChatSession = {
           id: defaultId,
-          title: 'Cuộc trò chuyện mới',
+          title: t(getLang(), 'chat.newTitle'),
           isPinned: false,
           updatedAt: new Date().toISOString(),
         };
@@ -44,11 +63,42 @@ export default function HomePage() {
     } catch (e) {
       console.error('Failed to load chat history from localStorage', e);
       const defaultId = `session-${Date.now()}`;
-      setSessions([{ id: defaultId, title: 'Cuộc trò chuyện mới', isPinned: false, updatedAt: new Date().toISOString() }]);
+      setSessions([{ id: defaultId, title: t(getLang(), 'chat.newTitle'), isPinned: false, updatedAt: new Date().toISOString() }]);
       setActiveSessionId(defaultId);
       setMessagesMap({ [defaultId]: [] });
     }
   }, []);
+
+  // Chats follow a signed-in user across browsers: the server keeps them, this page syncs with it (see lib/conversationSync.ts)
+  const startFreshChat = () => {
+    const freshId = `session-${Date.now()}`;
+    setSessions([{ id: freshId, title: t(getLang(), 'chat.newTitle'), isPinned: false, updatedAt: new Date().toISOString() }]);
+    setMessagesMap({ [freshId]: [] });
+    setActiveSessionId(freshId);
+  };
+
+  useConversationSync({
+    enabled: Boolean(me?.authenticated),
+    userId: me?.user ?? null,
+    ready: isMounted && sessions.length > 0,
+    sessions,
+    messagesMap,
+    setSessions,
+    setMessagesMap,
+    onOwnerChanged: startFreshChat,
+  });
+
+  // A conversation deleted on another device may be the open one: move to another (or a new) conversation.
+  useEffect(() => {
+    if (sessions.length > 0 && activeSessionId && !sessions.some((s) => s.id === activeSessionId)) {
+      setActiveSessionId(sessions[0].id);
+    }
+  }, [sessions, activeSessionId]);
+
+  const handleLogout = async () => {
+    clearLocalConversations([STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY]); // the next person on this browser must not see these chats
+    await logout();
+  };
 
   // Save sessions & messagesMap to localStorage whenever they update
   useEffect(() => {
@@ -67,12 +117,18 @@ export default function HomePage() {
     }
   }, [messagesMap]);
 
-  // Global Cmd+K / Ctrl+K keyboard shortcut for Command Palette
+  // Global Keyboard Shortcuts (Cmd+K, Cmd+Shift+D)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd+K / Ctrl+K: Open Command Palette
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setViewMode((prev) => (prev === 'search' ? 'chat' : 'search'));
+        setIsCommandPaletteOpen((prev) => !prev);
+      }
+      // Cmd+Shift+D / Ctrl+Shift+D: Toggle Theme
+      else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        handleToggleTheme();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -80,6 +136,28 @@ export default function HomePage() {
   }, []);
 
   const activeMessages = messagesMap[activeSessionId] || [];
+
+  // Extract latest dashboard spec for export actions
+  const latestDashboardMessage = [...activeMessages].reverse().find((m) => m.dashboardSpec);
+  const activeDashboardSpec = latestDashboardMessage?.dashboardSpec || null;
+
+  const handleToggleTheme = () => {
+    const isDark = document.documentElement.classList.contains('dark') || document.documentElement.getAttribute('data-theme') === 'dark';
+    const nextDark = !isDark;
+    if (nextDark) {
+      document.documentElement.classList.add('dark');
+      document.documentElement.classList.remove('light');
+      document.documentElement.setAttribute('data-theme', 'dark');
+      localStorage.setItem('theme', 'dark');
+      toast.info(t(getLang(), 'nav.themeDarkOn'));
+    } else {
+      document.documentElement.classList.remove('dark');
+      document.documentElement.classList.add('light');
+      document.documentElement.setAttribute('data-theme', 'light');
+      localStorage.setItem('theme', 'light');
+      toast.info(t(getLang(), 'nav.themeLightOn'));
+    }
+  };
 
   const handleSelectSession = (id: string) => {
     setActiveSessionId(id);
@@ -90,7 +168,7 @@ export default function HomePage() {
     const newId = `session-${Date.now()}`;
     const newSession: ChatSession = {
       id: newId,
-      title: 'Cuộc trò chuyện mới',
+      title: t(getLang(), 'chat.newTitle'),
       isPinned: false,
       updatedAt: new Date().toISOString(),
     };
@@ -99,6 +177,7 @@ export default function HomePage() {
     setMessagesMap((prev) => ({ ...prev, [newId]: [] }));
     setActiveSessionId(newId);
     setViewMode('chat');
+    toast.success(t(getLang(), 'chat.created'));
   };
 
   const handleDeleteSession = (id: string) => {
@@ -108,7 +187,7 @@ export default function HomePage() {
         const fallbackId = `session-${Date.now()}`;
         const fallbackSession: ChatSession = {
           id: fallbackId,
-          title: 'Cuộc trò chuyện mới',
+          title: t(getLang(), 'chat.newTitle'),
           isPinned: false,
           updatedAt: new Date().toISOString(),
         };
@@ -132,6 +211,7 @@ export default function HomePage() {
       delete next[id];
       return next;
     });
+    toast.info(t(getLang(), 'chat.deleted'));
   };
 
   const handleTogglePin = (id: string) => {
@@ -148,7 +228,7 @@ export default function HomePage() {
 
   const fetchSmartTitle = async (queryText: string, targetSessionId: string) => {
     try {
-      const res = await fetch('/api/chat/title', {
+      const res = await apiFetch('/api/chat/title', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: queryText, session_id: targetSessionId }),
@@ -189,11 +269,9 @@ export default function HomePage() {
         const currentSession = prev.find((s) => s.id === targetSessionId);
         const isDefaultTitle =
           !currentSession ||
-          currentSession.title === 'Cuộc trò chuyện mới' ||
-          currentSession.title === 'New chat';
+          isDefaultChatTitle(currentSession.title);
 
         if (isDefaultTitle && fullQuery) {
-          // Asynchronously fetch smart title from LLM backend
           fetchSmartTitle(fullQuery, targetSessionId);
 
           return prev.map((s) =>
@@ -206,7 +284,6 @@ export default function HomePage() {
       });
     }
   };
-
 
   const handleUpdateLastMessage = (updater: (prev: ChatMessage) => ChatMessage) => {
     setMessagesMap((prev) => {
@@ -233,6 +310,7 @@ export default function HomePage() {
     } else {
       setCurrentAgentMode(agentId.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{2B50}\u{2B55}\u{231A}\u{231B}\u{23E9}-\u{23EC}\u{23F0}\u{23F3}]/gu, '').trim());
     }
+    toast.info(t(getLang(), 'nav.agentSwitched', { agent: agentId }));
   };
 
   if (!isMounted) {
@@ -240,7 +318,7 @@ export default function HomePage() {
       <div className="flex h-screen w-screen bg-background items-center justify-center">
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-2 border-accent-primary border-t-transparent rounded-full animate-spin" />
-          <span className="text-foreground-muted text-sm font-medium">Đang tải giao diện...</span>
+          <span className="text-foreground-muted text-sm font-medium font-mono">{t(lang, 'nav.loading')}</span>
         </div>
       </div>
     );
@@ -248,6 +326,42 @@ export default function HomePage() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">
+      {/* Toast Notification Container (Bottom-Right, Enterprise Sonner style) */}
+      <ToastContainer />
+
+      {/* Global Command Palette (Cmd+K / Ctrl+K) */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        sessions={sessions}
+        onSelectSession={handleSelectSession}
+        onNewChat={handleNewChat}
+        onSelectAgent={handleAgentSelect}
+        onToggleTheme={handleToggleTheme}
+        onTriggerUpload={() => {
+          toast.info(t(getLang(), 'nav.uploadHint'), {
+            title: t(getLang(), 'nav.uploadTitle'),
+          });
+        }}
+        onExportPDF={() => {
+          toast.info(t(getLang(), 'nav.pdfPreparing'), { title: t(getLang(), 'nav.pdfTitle') });
+          exportDashboardToPDF();
+        }}
+        onExportPPTX={async () => {
+          if (activeDashboardSpec) {
+            try {
+              toast.info(t(getLang(), 'nav.pptxPreparing'), { title: t(getLang(), 'nav.pptxTitle') });
+              await exportDashboardToPPTX(activeDashboardSpec);
+              toast.success(t(getLang(), 'nav.pptxDone'), { title: t(getLang(), 'nav.pptxTitle') });
+            } catch (err: any) {
+              toast.error(t(getLang(), 'nav.pptxFailed', { error: err?.message || t(getLang(), 'nav.unknownError') }), { title: t(getLang(), 'nav.exportFailedTitle') });
+            }
+          } else {
+            toast.warning(t(getLang(), 'nav.noDashboard'), { title: t(getLang(), 'nav.noDashboardTitle') });
+          }
+        }}
+      />
+
       {/* Left Navigation Sidebar */}
       <Sidebar
         sessions={sessions}
@@ -257,13 +371,16 @@ export default function HomePage() {
         onDeleteSession={handleDeleteSession}
         onTogglePin={handleTogglePin}
         onRenameSession={handleRenameSession}
-        onOpenSearch={() => setViewMode('search')}
+        onOpenSearch={() => setIsCommandPaletteOpen(true)}
       />
 
-      {/* Main Workspace Area */}
-      <main className="flex-1 flex flex-col h-full min-h-0 min-w-0 w-full max-w-full overflow-x-hidden relative bg-background overflow-y-hidden">
+      {/* Main Content Area */}
+      <main id="main-content" tabIndex={-1} className="flex-1 flex flex-col h-full min-h-0 min-w-0 w-full max-w-full overflow-x-hidden relative bg-background overflow-y-hidden focus:outline-none">
         <Header
           currentAgent={currentAgentMode}
+          onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+          userName={me?.authenticated ? me.user : null}
+          onLogout={handleLogout}
         />
 
         <ChatInterface

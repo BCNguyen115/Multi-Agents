@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Database, LayoutGrid, ChevronDown, ChevronUp, Sparkles, BarChart2, CheckCircle2 } from 'lucide-react';
 import { ChatMessage } from '../lib/types';
+import { t, useLang } from '../lib/i18n';
 
 interface DataSummaryProps {
   totalRows?: number;
@@ -76,6 +77,7 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
   message,
   metadata,
 }) => {
+  const [lang] = useLang();
   const [showAllCols, setShowAllCols] = useState(false);
 
   const { extractedRows, extractedCols, extractedColumns } = parseMetricsFromMarkdown(markdownContent);
@@ -125,9 +127,9 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
             <Database className="w-4 h-4" />
           </div>
           <div>
-            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">Tổng số bản ghi</p>
+            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">{t(lang, 'summary.records')}</p>
             <p className="text-base font-bold font-mono text-foreground tabular-nums">
-              {finalTotalRows ? `${finalTotalRows.toLocaleString()} bản ghi` : '--'}
+              {finalTotalRows ? t(lang, 'summary.recordsValue', { count: finalTotalRows.toLocaleString() }) : '--'}
             </p>
           </div>
         </div>
@@ -137,9 +139,9 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
             <LayoutGrid className="w-4 h-4" />
           </div>
           <div>
-            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">Số trường dữ liệu</p>
+            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">{t(lang, 'summary.fields')}</p>
             <p className="text-base font-bold font-mono text-foreground tabular-nums">
-              {finalTotalCols ? `${finalTotalCols.toLocaleString()} trường` : '--'}
+              {finalTotalCols ? t(lang, 'summary.fieldsValue', { count: finalTotalCols.toLocaleString() }) : '--'}
             </p>
           </div>
         </div>
@@ -149,9 +151,9 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
             <Sparkles className="w-4 h-4" />
           </div>
           <div>
-            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">Chất lượng dữ liệu</p>
+            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">{t(lang, 'summary.quality')}</p>
             <p className="text-base font-bold text-foreground flex items-center gap-1">
-              <span>Đầy đủ</span>
+              <span>{t(lang, 'summary.complete')}</span>
               <CheckCircle2 className="w-3.5 h-3.5 text-accent-verifier inline" />
             </p>
           </div>
@@ -163,7 +165,7 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
         <div className="p-3.5 bg-surface-raised border border-border rounded-xl space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-foreground-secondary flex items-center gap-1.5">
-              <span>Data Fields</span>
+              <span>{t(lang, 'summary.dataFields')}</span>
               <span className="px-2 py-0.5 bg-surface-overlay text-foreground-muted text-xs font-mono rounded-full">
                 {displayColumns.length}
               </span>
@@ -175,9 +177,9 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
                 className="text-xs font-semibold text-accent-primary hover:text-accent-primary-hover flex items-center gap-1 hover:underline cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 rounded px-1"
               >
                 {showAllCols ? (
-                  <>Collapse <ChevronUp className="w-3.5 h-3.5" /></>
+                  <>{t(lang, 'summary.collapse')} <ChevronUp className="w-3.5 h-3.5" /></>
                 ) : (
-                  <>View all ({displayColumns.length}) <ChevronDown className="w-3.5 h-3.5" /></>
+                  <>{t(lang, 'summary.viewAll', { count: displayColumns.length })} <ChevronDown className="w-3.5 h-3.5" /></>
                 )}
               </button>
             )}
@@ -193,7 +195,7 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
             ))}
             {!showAllCols && displayColumns.length > 8 && (
               <span className="px-2.5 py-1 text-xs text-foreground-muted italic bg-surface-raised/50 rounded-lg">
-                +{displayColumns.length - 8} more...
+                {t(lang, 'summary.more', { count: displayColumns.length - 8 })}
               </span>
             )}
           </div>
@@ -231,7 +233,7 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
               );
             },
             h3({ children }) {
-              return <h3 className="border-l-4 border-accent-primary font-bold pl-3 my-3 text-foreground text-base leading-snug">{children}</h3>;
+              return <h3 className="font-bold my-3 text-foreground text-base leading-snug">{children}</h3>;
             },
             h4({ children }) {
               return <h4 className="font-bold my-2.5 text-foreground-secondary text-sm flex items-center gap-1.5">{children}</h4>;
@@ -258,10 +260,10 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
           <button
             type="button"
             onClick={onGenerateDashboard}
-            className="flex items-center justify-center gap-2.5 w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-accent-primary to-accent-executor hover:from-accent-primary-hover hover:to-accent-executor text-white rounded-xl text-xs font-semibold shadow-xs hover:shadow-enterprise transition-all cursor-pointer group active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+            className="flex items-center justify-center gap-2.5 w-full sm:w-auto px-5 py-2.5 bg-accent-primary hover:bg-accent-primary-hover text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer group active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
           >
             <BarChart2 className="w-4 h-4 group-hover:scale-110 transition-transform" />
-            <span>Dựng Dashboard trực quan từ dữ liệu này</span>
+            <span>{t(lang, 'summary.buildDashboard')}</span>
           </button>
         </div>
       )}

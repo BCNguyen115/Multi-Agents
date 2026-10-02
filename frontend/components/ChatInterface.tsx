@@ -4,37 +4,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, StopCircle, FileSpreadsheet, FileText, Globe, AlertCircle, X, BarChart3 } from 'lucide-react';
 import { ChatMessage as ChatMessageType, CSVMetadata, PEVTraceState } from '../lib/types';
 import { ChatMessage } from './ChatMessage';
-import { processCSVWithDuckDB, executeDuckDBSQL } from '../lib/duckdb';
+import { processCSVWithDuckDB } from '../lib/duckdb';
+import { DOCUMENT_MAX_MB, isDocumentFile, isTabularFile, splitCategoryHint, TABULAR_MAX_MB } from '../lib/fileTypes';
+import { isUnauthorized } from '../lib/authClient';
+import { getLang, t, useLang } from '../lib/i18n';
 import { fetchSSEStream } from '../lib/sse';
 import { ChatInput } from './ChatInput';
-
-function createInitialPevTraceState(agentMode?: string): PEVTraceState {
-  const isSearch = agentMode?.includes('Search');
-  const isData = agentMode?.includes('Data');
-  const isRag = agentMode?.includes('RAG');
-  const targetAgent = isSearch ? 'search_agent' : isData ? 'data_agent' : isRag ? 'rag_agent' : undefined;
-
-  return {
-    currentStep: 'planner',
-    planner: {
-      status: 'active',
-      title: 'Planner Node',
-      description: 'Đang phân tích câu hỏi, nạp bộ nhớ dài hạn và lựa chọn Agent phù hợp...',
-      targetAgent,
-    },
-    executor: {
-      status: 'idle',
-      title: 'Executor Node',
-      description: 'Chờ Planner hoàn tất để nhận nhiệm vụ...',
-      agentName: targetAgent,
-    },
-    verifier: {
-      status: 'idle',
-      title: 'Verifier Node',
-      description: 'Chờ kết quả thực thi để kiểm định chất lượng...',
-    },
-  };
-}
+import { toast } from '../lib/toast';
+import { applyExecuting, applyFinal, applyPevStep, applyPlan, applyVerifying, createInitialPevTraceState } from '../lib/pevTrace';
+import { apiFetch } from '../lib/apiFetch';
 
 interface ChatInterfaceProps {
   currentAgentMode: string;
@@ -53,6 +31,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onSendMessage,
   onUpdateLastMessage,
 }) => {
+  const [lang] = useLang();
   const [isSending, setIsSending] = useState(false);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [activeCSV, setActiveCSV] = useState<{ file: File; metadata: CSVMetadata; tableName: string } | null>(null);
@@ -87,17 +66,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
 
     const name = file.name.toLowerCase();
-    const isExcelOrCSV = name.endsWith('.csv') || name.endsWith('.xlsx') || name.endsWith('.xls');
-    const isDoc = name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.doc') || name.endsWith('.txt');
+    const isExcelOrCSV = isTabularFile(name);
+    const isDoc = isDocumentFile(name);
 
     if (!isExcelOrCSV && !isDoc) {
-      alert('Định dạng file không được hỗ trợ. Vui lòng chọn file CSV, Excel, PDF hoặc Word (.csv, .xlsx, .pdf, .docx).');
+      toast.error(t(getLang(), 'chat.unsupportedFile'), {
+        title: t(getLang(), 'chat.unsupportedFileTitle'),
+      });
       return;
     }
 
-    const MAX_SIZE_MB = 50;
+    const MAX_SIZE_MB = isExcelOrCSV ? TABULAR_MAX_MB : DOCUMENT_MAX_MB;
     if (file.size > MAX_SIZE_MB * 1024 * 1024) {
-      alert(`Dung lượng file vượt quá giới hạn ${MAX_SIZE_MB}MB.`);
+      toast.error(t(getLang(), 'chat.sizeLimit', { max: MAX_SIZE_MB }), {
+        title: t(getLang(), 'chat.sizeLimitTitle'),
+      });
       return;
     }
 
@@ -113,8 +96,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       try {
         const { metadata, tableName } = await processCSVWithDuckDB(file);
         setActiveCSV({ file, metadata, tableName });
+        const count = metadata.totalRows || metadata.rowCount || 0;
+        toast.success(t(getLang(), 'chat.csvLoaded', { count: count.toLocaleString() }), {
+          title: 'DuckDB Engine',
+        });
       } catch (err: unknown) {
-        console.error('Lỗi khi nạp CSV DuckDB:', err);
+        console.error('DuckDB CSV load failed:', err);
+        toast.error(t(getLang(), 'chat.csvLoadFailed'), { title: t(getLang(), 'chat.csvLoadFailedTitle') });
       }
     }
   };
@@ -148,7 +136,34 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
-  const handleSendMessageFromInput = async (queryText: string, file: File | null) => {
+  const getTargetAgentId = (mode: string): string | null => {
+    if (!mode) return null;
+    const m = mode.trim().toLowerCase();
+    if (m === 'all agents' || m === 'all_agents' || m === 'auto') return null;
+    if (m.includes('rag')) return 'rag_agent';
+    if (m.includes('search')) return 'search_agent';
+    if (m.includes('data')) return 'data_agent';
+    if (m.includes('db') || m.includes('database') || m.includes('sql')) return 'db_agent';
+    if (m.includes('integration') || m.includes('api')) return 'integration_agent';
+    return null;
+  };
+
+  const handleSendMessageFromInput = async (
+    queryText: string,
+    file: File | null,
+    overrideMode?: string
+  ) => {
+    // `/docs` lists the knowledge base documents (with delete buttons) instead of asking an agent
+    if (!file && !attachedFile && queryText.trim().toLowerCase() === t(getLang(), 'docs.command')) {
+      const stamp = Date.now();
+      onSendMessage({ id: `user-${stamp}`, role: 'user', content: t(getLang(), 'docs.userMessage') });
+      onSendMessage({ id: `assistant-${stamp}`, role: 'assistant', content: '', kind: 'knowledge-docs', status: 'complete' });
+      return;
+    }
+
+    const effectiveMode = overrideMode || currentAgentMode;
+    const targetAgentId = getTargetAgentId(effectiveMode);
+
     let fileToUse = file || attachedFile;
     let csvToSend = activeCSV;
 
@@ -159,36 +174,43 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           csvToSend = { file: fileToUse, metadata, tableName };
           setActiveCSV(csvToSend);
         } catch (err: unknown) {
-          console.error('Lỗi khi nạp CSV DuckDB:', err);
+          console.error('DuckDB CSV load failed:', err);
         }
       }
     }
 
-    if (currentAgentMode.includes('Data Agent') && !csvToSend && !fileToUse && messages.length === 0) {
-      setHeroAlert('Vui lòng đính kèm tệp CSV trước khi bắt đầu chat phân tích dữ liệu!');
+    if (targetAgentId === 'data_agent' && !csvToSend && !fileToUse && messages.length === 0) {
+      setHeroAlert(t(getLang(), 'chat.attachCsvFirst'));
       return;
     }
     setHeroAlert(null);
 
-    const queryContent = queryText.trim() || `Phân tích tổng quan dữ liệu tệp CSV [${fileToUse?.name || 'dataset.csv'}]`;
+    // A PDF/DOCX attached to the chat is added to the RAG knowledge base; any text typed with it is a question to ask afterwards
+    const isKnowledgeUpload = Boolean(fileToUse && isDocumentFile(fileToUse.name));
+    const { category: categoryHint, rest: questionText } = isKnowledgeUpload
+      ? splitCategoryHint(queryText)
+      : { category: null, rest: queryText.trim() };
+    const queryContent = questionText || (isKnowledgeUpload
+      ? t(getLang(), 'chat.addDocument', { name: fileToUse?.name ?? '' }) + (categoryHint ? t(getLang(), 'chat.addDocumentCategory', { category: categoryHint }) : '')
+      : t(getLang(), 'chat.buildDashboard', { name: fileToUse?.name || 'dataset' }));
 
     const userMessage: ChatMessageType = {
       id: `user-${Date.now()}`,
       role: 'user',
-      content: queryContent,
-      agentMode: currentAgentMode,
+      content: isKnowledgeUpload && questionText ? `${questionText}\n\n${t(getLang(), 'chat.attachedNote', { name: fileToUse?.name ?? '' })}` : queryContent,
+      agentMode: effectiveMode,
     };
 
     onSendMessage(userMessage);
 
     const assistantId = `assistant-${Date.now()}`;
-    const initialTraceState = createInitialPevTraceState(currentAgentMode);
+    const initialTraceState = createInitialPevTraceState(effectiveMode);
 
     const initialAssistantMsg: ChatMessageType = {
       id: assistantId,
       role: 'assistant',
       content: '',
-      agentMode: currentAgentMode,
+      agentMode: effectiveMode,
       pevEvents: {},
       pevTraceState: initialTraceState,
       status: 'loading',
@@ -198,7 +220,62 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setAttachedFile(null);
     setIsSending(true);
 
-    if (currentAgentMode.includes('Data Agent') || fileToUse || csvToSend || activeCSV) {
+    // CRITICAL: Strictly isolate Data Agent routing.
+    // If user explicitly selected RAG Agent, Search Agent, DB Agent, etc.,
+    // NEVER route to /api/analyze even if an old activeCSV exists in state!
+    const isExplicitNonData = targetAgentId !== null && targetAgentId !== 'data_agent';
+    const isExplicitData = targetAgentId === 'data_agent';
+    const isNewCsvUpload = Boolean(fileToUse && isTabularFile(fileToUse.name));
+
+    const shouldAnalyze = !isKnowledgeUpload && !isExplicitNonData && (isExplicitData ? Boolean(fileToUse || csvToSend || activeCSV) : isNewCsvUpload);
+
+    if (isKnowledgeUpload && fileToUse) {
+      const uploadedName = fileToUse.name;
+      onUpdateLastMessage((prev) => ({
+        ...prev,
+        content: t(getLang(), 'upload.processing', { name: uploadedName }),
+        pevEvents: undefined,
+        pevTraceState: undefined,
+        status: 'complete',
+      }));
+      let uploaded = false;
+      try {
+        const formData = new FormData();
+        formData.append('file', fileToUse);
+        formData.append('session_id', sessionId);
+        if (categoryHint) formData.append('category', categoryHint);
+        const res = await apiFetch('/api/knowledge/upload', { method: 'POST', body: formData });
+        const data = await res.json().catch(() => ({}));
+        if (isUnauthorized(res)) throw new Error(t(getLang(), 'session.expired'));
+        if (!res.ok) {
+          throw new Error(typeof data.detail === 'string' ? data.detail : data.error || `HTTP error ${res.status}`);
+        }
+        uploaded = true;
+        onUpdateLastMessage((prev) => ({ ...prev, content: data.message || t(getLang(), 'chat.kbUpdated'), status: 'complete' }));
+        if (data.status !== 'unchanged') {
+          toast.success(t(getLang(), 'upload.saved', { chunks: data.chunks, category: data.category }), { title: 'Knowledge base' });
+        }
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        onUpdateLastMessage((prev) => ({ ...prev, content: t(getLang(), 'upload.failed', { error: errorMessage }), status: 'error' }));
+      }
+      if (!uploaded || !questionText) {
+        setIsSending(false);
+        return;
+      }
+      // the user also asked something: answer it from the (now updated) knowledge base in a new reply
+      onSendMessage({
+        id: `assistant-${Date.now()}-answer`,
+        role: 'assistant',
+        content: '',
+        agentMode: effectiveMode,
+        pevEvents: {},
+        pevTraceState: createInitialPevTraceState(effectiveMode),
+        status: 'loading',
+      });
+    }
+
+    if (shouldAnalyze) {
       try {
         const formData = new FormData();
         formData.append('query', queryContent);
@@ -208,46 +285,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           formData.append('file', actualFile);
         }
 
-        const res = await fetch('/api/analyze', {
+        const res = await apiFetch('/api/analyze', {
           method: 'POST',
           body: formData,
         });
 
-        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-
-        const data = await res.json();
-        let dashboardSpec = data.dashboard_spec || undefined;
-        if (dashboardSpec && (csvToSend?.tableName || activeCSV?.tableName)) {
-          const tName = csvToSend?.tableName || activeCSV?.tableName;
-          try {
-            const currentRows =
-              dashboardSpec.table?.rows ||
-              dashboardSpec.raw_data ||
-              dashboardSpec.rawRows ||
-              [];
-            if (tName && (!currentRows || currentRows.length < 50)) {
-              const fullRows = await executeDuckDBSQL(tName, `SELECT * FROM ${tName};`);
-              if (fullRows && fullRows.length > 0) {
-                dashboardSpec = {
-                  ...dashboardSpec,
-                  raw_data: fullRows,
-                  rawData: fullRows,
-                  rawRows: fullRows,
-                  rows: fullRows,
-                  totalRows: fullRows.length,
-                  total_rows: fullRows.length,
-                  table: {
-                    ...(dashboardSpec.table || {}),
-                    rows: fullRows,
-                    totalRows: fullRows.length,
-                  },
-                };
-              }
-            }
-          } catch (duckErr) {
-            console.warn('DuckDB local sync fallback skipped:', duckErr);
-          }
+        const data = await res.json().catch(() => ({}));
+        if (isUnauthorized(res)) throw new Error(t(getLang(), 'session.expired'));
+        if (!res.ok) {
+          // The backend explains 4xx errors (unreadable file, too large, blocked prompt) in `detail`
+          throw new Error(typeof data.detail === 'string' ? data.detail : data.error || `HTTP error ${res.status}`);
         }
+        const dashboardSpec = data.dashboard_spec ? { ...data.dashboard_spec, sessionId } : undefined;
 
         const traceFromAnalyze: PEVTraceState = {
           currentStep: 'completed',
@@ -255,30 +304,30 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             status: 'completed',
             title: 'Planner Node',
             targetAgent: 'data_agent',
-            plan: 'Phân tích cấu trúc dữ liệu CSV, tính toán các chỉ số thống kê phân phối và dựng Dashboard trực quan hóa.',
-            description: 'Đã hoàn tất phân tích yêu cầu và lập kế hoạch xử lý dữ liệu.',
+            plan: t(getLang(), 'chat.analyzePlan'),
+            description: t(getLang(), 'chat.analyzePlanDone'),
           },
           executor: {
             status: 'completed',
             title: 'Executor Node',
             agentName: 'data_agent',
             subTasks: [
-              'EDA (Khám phá dữ liệu) -> Tạo Layout trực quan -> Dựng Biểu Đồ & KPI Cards',
+              t(getLang(), 'chat.analyzeSubTask'),
             ],
-            outputSummary: 'Đã hoàn tất thực thi xử lý dữ liệu và khởi tạo thành công đặc tả Dashboard.',
+            outputSummary: t(getLang(), 'chat.analyzeOutput'),
           },
           verifier: {
             status: 'completed',
             title: 'Verifier Node',
             isVerified: true,
             auditPassed: true,
-            feedback: 'Đặc tả Dashboard và cấu trúc dữ liệu đạt chuẩn kiểm duyệt 100% (Zero-Hallucination).',
+            feedback: t(getLang(), 'chat.analyzeFeedback'),
           },
         };
 
         onUpdateLastMessage((prev) => ({
           ...prev,
-          content: data.explanation || 'Đã phân tích xong dữ liệu.',
+          content: data.explanation || t(getLang(), 'chat.analyzed'),
           generatedCode: data.generated_code || '',
           dashboardSpec,
           metadata: data.metadata || undefined,
@@ -289,17 +338,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         onUpdateLastMessage((prev) => {
-          const prevState = prev.pevTraceState || createInitialPevTraceState(currentAgentMode);
+          const prevState = prev.pevTraceState || createInitialPevTraceState(effectiveMode);
           return {
             ...prev,
-            content: `Lỗi khi phân tích dữ liệu CSV: ${errorMessage}`,
+            content: t(getLang(), 'chat.analyzeError', { error: errorMessage }),
             pevTraceState: {
               ...prevState,
               currentStep: 'completed',
               verifier: {
                 ...prevState.verifier,
                 status: 'failed',
-                description: `Lỗi: ${errorMessage}`,
+                description: t(getLang(), 'chat.errorDescription', { error: errorMessage }),
               },
             },
             status: 'error',
@@ -309,204 +358,44 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         setIsSending(false);
       }
     } else {
-      const modeKey = currentAgentMode.includes('Search') ? 'search_agent' : null;
+      const modeKey = isKnowledgeUpload ? 'rag_agent' : targetAgentId;
 
       // Create abort controller for this stream
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
-      await fetchSSEStream(queryContent, sessionId, modeKey, {
-        onPevStep: (stepData) => {
-          onUpdateLastMessage((prev) => {
-            const prevState = prev.pevTraceState || createInitialPevTraceState(currentAgentMode);
-            let nextState: PEVTraceState = { ...prevState };
-
-            if (stepData.step === 'planner') {
-              if (stepData.status === 'completed') {
-                nextState = {
-                  ...nextState,
-                  planner: {
-                    ...nextState.planner,
-                    status: 'completed',
-                    targetAgent: stepData.target || nextState.planner.targetAgent,
-                  },
-                };
-              } else {
-                nextState = {
-                  ...nextState,
-                  currentStep: 'planner',
-                  planner: {
-                    ...nextState.planner,
-                    status: 'active',
-                    description: stepData.logs || nextState.planner.description || 'Đang phân tích câu hỏi, nạp bộ nhớ dài hạn và lựa chọn Agent phù hợp...',
-                  },
-                };
-              }
-            } else if (stepData.step === 'executor') {
-              if (stepData.status === 'completed') {
-                nextState = {
-                  ...nextState,
-                  executor: {
-                    ...nextState.executor,
-                    status: 'completed',
-                    agentName: stepData.target || nextState.executor.agentName,
-                  },
-                };
-              } else {
-                nextState = {
-                  ...nextState,
-                  currentStep: 'executor',
-                  planner: {
-                    ...nextState.planner,
-                    status: 'completed',
-                    targetAgent: stepData.target || nextState.planner.targetAgent,
-                  },
-                  executor: {
-                    ...nextState.executor,
-                    status: 'active',
-                    agentName: stepData.target || nextState.executor.agentName,
-                    description: stepData.logs || `Agent [${stepData.target || 'Executor'}] đang thực thi tác vụ...`,
-                  },
-                };
-              }
-            } else if (stepData.step === 'verifier') {
-              if (stepData.status === 'completed') {
-                nextState = {
-                  ...nextState,
-                  currentStep: 'completed',
-                  verifier: {
-                    ...nextState.verifier,
-                    status: 'completed',
-                    isVerified: true,
-                    auditPassed: true,
-                  },
-                };
-              } else {
-                nextState = {
-                  ...nextState,
-                  currentStep: 'verifier',
-                  executor: {
-                    ...nextState.executor,
-                    status: 'completed',
-                  },
-                  verifier: {
-                    ...nextState.verifier,
-                    status: 'active',
-                    description: stepData.logs || 'Đang đối soát kết quả với kế hoạch ban đầu và kiểm định tính trung thực...',
-                  },
-                };
-              }
-            } else if (stepData.step === 'completed') {
-              const isVer = stepData.status === 'verified';
-              nextState = {
-                ...nextState,
-                currentStep: 'completed',
-                planner: { ...nextState.planner, status: 'completed' },
-                executor: { ...nextState.executor, status: 'completed' },
-                verifier: {
-                  ...nextState.verifier,
-                  status: 'completed',
-                  isVerified: isVer,
-                  auditPassed: isVer,
-                  feedback: stepData.feedback || nextState.verifier.feedback,
-                },
-              };
-            }
-
-            return {
+      await fetchSSEStream(
+        queryContent,
+        sessionId,
+        modeKey,
+        {
+          onPevStep: (stepData) => {
+            onUpdateLastMessage((prev) => ({
               ...prev,
               pevStep: stepData,
-              pevTraceState: nextState,
-            };
-          });
-        },
+              pevTraceState: applyPevStep(prev.pevTraceState || createInitialPevTraceState(effectiveMode), stepData),
+            }));
+          },
         onPlan: (planData) => {
-          onUpdateLastMessage((prev) => {
-            const prevState = prev.pevTraceState || createInitialPevTraceState(currentAgentMode);
-            const nextState: PEVTraceState = {
-              ...prevState,
-              currentStep: 'executor',
-              planner: {
-                ...prevState.planner,
-                status: 'completed',
-                plan: planData.plan,
-                targetAgent: planData.target_agent,
-                description: 'Đã hoàn tất phân tích yêu cầu và lập kế hoạch.',
-              },
-              executor: {
-                ...prevState.executor,
-                status: 'active',
-                agentName: planData.target_agent,
-                description: `Agent [${planData.target_agent}] đang thực thi tác vụ theo kế hoạch...`,
-              },
-            };
-
-            return {
-              ...prev,
-              pevEvents: { ...prev.pevEvents, plan: planData },
-              pevTraceState: nextState,
-            };
-          });
+          onUpdateLastMessage((prev) => ({
+            ...prev,
+            pevEvents: { ...prev.pevEvents, plan: planData },
+            pevTraceState: applyPlan(prev.pevTraceState || createInitialPevTraceState(effectiveMode), planData),
+          }));
         },
         onExecuting: (execData) => {
-          onUpdateLastMessage((prev) => {
-            const prevState = prev.pevTraceState || createInitialPevTraceState(currentAgentMode);
-            const targetAgent = execData.target_agent || prevState.executor.agentName;
-            const hasResult = Boolean(execData.execution_result);
-            const isCompleted = execData.status === 'completed' || hasResult;
-
-            const nextState: PEVTraceState = {
-              ...prevState,
-              currentStep: isCompleted ? 'verifier' : 'executor',
-              executor: {
-                ...prevState.executor,
-                status: isCompleted ? 'completed' : 'active',
-                agentName: targetAgent,
-                outputSummary: execData.execution_result || prevState.executor.outputSummary,
-                description: isCompleted
-                  ? `Agent [${targetAgent || 'Executor'}] đã hoàn tất thực thi tác vụ.`
-                  : (execData.message || `Agent [${targetAgent || 'Executor'}] đang xử lý dữ liệu...`),
-              },
-              verifier: isCompleted ? {
-                ...prevState.verifier,
-                status: 'active',
-                description: 'Đang đối soát kết quả với kế hoạch ban đầu và kiểm định tính trung thực...',
-              } : prevState.verifier,
-            };
-
-            return {
-              ...prev,
-              pevEvents: { ...prev.pevEvents, executing: execData as any },
-              pevTraceState: nextState,
-            };
-          });
+          onUpdateLastMessage((prev) => ({
+            ...prev,
+            pevEvents: { ...prev.pevEvents, executing: execData as any },
+            pevTraceState: applyExecuting(prev.pevTraceState || createInitialPevTraceState(effectiveMode), execData),
+          }));
         },
         onVerifying: (verifyingData) => {
-          onUpdateLastMessage((prev) => {
-            const prevState = prev.pevTraceState || createInitialPevTraceState(currentAgentMode);
-            const isVerified = verifyingData.is_verified;
-            const nextState: PEVTraceState = {
-              ...prevState,
-              currentStep: isVerified ? 'completed' : 'verifier',
-              verifier: {
-                ...prevState.verifier,
-                status: isVerified ? 'completed' : (verifyingData.retry_count > 0 ? 'retry' : 'active'),
-                isVerified,
-                auditPassed: isVerified,
-                feedback: verifyingData.verifier_feedback,
-                retryCount: verifyingData.retry_count,
-                description: isVerified
-                  ? 'Kiểm định chất lượng thành công (100% Passed).'
-                  : `Phát hiện điểm chưa hoàn thiện — Kích hoạt vòng lặp tự sửa lỗi (Retry #${verifyingData.retry_count}).`,
-              },
-            };
-
-            return {
-              ...prev,
-              pevEvents: { ...prev.pevEvents, verifying: verifyingData },
-              pevTraceState: nextState,
-            };
-          });
+          onUpdateLastMessage((prev) => ({
+            ...prev,
+            pevEvents: { ...prev.pevEvents, verifying: verifyingData },
+            pevTraceState: applyVerifying(prev.pevTraceState || createInitialPevTraceState(effectiveMode), verifyingData),
+          }));
         },
         onHumanApprovalRequired: (approvalData) => {
           onUpdateLastMessage((prev) => ({
@@ -514,58 +403,38 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             approvalRequest: approvalData,
           }));
         },
+        onAnswerDelta: (text) => {
+          onUpdateLastMessage((prev) => ({ ...prev, content: `${prev.content}${text}`, isPreview: true }));
+        },
+        onAnswerReset: () => {
+          onUpdateLastMessage((prev) => ({ ...prev, content: '', isPreview: false }));
+        },
         onFinalResponse: (finalData) => {
-          onUpdateLastMessage((prev) => {
-            const prevState = prev.pevTraceState || createInitialPevTraceState(currentAgentMode);
-            const nextState: PEVTraceState = {
-              ...prevState,
-              currentStep: 'completed',
-              planner: {
-                ...prevState.planner,
-                status: 'completed',
-                targetAgent: finalData.target_agent || prevState.planner.targetAgent,
-                plan: finalData.pev_trace?.planner?.plan_summary || prevState.planner.plan,
-              },
-              executor: {
-                ...prevState.executor,
-                status: 'completed',
-                agentName: finalData.target_agent || prevState.executor.agentName,
-                outputSummary: finalData.pev_trace?.executor?.execution_summary || prevState.executor.outputSummary,
-              },
-              verifier: {
-                ...prevState.verifier,
-                status: 'completed',
-                isVerified: finalData.is_verified,
-                auditPassed: finalData.is_verified,
-                feedback: finalData.pev_trace?.verifier?.verifier_feedback || prevState.verifier.feedback,
-              },
-            };
-
-            return {
-              ...prev,
-              content: finalData.response,
-              pevEvents: { ...prev.pevEvents, final_response: finalData },
-              pevStep: { step: 'completed', status: 'verified' },
-              pevTrace: finalData.pev_trace || prev.pevTrace,
-              pevTraceState: nextState,
-              status: 'complete',
-            };
-          });
+          onUpdateLastMessage((prev) => ({
+            ...prev,
+            content: finalData.response,
+            pevEvents: { ...prev.pevEvents, final_response: finalData },
+            pevStep: { step: 'completed', status: 'verified' },
+            pevTrace: finalData.pev_trace || prev.pevTrace,
+            pevTraceState: applyFinal(prev.pevTraceState || createInitialPevTraceState(effectiveMode), finalData),
+            status: 'complete',
+            isPreview: false,
+          }));
           setIsSending(false);
         },
         onError: (err) => {
           onUpdateLastMessage((prev) => {
-            const prevState = prev.pevTraceState || createInitialPevTraceState(currentAgentMode);
+            const prevState = prev.pevTraceState || createInitialPevTraceState(effectiveMode);
             return {
               ...prev,
-              content: `Lỗi thực thi stream: ${err}`,
+              content: t(getLang(), 'chat.streamError', { error: String(err) }),
               pevTraceState: {
                 ...prevState,
                 currentStep: 'completed',
                 verifier: {
                   ...prevState.verifier,
                   status: 'failed',
-                  description: `Thất bại: ${err}`,
+                  description: t(getLang(), 'chat.failedDescription', { error: String(err) }),
                 },
               },
               status: 'error',
@@ -573,7 +442,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           });
           setIsSending(false);
         },
-      }, abortController.signal);
+      }, abortController.signal, targetAgentId);
 
       abortControllerRef.current = null;
     }
@@ -590,14 +459,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {/* Drag Overlay */}
       {dragActive && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-accent-primary/5 backdrop-blur-md border-2 border-dashed border-accent-primary rounded-2xl transition-all duration-200 pointer-events-none">
-          <div className="p-3 bg-accent-primary/10 text-accent-primary rounded-full mb-2 animate-bounce">
+          <div className="p-3 bg-accent-primary/10 text-accent-primary rounded-full mb-2 animate-pulse-subtle">
             <UploadCloud className="w-8 h-8" />
           </div>
           <p className="text-base font-semibold text-foreground">
-            Kéo & thả file CSV / Excel / Document vào đây để nạp tự động
+            {t(lang, 'chat.dropTitle')}
           </p>
           <p className="text-xs text-foreground-muted mt-1">
-            Hỗ trợ các định dạng .csv, .xlsx, .pdf, .docx (Tối đa 50MB)
+            {t(lang, 'chat.dropHint', { formats: '.csv, .xlsx, .pdf, .docx, .pptx, .txt, .md', max: Math.max(TABULAR_MAX_MB, DOCUMENT_MAX_MB) })}
           </p>
         </div>
       )}
@@ -605,8 +474,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {isInitialState ? (
         /* ── HERO CENTERED LAYOUT (New Chat) ── */
         <div className="flex-1 flex flex-col items-center justify-center w-full max-w-3xl mx-auto px-4 transition-all duration-300 ease-in-out">
-          <h1 className="text-3xl sm:text-4xl md:text-5xl font-medium tracking-tight text-center bg-gradient-to-r from-accent-primary via-foreground to-accent-planner bg-clip-text text-transparent leading-tight mb-8 animate-fade-in">
-            Tôi có thể giúp gì cho bạn hôm nay?
+          <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight text-foreground text-center leading-tight mb-8 animate-fade-in">
+            {t(lang, 'chat.heroTitle')}
           </h1>
 
           {/* Non-blocking Hero Alert */}
@@ -644,12 +513,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               onClick={() => {
                 onSelectAgentMode('Data Agent');
                 if (attachedFile || activeCSV) {
-                  handleSendMessageFromInput('Phân tích doanh số & dựng Executive Dashboard từ file CSV', attachedFile || activeCSV?.file || null);
+                  handleSendMessageFromInput(t(getLang(), 'chat.starterDataTitle'), attachedFile || activeCSV?.file || null, 'Data Agent');
                 } else {
-                  setHeroAlert('Vui lòng đính kèm tệp CSV ở khung nhập bên trên để phân tích dữ liệu.');
+                  setHeroAlert(t(getLang(), 'chat.attachCsvAbove'));
                 }
               }}
-              className="group p-3.5 bg-surface hover:bg-surface-raised border border-border hover:border-accent-primary/50 rounded-xl text-left transition-all duration-200 shadow-xs hover:shadow-sm cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 flex flex-col justify-between space-y-2"
+              className="group p-3.5 bg-surface hover:bg-surface-raised border border-border hover:border-accent-primary/50 rounded-xl text-left transition-all duration-200 hover:shadow-enterprise cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 flex flex-col justify-between space-y-2"
             >
               <div className="flex items-center justify-between">
                 <div className="p-2 bg-accent-primary/10 group-hover:bg-accent-primary/20 text-accent-primary rounded-lg transition-colors">
@@ -659,10 +528,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               </div>
               <div>
                 <p className="text-xs font-semibold text-foreground group-hover:text-accent-primary transition-colors">
-                  Phân tích doanh số & dựng Executive Dashboard từ file CSV
+                  {t(lang, 'chat.starterDataTitle')}
                 </p>
                 <p className="text-xs text-foreground-muted mt-1 leading-snug">
-                  Tự động sinh KPI, phân phối doanh thu và biểu đồ tương tác chéo.
+                  {t(lang, 'chat.starterDataDesc')}
                 </p>
               </div>
             </button>
@@ -671,9 +540,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               type="button"
               onClick={() => {
                 onSelectAgentMode('RAG Agent');
-                handleSendMessageFromInput('Tra cứu điều khoản hợp đồng & chính sách nội bộ (RAG)', null);
+                handleSendMessageFromInput(t(getLang(), 'chat.starterRagTitle'), null, 'RAG Agent');
               }}
-              className="group p-3.5 bg-surface hover:bg-surface-raised border border-border hover:border-accent-primary/50 rounded-xl text-left transition-all duration-200 shadow-xs hover:shadow-sm cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 flex flex-col justify-between space-y-2"
+              className="group p-3.5 bg-surface hover:bg-surface-raised border border-border hover:border-accent-primary/50 rounded-xl text-left transition-all duration-200 hover:shadow-enterprise cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 flex flex-col justify-between space-y-2"
             >
               <div className="flex items-center justify-between">
                 <div className="p-2 bg-accent-planner/10 group-hover:bg-accent-planner/20 text-accent-planner rounded-lg transition-colors">
@@ -683,10 +552,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               </div>
               <div>
                 <p className="text-xs font-semibold text-foreground group-hover:text-accent-primary transition-colors">
-                  Tra cứu điều khoản hợp đồng & chính sách nội bộ (RAG)
+                  {t(lang, 'chat.starterRagTitle')}
                 </p>
                 <p className="text-xs text-foreground-muted mt-1 leading-snug">
-                  Trích xuất và đối chiếu điều khoản bảo mật, SLA và pháp lý.
+                  {t(lang, 'chat.starterRagDesc')}
                 </p>
               </div>
             </button>
@@ -695,9 +564,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               type="button"
               onClick={() => {
                 onSelectAgentMode('Search Agent');
-                handleSendMessageFromInput('Tìm kiếm tổng hợp tin tức công nghệ mới nhất', null);
+                handleSendMessageFromInput(t(getLang(), 'chat.starterSearchTitle'), null, 'Search Agent');
               }}
-              className="group p-3.5 bg-surface hover:bg-surface-raised border border-border hover:border-accent-primary/50 rounded-xl text-left transition-all duration-200 shadow-xs hover:shadow-sm cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 flex flex-col justify-between space-y-2"
+              className="group p-3.5 bg-surface hover:bg-surface-raised border border-border hover:border-accent-primary/50 rounded-xl text-left transition-all duration-200 hover:shadow-enterprise cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 flex flex-col justify-between space-y-2"
             >
               <div className="flex items-center justify-between">
                 <div className="p-2 bg-accent-executor/10 group-hover:bg-accent-executor/20 text-accent-executor rounded-lg transition-colors">
@@ -707,10 +576,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               </div>
               <div>
                 <p className="text-xs font-semibold text-foreground group-hover:text-accent-primary transition-colors">
-                  Tìm kiếm tổng hợp tin tức công nghệ mới nhất
+                  {t(lang, 'chat.starterSearchTitle')}
                 </p>
                 <p className="text-xs text-foreground-muted mt-1 leading-snug">
-                  Cập nhật các đột phá AI, mô hình ngôn ngữ và xu hướng công nghệ mới.
+                  {t(lang, 'chat.starterSearchDesc')}
                 </p>
               </div>
             </button>
@@ -738,7 +607,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     activeCSV={activeCSV}
                     onGenerateDashboard={(customPrompt) =>
                       handleSendMessageFromInput(
-                        customPrompt || 'Dựng dashboard trực quan từ dữ liệu này',
+                        customPrompt || t(lang, 'chat.dashboardPrompt'),
                         activeCSV?.file || attachedFile
                       )
                     }
@@ -763,14 +632,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     setIsSending(false);
                     onUpdateLastMessage((prev) => ({
                       ...prev,
-                      content: prev.content || '⏹ Đã dừng tạo phản hồi.',
+                      content: prev.content || t(getLang(), 'chat.stopped'),
                       status: 'complete' as const,
                     }));
                   }}
-                  className="flex items-center gap-2 px-4 py-2 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-sm font-medium text-foreground-secondary hover:text-foreground transition-all duration-200 shadow-sm cursor-pointer group"
+                  className="flex items-center gap-2 px-4 py-2 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-sm font-medium text-foreground-secondary hover:text-foreground transition-all duration-200 cursor-pointer group"
                 >
                   <StopCircle className="w-4 h-4 text-accent-error group-hover:scale-110 transition-transform" />
-                  <span>Dừng tạo</span>
+                  <span>{t(lang, 'chat.stop')}</span>
                 </button>
               </div>
             )}

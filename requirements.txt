@@ -1,56 +1,56 @@
-# Multi-Agent Enterprise MVP - Dependencies
-# ==========================================
+# Multi-Agent Enterprise MVP — runtime dependencies
+# Every entry below is imported by src/ (verified by grep). Dev/test tools: requirements-dev.txt.
+# Legacy Streamlit UI: legacy/streamlit_ui/requirements.txt
 
-# --- Web Framework & Server ---
+# --- Web framework & server ---
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 sse-starlette>=2.0.0
+python-multipart>=0.0.9      # FastAPI UploadFile + Form
+httpx>=0.27.0                # async HTTP (MCP client, reranker)
 
-# --- Frontend Testing ---
-streamlit>=1.36.0
-
-# --- Database ---
-asyncpg>=0.29.0          # PostgreSQL async driver
-pgvector>=0.3.0          # pgvector Python support
-redis[hiredis]>=5.0.0    # Redis async client with C parser
+# --- Data stores ---
+asyncpg>=0.29.0              # PostgreSQL async driver (pgvector used through SQL)
+redis[hiredis]>=5.0.0
 
 # --- Configuration ---
-pydantic-settings>=2.3.0
+pydantic-settings>=2.3.0     # also reads .env (brings python-dotenv)
 
 # --- AI / LLM ---
-openai>=1.35.0           # OpenRouter-compatible client
-semantic-kernel>=1.5.0   # Microsoft Semantic Kernel
-litellm>=1.40.0          # Unified LLM proxy / routing
-langfuse[langchain]>=2.36.0,<3.0.0  # LLM observability & tracing (LiteLLM requires V2 SDK)
-langgraph>=0.1.5         # StateGraph orchestration & PEV loop
-langchain-core>=0.2.0    # LangChain core abstractions
-mem0ai[nlp,extras]>=0.1.0    # Long-term Memory Manager with NLP and search extras
-sqlalchemy>=2.0.0        # Database ORM for MCP tools
-tavily-python>=0.3.0     # Tavily Real-time Search API
-crawl4ai>=0.4.0          # Async web crawler & markdown extractor
-
-# --- HTTP Client ---
-httpx>=0.27.0            # Async HTTP (for Streamlit -> FastAPI)
-
-# --- Utilities ---
-python-dotenv>=1.0.0
-
-# --- Security & Data Quality ---
-sqlglot>=25.0.0              # AST-based SQL validation & guardrails
-chardet>=5.0.0               # Automatic CSV encoding detection
-
-# --- RAG Pipeline (Document Processing) ---
-langchain>=0.2.0
-langchain-community>=0.2.0
-langchain-openai>=0.1.0
+openai>=1.35.0
+litellm>=1.40.0
+langfuse[langchain]>=2.36.0,<3.0.0  # LiteLLM requires the V2 SDK
+langgraph>=0.1.5             # StateGraph / PEV loop
+langchain-core>=0.2.0
 langchain-text-splitters>=0.2.0
+mem0ai[nlp,extras]>=0.1.0    # long-term memory
+psycopg[binary,pool]>=3.1    # mem0's PostgreSQL/pgvector store (MEM0_VECTOR_STORE=pgvector); also Alembic's synchronous driver
+alembic>=1.13                # versioned schema changes (migrations/, src/shared/migrations.py)
+python-pptx>=1.0             # PowerPoint decks in the knowledge base (src/ingestion/document_loader.py)
+pypdfium2>=4.30              # renders PDF pages: OCR input and the cited-page preview (src/ingestion/ocr.py, preview.py)
+pytesseract>=0.3             # wrapper for the tesseract program (installed in the backend image)
+tavily-python>=0.3.0
+crawl4ai>=0.4.0              # web crawl (needs Chromium: see Dockerfile INSTALL_BROWSER)
+
+# --- Security & data quality ---
+PyJWT>=2.8.0                 # gateway bearer-token verification (src/shared/auth.py)
+cryptography>=42.0.0         # RS256/ES256 keys from an identity provider's JWKS
+sqlglot>=25.0.0              # AST-based SQL validation
+chardet>=5.0.0               # CSV encoding detection
+
+# --- Document processing (RAG ingestion) ---
 pypdf>=4.0.0
 python-docx>=1.1.0
-tiktoken>=0.7.0
-numpy>=1.26.0
 
-# --- Data Analysis Agent ---
+# --- Dataset ingestion (data agent: .xlsx / .parquet uploads) ---
+openpyxl>=3.1.0
+pyarrow>=15.0.0
+
+# --- Data analysis agent ---
 pandas>=2.0.0
-plotly>=5.18.0
-streamlit-aggrid>=0.3.1
-python-multipart>=0.0.9     # Required for FastAPI UploadFile + Form
+numpy>=1.26.0
+# Loaded by the analysis sandbox when present (data_agent/sandbox.py); without them
+# statistical tests / clustering / static charts silently disappear inside the container.
+scipy>=1.11.0
+scikit-learn>=1.3.0
+matplotlib>=3.8.0

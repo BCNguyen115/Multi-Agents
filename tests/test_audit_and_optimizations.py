@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import sys
@@ -37,6 +38,15 @@ if "fastapi" not in sys.modules:
 if "fastapi.middleware.cors" not in sys.modules:
     sys.modules["fastapi.middleware.cors"] = MagicMock()
 
+def _installed(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+# Mock only dependencies that are NOT installed: a MagicMock left in sys.modules over a real package leaks
+# into every other test module of the session (it broke the real-database RAG test).
 for mod in [
     "litellm",
     "asyncpg",
@@ -45,7 +55,7 @@ for mod in [
     "sse_starlette",
     "sse_starlette.sse",
 ]:
-    if mod not in sys.modules:
+    if mod not in sys.modules and not _installed(mod):
         sys.modules[mod] = MagicMock()
 
 import pandas as pd
@@ -213,14 +223,14 @@ class TestRAGAgentFallback:
         """When rerank_documents throws an error, RAGAgent should fall back to candidates."""
         mock_ks = MagicMock()
         mock_candidates = [
-            {"filename": "doc1.pdf", "section_title": "NDA", "category": "legal", "content": "Content of doc1"},
-            {"filename": "doc2.pdf", "section_title": "SOW", "category": "project", "content": "Content of doc2"},
+            {"filename": "doc1.pdf", "section_title": "NDA", "category": "legal", "content": "Content of doc1", "vector_score": 0.8},
+            {"filename": "doc2.pdf", "section_title": "SOW", "category": "project", "content": "Content of doc2", "vector_score": 0.7},
         ]
-        mock_ks.search_with_hyde = AsyncMock(return_value=mock_candidates)
+        mock_ks.search = AsyncMock(return_value=mock_candidates)
 
         mock_llm = MagicMock()
         mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock(message=MagicMock(content="Câu trả lời từ context fallback"))]
+        mock_resp.choices = [MagicMock(message=MagicMock(content="Câu trả lời từ context fallback [1]"), finish_reason="stop")]
         mock_llm.chat_completion = AsyncMock(return_value=mock_resp)
 
         rag_agent = RAGAgent(knowledge_store=mock_ks, llm_client=mock_llm)

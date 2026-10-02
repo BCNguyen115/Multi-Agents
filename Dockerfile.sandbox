@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1.7
+# Analysis sandbox: runs the Data Agent's LLM-written pandas code away from the API (see src/agents/data_agent/sandbox_server.py).
+#   docker build -f Dockerfile.sandbox -t agent-sandbox .
+# Only what the analysis needs, at the versions the API uses (requirements.lock): no web framework, no LLM clients, no secrets.
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    MPLBACKEND=Agg
+
+WORKDIR /app
+
+COPY requirements.lock /tmp/requirements.lock
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --default-timeout=120 --retries 5 \
+        $(grep -E '^(pandas|numpy|scipy|matplotlib|pyarrow)==' /tmp/requirements.lock | tr '\n' ' ') \
+    && rm /tmp/requirements.lock
+
+# The sandbox modules and the (light) package __init__ files they need: nothing else of the application is in this image.
+COPY src/__init__.py ./src/__init__.py
+COPY src/agents/__init__.py ./src/agents/__init__.py
+COPY src/agents/data_agent/__init__.py ./src/agents/data_agent/__init__.py
+COPY src/agents/data_agent/sandbox.py src/agents/data_agent/sandbox_worker.py src/agents/data_agent/sandbox_server.py ./src/agents/data_agent/
+
+RUN groupadd --system --gid 1001 sandbox && useradd --system --uid 1001 --gid sandbox sandbox
+USER sandbox
+ENV PYTHONPATH=/app
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4)"
+
+CMD ["python", "-m", "src.agents.data_agent.sandbox_server"]

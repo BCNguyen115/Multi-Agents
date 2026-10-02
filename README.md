@@ -20,7 +20,7 @@
 [Khởi Chạy Nhanh](#-hướng-dẫn-khởi-chạy-quick-start) •
 [Cấu Hình Môi Trường](#-cấu-hình-biến-môi-trường-env) •
 [Bộ Kiểm Thử & Đánh Giá](#-kiểm-thử--offline-evaluation-pipeline) •
-[Case Study Chi Tiết](./PORTFOLIO_CASE_STUDY.md)
+[Case Study Chi Tiết](./docs/PORTFOLIO_CASE_STUDY.md)
 
 ---
 
@@ -221,6 +221,7 @@ Hệ thống được đóng gói hoàn chỉnh trong `docker-compose.yml` gồm
 | `agent_langfuse_web` | `langfuse-web` | `langfuse/langfuse:2` | `3005:3000` | Dashboard giám sát LLM Observability |
 | `agent_langfuse_worker` | `langfuse-worker` | `langfuse/langfuse-worker:2` | N/A | Worker xử lý telemetry ngầm |
 | `agent_reranker` | `tei-reranker` | HuggingFace TEI `cpu-1.2` | `8080:80` | Cross-Encoder Reranker (`BAAI/bge-reranker-base`) |
+| `agent_python_sandbox` | `python-sandbox` | `Dockerfile.sandbox` (Python + pandas/numpy) | N/A (mạng nội bộ `sandbox_net`) | Chạy mã phân tích do LLM viết, cách ly khỏi API (xem mục Vận hành) |
 
 ---
 
@@ -231,7 +232,10 @@ Hệ thống được đóng gói hoàn chỉnh trong `docker-compose.yml` gồm
 3. **PII Redaction Pipeline:** Tự động che chắn Số điện thoại Việt Nam (`0xxx`/`+84xxx`), CCCD (12 chữ số), Email, Thẻ tín dụng trước khi ghi vào bộ nhớ dài hạn `Mem0`.
 4. **JWT Inter-service Authentication:** Ký số HMAC-SHA256 với các claims chuẩn `jti`, `nbf`, `exp`, `iss`, `sub` chống tấn công replay.
 5. **AgentRegistry Validation Gate:** Từ chối đăng ký các Agent có độ trùng lặp mô tả > 80% (Cosine Similarity) và chạy functional probe test bất đồng bộ (timeout 3.0s).
-6. **SnapshotManager & Atomic Rollback:** Quản lý phiên bản Semantic Versioning (`v1.0.0`), tự động Rollback nguyên tử nếu điểm chất lượng sụt giảm > 15%.
+6. **Xác thực người dùng (`AUTH_MODE=jwt`):** mọi route `/api/*` cần `Authorization: Bearer <JWT>` (HS256 hoặc JWKS của IdP). `sub` gắn phiên với người dùng (không ai đọc/duyệt được phiên của người khác), claim `tenant_id`/`department_id` đi vào Row-Level Security (điều kiện `department_id = … AND tenant_id = …`, lỗi RLS thì **không chạy** truy vấn), chỉ vai trò `HITL_APPROVER_ROLES` mới được phê duyệt thao tác nhạy cảm và người duyệt được ghi log. Mặc định `AUTH_MODE=off` (người dùng ẩn danh, chỉ để phát triển cục bộ); chế độ `jwt` từ chối khởi động nếu secret thiếu/ngắn/còn là giá trị mẫu. Trình duyệt chưa có màn hình đăng nhập: đặt proxy nhận diện người dùng (oauth2-proxy, API gateway…) phía trước, hoặc tạo token thử bằng `python -m scripts.make_token`.
+7. **Cách ly dữ liệu:** `db_agent` chạy SQL do LLM viết bằng role Postgres chỉ đọc (xem `DB_AGENT_PASSWORD`), nên PostgreSQL tự chặn ghi, DDL và mọi bảng/schema ngoài danh sách cho phép (kể cả 42 bảng Langfuse). Phê duyệt HITL nằm trong Redis (sống qua restart, duyệt được trên bất kỳ bản sao nào, chỉ nhận một lần).
+8. **Giới hạn tốc độ & tải lên:** `RATE_LIMIT_CHAT_PER_MINUTE` / `RATE_LIMIT_ANALYZE_PER_MINUTE` theo người dùng (hoặc IP), đếm bằng Redis; tệp tải lên bị từ chối bằng `Content-Length` trước khi đọc và được đọc theo khối có trần `DATA_MAX_FILE_MB`.
+9. **SnapshotManager & Atomic Rollback:** Quản lý phiên bản Semantic Versioning (`v1.0.0`), tự động Rollback nguyên tử nếu điểm chất lượng sụt giảm > 15%.
 
 ---
 
@@ -265,7 +269,7 @@ Mở file `.env` và điền `OPENROUTER_API_KEY` (hoặc `TAVILY_API_KEY` nếu
 
 #### Bước 3: Khởi động 7 Services
 ```bash
-docker-compose up -d --build
+docker compose up -d --build   # cần POSTGRES_PASSWORD, LANGFUSE_NEXTAUTH_SECRET, LANGFUSE_SALT trong .env (xem .env.example)
 ```
 
 #### Bước 4: Truy cập hệ thống
@@ -280,7 +284,7 @@ docker-compose up -d --build
 
 #### 1. Khởi động hạ tầng nền tảng (PostgreSQL, Redis, TEI)
 ```bash
-docker-compose up -d postgres redis tei-reranker
+docker compose up -d postgres redis tei-reranker
 ```
 
 #### 2. Cài đặt & Chạy Backend (FastAPI + LangGraph)
@@ -297,7 +301,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Nạp dữ liệu tài liệu mẫu vào pgvector
-python run_ingestion.py
+python -m scripts.run_ingestion
 
 # Khởi chạy FastAPI Gateway Backend
 uvicorn src.gateway.main:app --host 0.0.0.0 --port 8000 --reload
@@ -325,11 +329,28 @@ Truy cập giao diện tại [http://localhost:3000](http://localhost:3000).
 | `REDIS_URL` | `redis://localhost:6379/0` | Chuỗi kết nối Redis Cache |
 | `TAVILY_API_KEY` | *(Tùy chọn)* | API Key tìm kiếm web từ [Tavily](https://tavily.com/) |
 | `RERANKER_ENDPOINT` | `http://localhost:8080/rerank` | Endpoint của HuggingFace TEI Reranker |
-| `RERANKER_TIMEOUT` | `0.8` | Circuit breaker timeout (800ms) |
+| `RERANKER_TIMEOUT` | `8.0` | Tổng ngân sách thời gian cho một lần rerank (quá hạn thì dùng thứ tự đã hợp nhất) |
+| `RAG_MIN_VECTOR_SCORE` | `0.30` | Ngưỡng cosine tối thiểu để coi là "có tài liệu liên quan" |
 | `INTERNAL_JWT_SECRET` | *(Random secret)* | Secret key dùng mã hóa JWT liên dịch vụ |
-| `LANGFUSE_PUBLIC_KEY` | `pk-lf-...` | Public key cho Langfuse Tracing |
-| `LANGFUSE_SECRET_KEY` | `sk-lf-...` | Secret key cho Langfuse Tracing |
-| `LANGFUSE_HOST` | `http://localhost:3005` | Host server Langfuse |
+| `AUTH_MODE` | `off` | `off` = ẩn danh (dev), `jwt` = bắt buộc Bearer token |
+| `AUTH_JWT_SECRET` / `AUTH_JWKS_URL` | *(trống)* | Secret HS256 (≥ 32 ký tự) hoặc endpoint JWKS của IdP (RS256/ES256) |
+| `AUTH_JWT_AUDIENCE` / `AUTH_JWT_ISSUER` | *(trống)* | Chỉ kiểm tra khi được đặt |
+| `HITL_APPROVER_ROLES` | `["approver","admin"]` | Vai trò được phê duyệt thao tác nhạy cảm (chế độ `jwt`) |
+| `RATE_LIMIT_CHAT_PER_MINUTE` | `30` | Số lượt chat/stream/title mỗi người (hoặc IP) mỗi phút; `0` = không giới hạn |
+| `RATE_LIMIT_ANALYZE_PER_MINUTE` | `10` | Số lượt tải lên/phân tích mỗi phút |
+| `AUTH_USERS` | *(trống)* | Danh sách người dùng của màn hình đăng nhập tích hợp (JSON; tạo mục bằng `python -m scripts.make_user`); chỉ dùng với `AUTH_MODE=jwt` + `AUTH_JWT_SECRET` |
+| `AUTH_TOKEN_TTL_MINUTES` / `RATE_LIMIT_LOGIN_PER_MINUTE` | `480` / `10` | Hạn của token đăng nhập; số lần thử đăng nhập mỗi IP mỗi phút (chống dò mật khẩu) |
+| `KNOWLEDGE_UPLOAD_ROLES` | `["admin"]` | Vai trò được thêm/thay tài liệu vào knowledge base từ khung chat (chế độ `jwt`; chế độ ẩn danh luôn được phép) |
+| `KNOWLEDGE_MAX_FILE_MB` / `KNOWLEDGE_MAX_CHUNKS` / `KNOWLEDGE_DIR` | `25` / `2000` / `dataset` | Trần dung lượng, trần số đoạn của một tài liệu, và thư mục giữ bản sao tệp đã tải lên |
+| `SANDBOX_URL` / `SANDBOX_SECRET` | *(compose: `http://python-sandbox:8080` / bắt buộc)* | Nơi chạy mã phân tích do LLM viết (container riêng, không có internet); bí mật HMAC dùng chung ≥ 16 ký tự. `SANDBOX_URL` rỗng = chạy trong tiến trình con của API (chỉ để phát triển) |
+| `AUTO_MIGRATE` | `true` | Tự áp các revision Alembic còn thiếu khi backend khởi động (lỗi thì dừng khởi động) |
+| `DB_AGENT_PASSWORD` | *(trống)* | Từ 16 ký tự: `db_agent` chạy SQL bằng role Postgres chỉ đọc `DB_AGENT_ROLE` (chỉ `SELECT` trên `DB_AGENT_TABLES`, giao dịch chỉ đọc, timeout 15 s). Để trống thì dùng tài khoản của ứng dụng (có cảnh báo) |
+| `MEM0_VECTOR_STORE` | `memory` (compose: `pgvector`) | Bộ nhớ dài hạn của Agent: `memory` = trong RAM, mất khi restart; `pgvector` = lưu trong PostgreSQL |
+| `INTEGRATION_ALLOWED_HOSTS` | *(danh sách demo)* | Host mà Integration Agent được gọi (thêm mọi host `*.internal`); tên nào phân giải ra IP nội bộ/private đều bị từ chối, không theo redirect |
+| `LANGFUSE_ENABLED` | `false` | Bật ghi trace. Backend kiểm tra key với server Langfuse lúc khởi động (log `Langfuse tracing ENABLED ...`); sai key hoặc server chưa lên thì tracing tắt, ứng dụng vẫn chạy |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | *(trống)* | Cặp key do bạn tự đặt (`pk-lf-<hex>`, `sk-lf-<hex>`). Compose dùng chính cặp này để tạo sẵn project Langfuse ở lần chạy đầu, không cần bấm trong giao diện |
+| `LANGFUSE_INIT_USER_EMAIL` / `LANGFUSE_INIT_USER_PASSWORD` | `admin@example.com` / *(trống)* | Tài khoản đăng nhập http://localhost:3005 do compose tạo ở lần chạy đầu (mật khẩu từ 8 ký tự). Chỉ áp dụng khi database Langfuse còn trống |
+| `LANGFUSE_HOST` | `http://localhost:3005` | Host server Langfuse (compose tự đặt `http://langfuse-web:3000` cho backend) |
 
 ---
 
@@ -338,15 +359,45 @@ Truy cập giao diện tại [http://localhost:3000](http://localhost:3000).
 Hệ thống đi kèm script tự động cắt khúc, trích xuất và nhúng tài liệu mẫu vào cơ sở dữ liệu `pgvector`:
 
 ```bash
-python run_ingestion.py
+python -m scripts.run_ingestion
 ```
 
 **Quy trình Ingestion:**
-1. Đọc và trích xuất text từ các thư mục tài liệu `dataset/` (PDF, DOCX, TXT).
+1. Đọc và trích xuất text từ các thư mục tài liệu `dataset/` (PDF, DOCX, PPTX, TXT, MD; PDF bản scan được OCR nếu có Tesseract).
 2. Phân đoạn ngữ nghĩa (Semantic Chunking) theo Section Title và điều chỉnh overlap.
 3. Tạo vector nhúng 1536 chiều qua OpenAI `text-embedding-3-small`.
 4. Ghi dữ liệu vào bảng `rag_chunks` trên PostgreSQL.
 5. Tự động khởi tạo chỉ mục HNSW (`idx_rag_chunks_hnsw`) với tham số `m=16, ef_construction=64`.
+
+### Thêm tài liệu vào knowledge base ngay trong khung chat
+
+Đính kèm tệp **PDF, DOCX, PPTX, TXT hoặc MD** vào ô chat rồi gửi (tuỳ chọn gõ `category: nda` để chọn danh mục, hoặc kèm một câu hỏi để hỏi luôn về tài liệu đó). Backend (`POST /api/knowledge/upload`) dùng **đúng đường ống của `run_ingestion`** (cùng bộ đọc, `doc_key`/`doc_hash`, tiền tố ngữ cảnh `[Source: tệp - Section: mục]`, embedding, loại trùng trong tài liệu, ghi nguyên tử), nên dòng mới giống hệt dòng cũ trong `rag_chunks`. Khác biệt duy nhất, theo yêu cầu, là kích thước đoạn:
+
+- mỗi **mục** (section) là một đoạn; mục **ngắn hơn 200 ký tự** được gộp với mục kế tiếp (mục cuối thì gộp với mục trước nếu vẫn ≤ 600);
+- đoạn **dài hơn 600 ký tự** bị **cắt** còn 600 ở ranh giới câu/từ: **phần sau của mục đó không được lưu** (tin nhắn trong chat báo rõ số đoạn bị cắt);
+- tài liệu không có mục (văn bản thuần) được chia thành các khối ≤ 600 ký tự thay vì cắt, nên không mất chữ;
+- tệp trùng nội dung → "không thay đổi"; cùng tên nhưng nội dung khác → thay thế phiên bản cũ; một bản sao được giữ ở `dataset/<danh mục>/` để `run_ingestion --prune/--reset` không xoá nó.
+
+Lưu ý: đoạn 200–600 ký tự ngắn hơn nhiều so với đoạn của tài liệu nạp từ thư mục (trung bình ~2000), điều này ảnh hưởng đến xếp hạng khi trộn hai loại; hãy chạy lại `python -m scripts.run_rag_eval` sau khi thêm số lượng lớn.
+
+**Quản lý tài liệu và trích dẫn (trong khung chat):**
+
+- Gõ `/docs` để xem các tài liệu đang có trong knowledge base (danh mục, số đoạn, số trang, ngày cập nhật) và **xoá** từng tài liệu (cần quyền `KNOWLEDGE_UPLOAD_ROLES`; xoá luôn cả bản sao tệp). **Thay** một tài liệu = đính kèm tệp cùng tên: phiên bản mới thay phiên bản cũ. API: `GET`/`DELETE /api/knowledge/documents`.
+- **OCR cho PDF scan:** trang không có lớp chữ được vẽ lại bằng `pypdfium2` rồi đọc bằng Tesseract (`vie+eng`). Cần `tesseract-ocr` (đã có trong image backend); không có thì PDF scan bị từ chối như trước. Giới hạn bằng `OCR_ENABLED`, `OCR_LANGS`, `OCR_MAX_PAGES` (80), `OCR_DPI` (200). Độ chính xác phụ thuộc chất lượng bản scan; kết quả OCR được đánh dấu `ocr` trong metadata.
+- **Xem trang trích dẫn:** nguồn PDF có số trang có nút "Xem trang N"; backend (`GET /api/knowledge/page`) vẽ trang đó thành ảnh và **tô sáng đoạn được trích dẫn** (khớp theo chữ-số, nên chịu được ngắt dòng/ký tự lạ). Không tìm được vị trí chính xác thì vẫn hiện trang, kèm ghi chú.
+
+---
+
+## 🔧 Vận Hành
+
+- **Đăng nhập trên trình duyệt (`AUTH_MODE=jwt`):** đặt `AUTH_JWT_SECRET` và `AUTH_USERS`; frontend có trang `/login`, token được giữ trong cookie `httpOnly` (JavaScript của trang không đọc được) và đổi thành header `Bearer` ở lớp route của Next. Mật khẩu băm scrypt (`python -m scripts.make_user`), `POST /api/auth/login` bị giới hạn theo IP. Dùng IdP ngoài (`AUTH_JWKS_URL`) thì đặt proxy xác thực phía trước như trước đây.
+- **RLS ở tầng database:** với `DB_AGENT_PASSWORD`, mọi bảng trong `DB_AGENT_TABLES` có cột `tenant_id`/`department_id` được bật chính sách `tenant_scope`; mỗi truy vấn của `db_agent` chạy trong giao dịch có `app.tenant_id`/`app.department_id`, nên PostgreSQL tự lọc hàng kể cả khi lớp viết lại SQL bị vượt qua (không có giá trị = không thấy hàng nào).
+- **Sandbox phân tích tách container:** dịch vụ `python-sandbox` (pandas/numpy/scipy/matplotlib, người dùng không phải root, hệ thống tệp chỉ đọc, 1 GB/128 tiến trình) nằm trên mạng nội bộ `sandbox_net` **không ra internet và không thấy Postgres/Redis**; chỉ nhận yêu cầu có chữ ký HMAC từ backend, dữ liệu gửi dạng Parquet (không pickle). Sandbox không chạy được thì mã **không** được chạy ở nơi khác. Lưu ý: backend nằm cùng mạng nên sandbox vẫn *tới được* `backend:8000` (backend vẫn đòi xác thực ở chế độ `jwt`).
+- **Migration (Alembic):** `migrations/` (revision `0001` = lược đồ `rag_chunks` hiện có, `0002` = bảng `conversations`). Backend tự áp khi khởi động (khoá advisory: nhiều bản sao khởi động cùng lúc thay phiên nhau); thủ công: `python -m scripts.migrate [--status]`; thay đổi mới: `alembic revision -m "..."`. `src/ingestion/schema.py` đã đóng băng, không sửa nó cho thay đổi mới.
+- **Nhiều bản sao backend:** `docker-compose.scale.yml` + `deploy/nginx-scale.conf` dựng N bản sao sau một nginx trong project compose riêng (`docker compose -p scaletest -f docker-compose.yml -f docker-compose.scale.yml up -d --scale backend=3 backend lb`), rồi `python -m scripts.replica_check` kiểm tra giới hạn tốc độ, hội thoại và ghi đồng thời có thật sự dùng chung qua Redis/PostgreSQL. Số kết nối Postgres = (kích thước pool × số bản sao) phải nhỏ hơn `max_connections` (mặc định 100).
+- **Stream token câu trả lời:** `/api/chat/stream` gửi thêm `answer_delta`/`answer_reset` khi RAG đang viết; đó là **bản xem trước chưa được kiểm định**, `final_response` thay thế nó. Phần lớn độ trễ nằm ở lập kế hoạch + truy xuất (~12 s), không phải ở sinh văn bản, nên stream chỉ giúp rõ với câu trả lời dài.
+- **Hội thoại phía server:** khi đã đăng nhập, `/api/conversations` lưu hội thoại theo (tenant, người dùng) với kiểm soát xung đột lạc quan (409 kèm bản mới của server); trình duyệt vẫn giữ bản sao cục bộ, đồng bộ sau mỗi thay đổi 2 giây, khi quay lại tab và mỗi phút; xung đột thì bản của server thắng và bản trên máy được giữ thành một hội thoại riêng. Đăng xuất xoá bản sao cục bộ.
+- **Ngôn ngữ giao diện:** vi/en (nút `EN`/`VI` ở header và trang đăng nhập) cho **toàn bộ giao diện** (`frontend/lib/locales/vi.ts` + `en.ts`; một test kiểm tra hai bộ khoá khớp nhau và không còn chữ Việt cứng trong component). Trình duyệt gửi `X-UI-Lang`, nên thông báo của backend (lỗi, tóm tắt tải lên, phê duyệt HITL) cũng theo ngôn ngữ đã chọn (`src/shared/messages.py`). Dashboard theo ngôn ngữ của dữ liệu, câu trả lời của agent theo ngôn ngữ câu hỏi; văn bản kế hoạch/kết quả thực thi mà agent viết ra trong stepper không được dịch.
 
 ---
 
@@ -363,21 +414,24 @@ python -m pytest tests/test_hardened_upgrades.py -v
 python -m pytest tests/test_enterprise_upgrades.py -v
 ```
 
-### 2. Pipeline đánh giá chất lượng Offline (LLM-as-a-Judge)
-Pipeline tự động đánh giá hệ thống trên tập **Golden Dataset** (10 kịch bản phức tạp):
+### 2. Đánh giá chất lượng
+
+**Kiểm tra cấu trúc (offline, dùng được trong CI):**
 
 ```bash
 python scripts/run_offline_eval.py
 ```
 
-**Kết Quả Đánh Giá Thực Tế (Evaluation Scorecard):**
+Kiểm tra tính nhất quán của **Golden Dataset** (intent → agent, độ phủ từ khoá, guardrail). Đây *không* phải phép đo chất lượng RAG: nó không chạy truy xuất hay sinh câu trả lời.
 
-| Chỉ Số Đánh Giá (Metric) | Kết Quả Đạt Được | Ngưỡng Tối Thiểu (Threshold) | Trạng Thái |
-|:---|:---:|:---:|:---:|
-| **Tool Call Accuracy** | **100.0%** | `>= 85%` | `✅ PASSED` |
-| **RAG Faithfulness** | **86.7%** | `>= 80%` | `✅ PASSED` |
-| **Hallucination Rate** | **0.0%** | `<= 15%` | `✅ PASSED` |
-| **Composite Quality Score** | **0.956** | `>= 0.85` | **`✅ RELEASE APPROVED`** |
+**Đánh giá RAG thật** (cần Postgres đã nạp tài liệu và `OPENROUTER_API_KEY`):
+
+```bash
+python -m scripts.run_rag_eval --build 60            # tạo bộ câu hỏi từ các chunk ngẫu nhiên -> dataset/rag_eval.json
+python -m scripts.run_rag_eval --rerank --answers 20 # đánh giá -> reports/rag_eval.md
+```
+
+Đo hit@1/5/10/20 và MRR theo từng chế độ truy vấn (raw / HyDE / cả hai) và theo độ dài văn bản đưa vào reranker (kèm độ trễ), khả năng từ chối câu hỏi ngoài phạm vi (chọn ngưỡng `RAG_MIN_VECTOR_SCORE`), tỷ lệ câu trả lời có trích dẫn `[n]`, tỷ lệ con số có trong nguồn và điểm trung thực do LLM chấm khi thấy các nguồn.
 
 ---
 
@@ -388,11 +442,22 @@ Multi-Agents/
 ├── docker-compose.yml              # Khởi chạy 7 Docker microservices
 ├── Dockerfile                      # Build image cho FastAPI Gateway Backend
 ├── requirements.txt                # Thư viện Python phụ thuộc
-├── run_ingestion.py                # Script ETL nạp tài liệu vào pgvector
-├── PORTFOLIO_CASE_STUDY.md         # Bản Case Study chuyên sâu (Schema chuẩn Bolt.new)
-├── SYSTEM_ARCHITECTURE.md          # Tài liệu chi tiết kiến trúc hệ thống
-├── PROJECT_DOCUMENTATION.md        # Tài liệu toàn diện dự án
-├── eval_report.md                  # Báo cáo đánh giá chất lượng LLM-as-a-Judge
+├── docker-compose.dev.yml          # Override cho phát triển (backend hot-reload)
+├── requirements-dev.txt            # requirements.txt + pytest
+├── pytest.ini                      # Cấu hình pytest
+│
+├── scripts/                        # CLI: run_ingestion (nạp tài liệu vào pgvector), run_offline_eval, công cụ báo cáo
+│   └── dev/                        # Script thử nghiệm ad-hoc
+├── reports/                        # Báo cáo đánh giá chất lượng LLM-as-a-Judge (eval_report.*)
+├── legacy/                         # Mã đã ngưng dùng: streamlit_ui/, rag_pipeline/
+│
+├── docs/                           # Toàn bộ tài liệu dự án
+│   ├── PORTFOLIO_CASE_STUDY.md     # Bản Case Study chuyên sâu (Schema chuẩn Bolt.new)
+│   ├── SYSTEM_ARCHITECTURE.md      # Tài liệu chi tiết kiến trúc hệ thống
+│   ├── PROJECT_DOCUMENTATION.md    # Tài liệu toàn diện dự án
+│   ├── AGENT_PROMPTS.md            # Prompt của các agent
+│   ├── UNIVERSALIZATION_REPORT.md  # Báo cáo refactor loại bỏ hardcode
+│   └── screenshots/                # Ảnh chụp giao diện
 │
 ├── src/                            # Mã nguồn chính Backend
 │   ├── config.py                   # Cấu hình Pydantic Settings

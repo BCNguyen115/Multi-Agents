@@ -18,7 +18,7 @@ import json
 import pytest
 
 from src.agents.db_agent.validator import parameterize_sql, validate_sql
-from src.orchestrator.verifier import audit_context_safety
+from src.shared.security import audit_context_safety
 from src.shared.mcp_client import RESTToolInput, SQLToolInput
 from src.shared.security import (
     generate_canary_token,

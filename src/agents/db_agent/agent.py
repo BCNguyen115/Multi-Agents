@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from src.agents.base_agent import BaseAgent
 from src.agents.db_agent.rls_transformer import inject_row_level_security
+from src.shared.auth import current_scope
 from src.agents.db_agent.validator import parameterize_sql, validate_sql
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
@@ -142,18 +143,19 @@ class DatabaseAgent(BaseAgent):
         sql_statement = sanitized_sql
 
         # Step 1c: AST Row-Level Security (RLS) Injection via sqlglot
+        tenant_id, department_id = current_scope()  # the caller's scope (configured defaults when authentication is off)
         try:
-            sql_statement = inject_row_level_security(
-                sql=sql_statement,
-                tenant_id="tenant_enterprise",
-                department_id="dept_general",
-            )
+            sql_statement = inject_row_level_security(sql=sql_statement, tenant_id=tenant_id, department_id=department_id)
             logger.info(
                 "DatabaseAgent: Successfully applied Row-Level Security (RLS) AST policy",
                 extra={"session_id": session_id},
             )
-        except Exception as rls_err:
-            logger.warning("RLS AST injection failed: %s, falling back to sanitized SQL", rls_err)
+        except Exception as rls_err:  # fail closed: never run a query that could not be scoped to the caller
+            logger.error("RLS AST injection failed, query NOT executed: %s", rls_err, extra={"session_id": session_id})
+            return json.dumps(
+                {"answer": "Không thể áp dụng chính sách bảo mật theo tenant cho truy vấn này nên truy vấn không được thực thi.", "sql": sql_statement, "data": []},
+                ensure_ascii=False,
+            )
 
         # Step 1d: Parameterize SQL (AST Literal Extraction into $1, $2, ...)
         parameterized_sql, query_params = parameterize_sql(sql_statement)

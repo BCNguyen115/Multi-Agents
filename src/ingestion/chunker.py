@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -184,6 +185,11 @@ def _split_oversized_section(
     return results
 
 
+def _page_of(offset: int, page_starts: list[int]) -> int | None:
+    """1-based PDF page containing character ``offset`` (``None`` for formats without pages)."""
+    return bisect_right(page_starts, offset) if page_starts else None
+
+
 def _fallback_chunk(
     raw_text: str,
     filename: str,
@@ -208,15 +214,22 @@ def _fallback_chunk(
         length_function=len,
     )
     texts: list[str] = splitter.split_text(raw_text)
+    page_starts: list[int] = metadata.get("page_starts", [])
+    base_meta: dict[str, Any] = {k: v for k, v in metadata.items() if k != "page_starts"}
 
     chunks: list[DocumentChunk] = []
+    cursor: int = 0
     for idx, text in enumerate(texts):
+        found: int = raw_text.find(text[:60], cursor)
+        offset: int = found if found >= 0 else cursor
+        cursor = max(offset + 1, offset + len(text) - FALLBACK_OVERLAP)  # next chunk starts no earlier than this
         prefix: str = _build_contextual_prefix(filename, category, f"Part {idx + 1}")
         chunk_meta: dict[str, Any] = {
-            **metadata,
+            **base_meta,
             "section_title": f"Part {idx + 1}",
             "chunk_index": idx,
             "chunk_method": "fallback_recursive",
+            "page": _page_of(offset, page_starts),
         }
         chunks.append(
             DocumentChunk(content=prefix + text, raw_content=text, metadata=chunk_meta)
@@ -270,22 +283,29 @@ def chunk_documents(
 
         # Step 1: Merge small sections
         merged_sections: list[Section] = _merge_small_sections(doc.sections)
+        page_starts: list[int] = doc.metadata.get("page_starts", [])
+        base_meta: dict[str, Any] = {k: v for k, v in doc.metadata.items() if k != "page_starts"}
 
         # Step 2 & 3: Split oversized + build chunks
         chunk_index: int = 0
         for section in merged_sections:
             sub_chunks: list[tuple[str, str]] = _split_oversized_section(section)
+            cursor: int = 0  # sub-chunks are in order and overlap by at most the split overlap
 
             for sub_title, sub_content in sub_chunks:
                 prefix: str = _build_contextual_prefix(
                     doc.filename, doc.category, sub_title
                 )
+                found: int = section.content.find(sub_content[:60], cursor)
+                inside: int = max(0, found)
+                cursor = max(inside + 1, inside + len(sub_content) - int(RECURSIVE_CHUNK_SIZE * OVERLAP_RATIO))
                 chunk_meta: dict[str, Any] = {
-                    **doc.metadata,
+                    **base_meta,
                     "section_title": sub_title,
                     "chunk_index": chunk_index,
                     "chunk_method": "section_based",
                     "detected_pattern": doc.detected_pattern,
+                    "page": _page_of(section.start_index + inside, page_starts),
                 }
                 all_chunks.append(
                     DocumentChunk(

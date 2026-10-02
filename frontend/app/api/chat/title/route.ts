@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authHeaders } from "@/lib/backendAuth";
+import { serverMsg } from "@/lib/serverMessages";
 
 export const dynamic = 'force-dynamic';
 
@@ -11,11 +13,11 @@ export async function POST(req: NextRequest) {
     query = (body.query || "").trim();
     sessionId = body.session_id || "";
   } catch {
-    return NextResponse.json({ title: "Cuộc trò chuyện mới" });
+    return NextResponse.json({ title: serverMsg(req, 'chat.newTitle') });
   }
 
   if (!query) {
-    return NextResponse.json({ title: "Cuộc trò chuyện mới" });
+    return NextResponse.json({ title: serverMsg(req, 'chat.newTitle') });
   }
 
   const candidateUrls = [
@@ -33,7 +35,7 @@ export async function POST(req: NextRequest) {
     try {
       const response = await fetch(backendUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders(req) },
         body: JSON.stringify({ query, session_id: sessionId }),
         signal: controller.signal,
       });

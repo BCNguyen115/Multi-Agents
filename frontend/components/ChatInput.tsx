@@ -2,6 +2,8 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Plus, Send, ChevronDown, Cloud, Database, Globe, FileSpreadsheet, FileText, X, Loader2 } from 'lucide-react';
+import { ACCEPT_ATTRIBUTE, isTabularFile } from '../lib/fileTypes';
+import { t, useLang } from '../lib/i18n';
 
 interface ChatInputProps {
   selectedAgent: string;
@@ -20,6 +22,7 @@ export function ChatInput({
   attachedFile = null,
   onFileSelect,
 }: ChatInputProps) {
+  const [lang] = useLang();
   const [text, setText] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
@@ -27,19 +30,19 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const agents = [
-    { id: 'RAG Agent', name: 'RAG Agent', icon: Cloud, desc: 'Tra cứu hợp đồng & NDA' },
-    { id: 'Data Agent', name: 'Data Agent', icon: Database, desc: 'Phân tích CSV & Dashboard' },
-    { id: 'Search Agent', name: 'Search Agent', icon: Globe, desc: 'Tìm kiếm Web real-time' },
+    { id: 'RAG Agent', name: 'RAG Agent', icon: Cloud, desc: t(lang, 'agent.ragDesc') },
+    { id: 'Data Agent', name: 'Data Agent', icon: Database, desc: t(lang, 'agent.dataDesc') },
+    { id: 'Search Agent', name: 'Search Agent', icon: Globe, desc: t(lang, 'agent.searchDesc') },
   ];
 
-  const currentAgent = agents.find(a => a.id === selectedAgent || selectedAgent.includes(a.name) || selectedAgent.includes(a.name.split(' ')[0])) || agents[0];
+  const currentAgent = agents.find(a => a.id === selectedAgent) || agents[0];
   const isExpanded = text.length > 0 || attachedFile !== null || text.includes('\n');
 
-  // Auto-resize Textarea
+  // Auto-resize Textarea (up to 200px with smooth scroll)
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      const newHeight = isExpanded ? Math.min(textareaRef.current.scrollHeight, 160) : 24;
+      const newHeight = isExpanded ? Math.min(textareaRef.current.scrollHeight, 200) : 24;
       textareaRef.current.style.height = `${newHeight}px`;
     }
   }, [text, isExpanded]);
@@ -64,7 +67,7 @@ export function ChatInput({
   const getFileIcon = (fileName?: string) => {
     if (!fileName) return <FileSpreadsheet className="w-4 h-4 text-accent-primary" />;
     const lower = fileName.toLowerCase();
-    if (lower.endsWith('.csv') || lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
+    if (isTabularFile(lower)) {
       return <FileSpreadsheet className="w-4 h-4 text-accent-primary" />;
     }
     return <FileText className="w-4 h-4 text-accent-primary" />;
@@ -82,7 +85,7 @@ export function ChatInput({
       <input
         type="file"
         ref={fileInputRef}
-        accept=".csv,.xlsx,.xls,.pdf,.docx,.doc,.txt"
+        accept={ACCEPT_ATTRIBUTE}
         className="hidden"
         onChange={(e) => {
           if (e.target.files?.[0]) {
@@ -94,7 +97,7 @@ export function ChatInput({
 
       {/* CHAT INPUT CONTAINER */}
       <div
-        className={`bg-surface/95 backdrop-blur-md border border-border shadow-md transition-all duration-200 ease-out focus-within:border-accent-primary focus-within:ring-2 focus-within:ring-accent-primary/20 ${
+        className={`bg-surface border border-border shadow-md text-foreground transition-all duration-200 ease-out focus-within:border-accent-primary focus-within:ring-2 focus-within:ring-accent-primary/20 ${
           isExpanded
             ? 'rounded-2xl p-4 flex flex-col gap-3'
             : 'rounded-full px-4 py-2 flex items-center gap-2 min-h-14'
@@ -102,7 +105,7 @@ export function ChatInput({
       >
         {/* File Preview Chip */}
         {attachedFile && (
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-accent-primary/8 border border-accent-primary/15 rounded-xl text-xs w-fit text-foreground font-medium animate-fade-in" data-testid="csv-upload-dropzone">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-accent-primary/8 border border-accent-primary/15 rounded-lg text-xs w-fit text-foreground font-medium animate-fade-in" data-testid="csv-upload-dropzone">
             {getFileIcon(attachedFile.name)}
             <span className="truncate max-w-xs font-semibold">{attachedFile.name}</span>
             <span className="text-foreground-muted font-mono tabular-nums">({formatFileSize(attachedFile.size)})</span>
@@ -110,7 +113,8 @@ export function ChatInput({
               type="button"
               onClick={() => onFileSelect?.(null)}
               className="hover:text-accent-error ml-1 cursor-pointer transition-colors p-0.5 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary/40"
-              title="Gỡ file đính kèm"
+              title={t(lang, 'input.removeFile')}
+              aria-label={t(lang, 'input.removeFile')}
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -126,7 +130,8 @@ export function ChatInput({
               type="button"
               onClick={() => fileInputRef.current?.click()}
               className="p-1.5 hover:bg-surface-raised rounded-full text-foreground-muted hover:text-accent-primary transition-colors shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
-              title="Đính kèm file (.csv, .xlsx, .pdf, .docx)"
+              title={t(lang, 'input.attachFileTypes', { types: '.csv, .xlsx, .pdf, .docx, .pptx, .txt, .md' })}
+              aria-label={t(lang, 'input.attachFile')}
             >
               <Plus className="w-5 h-5" />
             </button>
@@ -140,12 +145,19 @@ export function ChatInput({
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                if ((e.key === 'Enter' && !e.shiftKey) || (e.key === 'Enter' && (e.metaKey || e.ctrlKey))) {
                   e.preventDefault();
                   handleSend();
                 }
               }}
-              placeholder={attachedFile ? "Nhập câu hỏi về file đính kèm..." : "Nhập yêu cầu phân tích hoặc đính kèm file CSV..."}
+              aria-label={t(lang, 'input.placeholderDefault')}
+              placeholder={
+                attachedFile
+                  ? isTabularFile(attachedFile.name)
+                    ? t(lang, 'input.placeholderTable')
+                    : t(lang, 'input.placeholderDocument')
+                  : t(lang, 'input.placeholderDefault')
+              }
               className="w-full bg-transparent text-foreground placeholder-foreground-muted text-sm focus:outline-none resize-none leading-relaxed overflow-y-auto"
               style={{ height: '24px', minHeight: '24px' }}
             />
@@ -171,7 +183,8 @@ export function ChatInput({
                 disabled={isSending || (!text.trim() && !attachedFile)}
                 onClick={handleSend}
                 className="w-9 h-9 flex items-center justify-center bg-accent-primary hover:bg-accent-primary-hover text-white rounded-full shadow-xs transition-all duration-150 shrink-0 active:scale-95 disabled:opacity-40 disabled:hover:bg-accent-primary disabled:active:scale-100 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
-                title={text.trim() || attachedFile ? 'Gửi tin nhắn (Enter)' : 'Nhập nội dung để gửi'}
+                title={text.trim() || attachedFile ? t(lang, 'input.sendTitle') : t(lang, 'input.sendEmpty')}
+                aria-label={t(lang, 'input.sendTitle')}
               >
                 {isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </button>
@@ -187,12 +200,13 @@ export function ChatInput({
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="p-1.5 hover:bg-surface-raised rounded-full text-foreground-muted hover:text-accent-primary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
-                title="Đính kèm file"
+                title={t(lang, 'input.attachFile')}
+                aria-label={t(lang, 'input.attachFile')}
               >
                 <Plus className="w-5 h-5" />
               </button>
               <span className="text-xs text-foreground-muted font-mono hidden sm:inline">
-                Enter ↵ gửi · Shift+Enter ↵ xuống dòng
+                {t(lang, 'input.keys')}
               </span>
             </div>
 
@@ -214,7 +228,8 @@ export function ChatInput({
                 disabled={isSending || (!text.trim() && !attachedFile)}
                 onClick={handleSend}
                 className="w-9 h-9 flex items-center justify-center bg-accent-primary hover:bg-accent-primary-hover text-white rounded-full shadow-xs transition-all duration-150 shrink-0 active:scale-95 disabled:opacity-40 disabled:hover:bg-accent-primary disabled:active:scale-100 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
-                title={text.trim() || attachedFile ? 'Gửi tin nhắn (Enter)' : 'Nhập nội dung để gửi'}
+                title={text.trim() || attachedFile ? t(lang, 'input.sendTitle') : t(lang, 'input.sendEmpty')}
+                aria-label={t(lang, 'input.sendTitle')}
               >
                 {isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </button>
@@ -235,6 +250,7 @@ function AgentDropdown({ currentAgent, agents, selectedAgent, onSelect, isOpen, 
   isOpen: boolean;
   setIsOpen: (open: boolean) => void;
 }) {
+  const [lang] = useLang();
   const CurrentIcon = currentAgent.icon;
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -279,7 +295,7 @@ function AgentDropdown({ currentAgent, agents, selectedAgent, onSelect, isOpen, 
       {isOpen && (
         <div className="absolute right-0 bottom-10 mb-2 w-56 bg-surface border border-border-strong rounded-xl shadow-enterprise p-1.5 z-50 text-xs animate-fade-in-scale">
           <div className="px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-foreground-muted border-b border-border select-none">
-            Chọn Agent xử lý:
+            {t(lang, 'agent.choose')}
           </div>
           <div className="mt-1 space-y-0.5" role="listbox">
             {agents.map((agent) => {

@@ -1,3 +1,7 @@
+// Design tokens are plain CSS variables (no alpha channel), so opacity modifiers such as `bg-accent-primary/10`
+// would generate nothing. `color-mix` lets Tailwind substitute the requested opacity (`<alpha-value>`).
+const token = (name) => `color-mix(in srgb, var(${name}) calc(<alpha-value> * 100%), transparent)`;
+
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   darkMode: 'class',
@@ -12,33 +16,33 @@ module.exports = {
       colors: {
         // Core Surfaces & Text (CSS Variable driven)
         background: {
-          DEFAULT: 'var(--background)',
-          secondary: 'var(--background-secondary)',
+          DEFAULT: token('--background'),
+          secondary: token('--background-secondary'),
         },
         surface: {
-          DEFAULT: 'var(--surface)',
-          raised: 'var(--surface-raised)',
-          overlay: 'var(--surface-overlay)',
+          DEFAULT: token('--surface'),
+          raised: token('--surface-raised'),
+          overlay: token('--surface-overlay'),
         },
         foreground: {
-          DEFAULT: 'var(--foreground)',
-          secondary: 'var(--foreground-secondary)',
-          muted: 'var(--foreground-muted)',
+          DEFAULT: token('--foreground'),
+          secondary: token('--foreground-secondary'),
+          muted: token('--foreground-muted'),
         },
         border: {
-          DEFAULT: 'var(--border)',
-          strong: 'var(--border-strong)',
-          focus: 'var(--border-focus)',
+          DEFAULT: token('--border'),
+          strong: token('--border-strong'),
+          focus: token('--border-focus'),
         },
 
         // Agent State Semantic Accents
         accent: {
-          planner:  'var(--accent-planner)',
-          executor: 'var(--accent-executor)',
-          verifier: 'var(--accent-verifier)',
-          error:    'var(--accent-error)',
-          primary:  'var(--accent-primary)',
-          'primary-hover': 'var(--accent-primary-hover)',
+          planner:  token('--accent-planner'),
+          executor: token('--accent-executor'),
+          verifier: token('--accent-verifier'),
+          error:    token('--accent-error'),
+          primary:  token('--accent-primary'),
+          'primary-hover': token('--accent-primary-hover'),
         },
 
         // FPT Brand
@@ -147,6 +151,24 @@ module.exports = {
           '0%, 60%, 100%': { transform: 'translateY(0)', opacity: '0.4' },
           '30%': { transform: 'translateY(-4px)', opacity: '1' },
         },
+      },
+
+      /* ── Font Size (Semantic Hierarchy) ─────────────── */
+      fontSize: {
+        '2xs': ['10px', { lineHeight: '14px' }],
+      },
+
+      /* ── Min/Height Extensions ───────────────────────── */
+      minHeight: {
+        'kpi': '112px',
+        'chart': '380px',
+        'table': '420px',
+        'dashboard': '500px',
+        'card': '360px',
+      },
+      height: {
+        'kpi': '112px',
+        'chart': '380px',
       },
 
       /* ── Transition ─────────────────────────────────── */

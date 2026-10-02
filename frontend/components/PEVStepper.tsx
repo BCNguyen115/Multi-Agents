@@ -15,6 +15,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { PEVStepData, PEVTrace, PEVTraceState } from '../lib/types';
+import { Lang, t, useLang } from '../lib/i18n';
 
 interface PEVStepperProps {
   pevStep?: PEVStepData;
@@ -30,39 +31,13 @@ interface PEVStepperProps {
   isStreaming?: boolean;
 }
 
-function getAgentPipelineSteps(agentName?: string): { name: string; desc?: string }[] {
+function getAgentPipelineSteps(lang: Lang, agentName?: string): string[] {
   const norm = (agentName || '').toLowerCase();
-  if (norm.includes('data')) {
-    return [
-      { name: 'EDA', desc: 'Khám phá dữ liệu' },
-      { name: 'Tạo Layout', desc: 'Thiết kế bố cục' },
-      { name: 'Dựng Biểu Đồ', desc: 'Trực quan hóa' },
-    ];
-  }
-  if (norm.includes('rag')) {
-    return [
-      { name: 'HyDE Document', desc: 'Tổng hợp tài liệu giả định' },
-      { name: 'Hybrid Search (pgvector)', desc: 'Truy vấn vector kết hợp' },
-      { name: 'TEI Reranker (Top 5)', desc: 'Tái xếp hạng độ liên quan' },
-    ];
-  }
-  if (norm.includes('search')) {
-    return [
-      { name: 'Tavily Web Search', desc: 'Truy vấn web thời gian thực' },
-      { name: 'Crawl4AI Content Extraction', desc: 'Trích xuất bài viết sâu' },
-    ];
-  }
-  if (norm.includes('db')) {
-    return [
-      { name: 'Sinh câu lệnh SQL Read-Only', desc: 'Tạo truy vấn đọc an toàn' },
-      { name: 'Thực thi qua MCP', desc: 'Truy vấn cơ sở dữ liệu' },
-    ];
-  }
-  return [
-    { name: 'Phân tích tác vụ', desc: 'Nhận diện nhiệm vụ' },
-    { name: 'Thực thi công cụ', desc: 'Xử lý dữ liệu' },
-    { name: 'Tổng hợp kết quả', desc: 'Đóng gói phản hồi' },
-  ];
+  if (norm.includes('data')) return ['EDA', t(lang, 'pev.pipe.layout'), t(lang, 'pev.pipe.charts')];
+  if (norm.includes('rag')) return ['HyDE Document', 'Hybrid Search (pgvector)', 'TEI Reranker (Top 5)'];
+  if (norm.includes('search')) return ['Tavily Web Search', 'Crawl4AI Content Extraction'];
+  if (norm.includes('db')) return [t(lang, 'pev.pipe.sql'), t(lang, 'pev.pipe.mcp')];
+  return [t(lang, 'pev.pipe.analyze'), t(lang, 'pev.pipe.tools'), t(lang, 'pev.pipe.compose')];
 }
 
 export const PEVStepper: React.FC<PEVStepperProps> = ({
@@ -72,6 +47,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
   pevTraceState,
   isStreaming,
 }) => {
+  const [lang] = useLang();
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (!pevStep && !pevEvents && !pevTrace && !pevTraceState && !isStreaming) return null;
@@ -162,18 +138,17 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
   const isRetry = verifierStatus === 'completed' && !isVerified && retryCount > 0;
   const isAuditPassed = isVerified && !isRetry;
 
-  let statusText = 'Initializing PEV Loop...';
-  if (pevStep?.logs) {
-    statusText = pevStep.logs;
-  } else if (isStreaming) {
-    if (isPlannerActive) statusText = 'Planner analyzing request...';
-    else if (isExecutorActive) statusText = `Executor [${targetAgent || 'Agent'}] processing...`;
-    else if (isVerifierActive) statusText = 'Verifier validating response...';
+  // The step log the backend sends is not shown: its text is in one language, the interface text follows the user's choice
+  let statusText = t(lang, 'pev.status.init');
+  if (isStreaming) {
+    if (isPlannerActive) statusText = t(lang, 'pev.status.planner');
+    else if (isExecutorActive) statusText = t(lang, 'pev.status.executor', { agent: targetAgent || 'Agent' });
+    else if (isVerifierActive) statusText = t(lang, 'pev.status.verifier');
   } else {
-    statusText = isVerified ? 'PEV Loop completed (Verified)' : 'PEV Loop completed (Needs review)';
+    statusText = isVerified ? t(lang, 'pev.status.verified') : t(lang, 'pev.status.review');
   }
 
-  const pipelineSteps = getAgentPipelineSteps(targetAgent);
+  const pipelineSteps = getAgentPipelineSteps(lang, targetAgent);
 
   return (
     <div data-testid="pev-stepper" className="my-3 border border-border rounded-xl bg-surface shadow-xs overflow-hidden text-xs transition-colors duration-200">
@@ -184,28 +159,28 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
       >
         <div className="flex items-center space-x-2.5 overflow-hidden min-w-0">
           <Brain className={`w-4 h-4 shrink-0 text-accent-primary ${isStreaming ? 'animate-pulse' : ''}`} />
-          <span className="font-bold text-accent-primary shrink-0">PEV Loop Stepper: Core Reasoning Workflow</span>
+          <span className="font-bold text-accent-primary shrink-0">{t(lang, 'pev.title')}</span>
           <span className="text-foreground-muted font-medium truncate">{statusText}</span>
         </div>
 
         <div className="flex items-center space-x-2 shrink-0">
           {isStreaming ? (
-            <span className="flex items-center space-x-1 bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2.5 py-0.5 rounded-full font-bold text-[10px] animate-pulse">
+            <span className="flex items-center space-x-1 bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2.5 py-0.5 rounded-full font-bold text-2xs animate-pulse">
               <Loader2 className="w-3 h-3 animate-spin" />
-              <span>Active</span>
+              <span>{t(lang, 'pev.badge.active')}</span>
             </span>
           ) : isVerified ? (
-            <span className="flex items-center space-x-1 bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 px-2.5 py-0.5 rounded-full font-bold text-[10px]">
+            <span className="flex items-center space-x-1 bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 px-2.5 py-0.5 rounded-full font-bold text-2xs">
               <CheckCircle2 className="w-3 h-3" />
-              <span>(Verified)</span>
+              <span>{t(lang, 'pev.badge.verified')}</span>
             </span>
           ) : (
-            <span className="flex items-center space-x-1 bg-accent-error/10 text-accent-error border border-accent-error/20 px-2.5 py-0.5 rounded-full font-bold text-[10px]">
+            <span className="flex items-center space-x-1 bg-accent-error/10 text-accent-error border border-accent-error/20 px-2.5 py-0.5 rounded-full font-bold text-2xs">
               <AlertCircle className="w-3 h-3" />
-              <span>(Unverified)</span>
+              <span>{t(lang, 'pev.badge.unverified')}</span>
             </span>
           )}
-          <button className="text-foreground-muted hover:text-foreground transition-colors duration-150 cursor-pointer">
+          <button className="text-foreground-muted hover:text-foreground transition-colors duration-150 cursor-pointer" aria-label={t(lang, 'pev.toggle')}>
             {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
         </div>
@@ -219,7 +194,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
             isPlannerDone
               ? 'bg-accent-planner text-white shadow-xs'
               : isPlannerActive
-              ? 'bg-accent-planner/10 text-accent-planner ring-2 ring-accent-planner/40 animate-pulse-glow-amber'
+              ? 'bg-accent-planner/10 text-accent-planner ring-2 ring-accent-planner/30 animate-pulse-subtle'
               : 'bg-surface-raised text-foreground-muted border border-border'
           }`}>
             {isPlannerActive ? <Loader2 className="w-4 h-4 animate-spin" /> : isPlannerDone ? <CheckCircle2 className="w-4 h-4" /> : <Compass className="w-4 h-4" />}
@@ -227,7 +202,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
           <div className="min-w-0">
             <div className="font-semibold text-foreground text-xs">1. Planner Node</div>
             <div className="text-xs text-foreground-muted truncate">
-              {targetAgent ? `→ ${targetAgent}` : isPlannerActive ? 'Đang phân tích...' : 'Chiến lược'}
+              {targetAgent ? `→ ${targetAgent}` : isPlannerActive ? t(lang, 'pev.planner.analyzing') : t(lang, 'pev.planner.idle')}
             </div>
           </div>
         </div>
@@ -241,7 +216,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
             isExecutorDone
               ? 'bg-accent-executor text-white shadow-xs'
               : isExecutorActive
-              ? 'bg-accent-executor/10 text-accent-executor ring-2 ring-accent-executor/40 animate-pulse-glow'
+              ? 'bg-accent-executor/10 text-accent-executor ring-2 ring-accent-executor/30 animate-pulse-subtle'
               : 'bg-surface-raised text-foreground-muted border border-border'
           }`}>
             {isExecutorActive ? <Loader2 className="w-4 h-4 animate-spin" /> : isExecutorDone ? <CheckCircle2 className="w-4 h-4" /> : <Cpu className="w-4 h-4" />}
@@ -249,7 +224,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
           <div className="min-w-0">
             <div className="font-semibold text-foreground text-xs">2. Executor Node</div>
             <div className="text-xs text-foreground-muted truncate">
-              {targetAgent || (isExecutorActive ? 'Đang chạy...' : 'Xử lý')}
+              {targetAgent || (isExecutorActive ? t(lang, 'pev.executor.running') : t(lang, 'pev.executor.idle'))}
             </div>
           </div>
         </div>
@@ -261,7 +236,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
         <div className="flex items-center gap-2.5 min-w-0">
           <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-200 ${
             isVerifierActive
-              ? 'bg-accent-verifier/10 text-accent-verifier ring-2 ring-accent-verifier/40 animate-pulse-glow-emerald'
+              ? 'bg-accent-verifier/10 text-accent-verifier ring-2 ring-accent-verifier/30 animate-pulse-subtle'
               : isVerifierDone
               ? isVerified
                 ? 'bg-accent-verifier text-white shadow-xs'
@@ -273,180 +248,182 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
           <div className="min-w-0">
             <div className="font-semibold text-foreground text-xs">3. Verifier Node</div>
             <div className="text-xs text-foreground-muted truncate">
-              {isVerifierDone ? (isVerified ? '100% Hợp lệ' : 'Cần rà soát') : isVerifierActive ? 'Đối soát...' : 'Kiểm định'}
+              {isVerifierDone ? (isVerified ? t(lang, 'pev.verifier.valid') : t(lang, 'pev.verifier.review')) : isVerifierActive ? t(lang, 'pev.verifier.checking') : t(lang, 'pev.verifier.idle')}
             </div>
           </div>
         </div>
 
         {/* Retry indicator */}
         {isRetry && (
-          <div className="flex items-center gap-1 px-2 py-0.5 bg-accent-error/10 text-accent-error rounded-full text-[10px] font-bold shrink-0">
+          <div className="flex items-center gap-1 px-2 py-0.5 bg-accent-error/10 text-accent-error rounded-full text-2xs font-bold shrink-0">
             <RotateCcw className="w-3 h-3" />
-            <span>Retry #{retryCount}</span>
+            <span>{t(lang, 'pev.retry', { count: retryCount })}</span>
           </div>
         )}
       </div>
 
-      {/* Expandable Detail Accordion (Live Activity Timeline Panel) */}
-      {isExpanded && (
-        <div className="p-4 bg-zinc-50 dark:bg-zinc-900/70 border-t border-zinc-200 dark:border-zinc-800 text-xs font-mono space-y-4 animate-fade-in">
-          {/* Mục 1: Planner Node (Phân tích & Lập Kế Hoạch) */}
-          <div className="p-3.5 rounded-lg bg-white dark:bg-zinc-950/60 border border-zinc-200 dark:border-zinc-800 shadow-2xs space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 font-sans font-bold text-xs text-amber-600 dark:text-amber-400">
-                <Compass className="w-4 h-4" />
-                <span>Planner Node (Phân tích &amp; Lập Kế Hoạch)</span>
-              </div>
-              {plannerStatus === 'completed' && targetAgent && (
-                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                  Target: {targetAgent}
-                </span>
-              )}
-            </div>
-
-            {plannerStatus === 'active' ? (
-              <div className="flex items-center gap-2.5 py-1.5 text-zinc-600 dark:text-zinc-300">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500 shrink-0" />
-                <span>Đang phân tích câu hỏi, nạp bộ nhớ dài hạn và lựa chọn Agent phù hợp...</span>
-              </div>
-            ) : plannerStatus === 'completed' ? (
-              <div className="space-y-1.5 pt-0.5">
-                {planText ? (
-                  <div className="p-2.5 rounded bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-800/80 text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">
-                    {planText}
-                  </div>
-                ) : (
-                  <div className="text-zinc-500 dark:text-zinc-400 italic">
-                    Kế hoạch đã được xác lập và điều phối tới [{targetAgent || 'Agent'}].
-                  </div>
+      {/* Expandable Detail Accordion (Live Activity Timeline Panel with Zero-CLS Grid Transition) */}
+      <div className={`accordion-content ${isExpanded ? 'expanded' : ''}`}>
+        <div className="accordion-inner">
+          <div className="p-4 bg-surface-raised/30 border-t border-border text-xs font-mono space-y-4">
+            {/* Section 1: Planner Node */}
+            <div className="p-3.5 rounded-lg bg-surface border border-border shadow-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 font-sans font-bold text-xs text-accent-planner">
+                  <Compass className="w-4 h-4" />
+                  <span>{t(lang, 'pev.section.planner')}</span>
+                </div>
+                {plannerStatus === 'completed' && targetAgent && (
+                  <span className="px-2 py-0.5 rounded text-2xs font-semibold bg-accent-planner/10 text-accent-planner border border-accent-planner/20">
+                    {t(lang, 'pev.target', { agent: targetAgent })}
+                  </span>
                 )}
               </div>
-            ) : (
-              <div className="py-1 text-zinc-400 dark:text-zinc-600 italic">
-                Chờ thực thi...
-              </div>
-            )}
-          </div>
 
-          {/* Mục 2: Executor Node (Thực Thi Nhiệm Vụ) */}
-          <div className="p-3.5 rounded-lg bg-white dark:bg-zinc-950/60 border border-zinc-200 dark:border-zinc-800 shadow-2xs space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 font-sans font-bold text-xs text-blue-600 dark:text-blue-400">
-                <Cpu className="w-4 h-4" />
-                <span>Executor Node (Thực Thi Nhiệm Vụ)</span>
-              </div>
-              {executorStatus !== 'idle' && targetAgent && (
-                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-                  Agent: {targetAgent}
-                </span>
+              {plannerStatus === 'active' ? (
+                <div className="flex items-center gap-2.5 py-1.5 text-foreground-secondary">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-accent-planner shrink-0" />
+                  <span>{t(lang, 'pev.planner.working')}</span>
+                </div>
+              ) : plannerStatus === 'completed' ? (
+                <div className="space-y-1.5 pt-0.5">
+                  {planText ? (
+                    <div className="p-2.5 rounded bg-surface-raised border border-border text-foreground-secondary whitespace-pre-wrap leading-relaxed">
+                      {planText}
+                    </div>
+                  ) : (
+                    <div className="text-foreground-muted italic">
+                      {t(lang, 'pev.planner.planned', { agent: targetAgent || 'Agent' })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="py-1 text-foreground-muted italic">
+                  {t(lang, 'pev.waiting')}
+                </div>
               )}
             </div>
 
-            {/* Pipeline subtasks */}
-            {(executorStatus === 'active' || executorStatus === 'completed') && (
-              <div className="flex items-center gap-1.5 flex-wrap py-1 text-[11px]">
-                {pipelineSteps.map((step, idx) => (
-                  <React.Fragment key={step.name}>
-                    <span className={`px-2 py-0.5 rounded border transition-colors ${
-                      executorStatus === 'completed'
-                        ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
-                        : idx === 0
-                        ? 'bg-blue-500/15 text-blue-600 dark:text-blue-300 border-blue-500/30 animate-pulse'
-                        : 'bg-zinc-100 dark:bg-zinc-900 text-zinc-400 dark:text-zinc-500 border-zinc-200 dark:border-zinc-800'
-                    }`}>
-                      {step.name}
+            {/* Section 2: Executor Node */}
+            <div className="p-3.5 rounded-lg bg-surface border border-border shadow-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 font-sans font-bold text-xs text-accent-executor">
+                  <Cpu className="w-4 h-4" />
+                  <span>{t(lang, 'pev.section.executor')}</span>
+                </div>
+                {executorStatus !== 'idle' && targetAgent && (
+                  <span className="px-2 py-0.5 rounded text-2xs font-semibold bg-accent-executor/10 text-accent-executor border border-accent-executor/20">
+                    {t(lang, 'pev.agentLabel', { agent: targetAgent })}
+                  </span>
+                )}
+              </div>
+
+              {/* Pipeline subtasks */}
+              {(executorStatus === 'active' || executorStatus === 'completed') && (
+                <div className="flex items-center gap-1.5 flex-wrap py-1 text-2xs font-mono">
+                  {pipelineSteps.map((step, idx) => (
+                    <React.Fragment key={step}>
+                      <span className={`px-2 py-0.5 rounded border transition-colors ${
+                        executorStatus === 'completed'
+                          ? 'bg-accent-executor/10 text-accent-executor border-accent-executor/20'
+                          : idx === 0
+                          ? 'bg-accent-executor/15 text-accent-executor border-accent-executor/30 animate-pulse'
+                          : 'bg-surface-raised text-foreground-muted border-border'
+                      }`}>
+                        {step}
+                      </span>
+                      {idx < pipelineSteps.length - 1 && (
+                        <ChevronRight className="w-3 h-3 text-foreground-muted shrink-0" />
+                      )}
+                    </React.Fragment>
+                  ))}
+                </div>
+              )}
+
+              {executorStatus === 'active' ? (
+                <div className="flex items-center gap-2.5 py-1.5 text-foreground-secondary">
+                  <span className="relative flex h-2.5 w-2.5 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-executor opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-accent-executor"></span>
+                  </span>
+                  <span>{t(lang, 'pev.executor.working', { agent: targetAgent || t(lang, 'pev.agentSpecialized') })}</span>
+                </div>
+              ) : executorStatus === 'completed' ? (
+                <div className="space-y-1.5 pt-0.5">
+                  {execSummary ? (
+                    <div className="p-2.5 rounded bg-surface-raised border border-border text-foreground-secondary max-h-36 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+                      {execSummary}
+                    </div>
+                  ) : (
+                    <div className="text-foreground-muted italic">
+                      {t(lang, 'pev.executor.done', { agent: targetAgent || 'Executor' })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="py-1 text-foreground-muted italic">
+                  {t(lang, 'pev.waiting')}
+                </div>
+              )}
+            </div>
+
+            {/* Section 3: Verifier Node */}
+            <div className="p-3.5 rounded-lg bg-surface border border-border shadow-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 font-sans font-bold text-xs text-accent-verifier">
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>{t(lang, 'pev.section.verifier')}</span>
+                </div>
+                {verifierStatus === 'completed' && (
+                  isAuditPassed ? (
+                    <span className="px-2 py-0.5 rounded text-2xs font-semibold bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" />
+                      <span>{t(lang, 'pev.verifier.passed')}</span>
                     </span>
-                    {idx < pipelineSteps.length - 1 && (
-                      <ChevronRight className="w-3 h-3 text-zinc-400 dark:text-zinc-600 shrink-0" />
-                    )}
-                  </React.Fragment>
-                ))}
-              </div>
-            )}
-
-            {executorStatus === 'active' ? (
-              <div className="flex items-center gap-2.5 py-1.5 text-zinc-600 dark:text-zinc-300">
-                <span className="relative flex h-2.5 w-2.5 shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
-                </span>
-                <span>Agent [{targetAgent || 'Chuyên biệt'}] đang thực thi tác vụ...</span>
-              </div>
-            ) : executorStatus === 'completed' ? (
-              <div className="space-y-1.5 pt-0.5">
-                {execSummary ? (
-                  <div className="p-2.5 rounded bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-800/80 text-zinc-700 dark:text-zinc-300 max-h-36 overflow-y-auto whitespace-pre-wrap leading-relaxed">
-                    {execSummary}
-                  </div>
-                ) : (
-                  <div className="text-zinc-500 dark:text-zinc-400 italic">
-                    Tác vụ đã được thực thi thành công bởi Agent [{targetAgent || 'Executor'}].
-                  </div>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-2xs font-semibold bg-accent-error/10 text-accent-error border border-accent-error/20 flex items-center gap-1">
+                      <RotateCcw className="w-3 h-3" />
+                      <span>{t(lang, 'pev.verifier.retryLoop', { count: retryCount || 1 })}</span>
+                    </span>
+                  )
                 )}
               </div>
-            ) : (
-              <div className="py-1 text-zinc-400 dark:text-zinc-600 italic">
-                Chờ thực thi...
-              </div>
-            )}
-          </div>
 
-          {/* Mục 3: Verifier Node (Kiểm Định Chất Lượng & Zero-Hallucination) */}
-          <div className="p-3.5 rounded-lg bg-white dark:bg-zinc-950/60 border border-zinc-200 dark:border-zinc-800 shadow-2xs space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 font-sans font-bold text-xs text-emerald-600 dark:text-emerald-400">
-                <ShieldCheck className="w-4 h-4" />
-                <span>Verifier Node (Kiểm Định Chất Lượng &amp; Zero-Hallucination)</span>
-              </div>
-              {verifierStatus === 'completed' && (
-                isAuditPassed ? (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" />
-                    <span>Audit Passed (100% Verified)</span>
-                  </span>
-                ) : (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 flex items-center gap-1">
-                    <RotateCcw className="w-3 h-3" />
-                    <span>Retry Loop (Lần {retryCount || 1}/2)</span>
-                  </span>
-                )
+              {verifierStatus === 'active' ? (
+                <div className="flex items-center gap-2.5 py-1.5 text-foreground-secondary">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-accent-verifier shrink-0" />
+                  <span>{t(lang, 'pev.verifier.working')}</span>
+                </div>
+              ) : verifierStatus === 'completed' ? (
+                <div className="space-y-1.5 pt-0.5">
+                  {verifierFeedback ? (
+                    <div className="p-2.5 rounded bg-surface-raised border border-border text-foreground-secondary whitespace-pre-wrap leading-relaxed">
+                      <span className="font-semibold text-accent-verifier">{t(lang, 'pev.verifier.criteria')}</span>
+                      {verifierFeedback}
+                    </div>
+                  ) : (
+                    <div className="text-foreground-muted italic">
+                      {t(lang, 'pev.verifier.clean')}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="py-1 text-foreground-muted italic">
+                  {t(lang, 'pev.waiting')}
+                </div>
               )}
             </div>
 
-            {verifierStatus === 'active' ? (
-              <div className="flex items-center gap-2.5 py-1.5 text-zinc-600 dark:text-zinc-300">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500 shrink-0" />
-                <span>Đang đối soát kết quả với kế hoạch ban đầu và kiểm định tính trung thực...</span>
-              </div>
-            ) : verifierStatus === 'completed' ? (
-              <div className="space-y-1.5 pt-0.5">
-                {verifierFeedback ? (
-                  <div className="p-2.5 rounded bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-800/80 text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed">
-                    <span className="font-semibold text-emerald-600 dark:text-emerald-400">Tiêu chí đối soát: </span>
-                    {verifierFeedback}
-                  </div>
-                ) : (
-                  <div className="text-zinc-500 dark:text-zinc-400 italic">
-                    Kết quả đã được đối soát kỹ lưỡng, đảm bảo tính chuẩn xác và không ảo giác (Zero-Hallucination).
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="py-1 text-zinc-400 dark:text-zinc-600 italic">
-                Chờ thực thi...
+            {/* Error Banner */}
+            {error && (
+              <div className="p-3 bg-accent-error/10 border border-accent-error/20 rounded-lg text-accent-error flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{error}</span>
               </div>
             )}
           </div>
-
-          {/* Error Banner */}
-          {error && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-600 dark:text-red-400 flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
         </div>
-      )}
+      </div>
     </div>
   );
 };

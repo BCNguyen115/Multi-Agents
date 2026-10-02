@@ -2,8 +2,9 @@
 
 import React, { useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { t, useLang } from '../lib/i18n';
 import remarkGfm from 'remark-gfm';
-import { Bot, User, ExternalLink, AlertTriangle, Copy, Check, Loader2 } from 'lucide-react';
+import { Bot, User, ExternalLink, AlertTriangle, Copy, Check, Loader2, ShieldCheck, ShieldAlert, Hourglass } from 'lucide-react';
 import { ChatMessage as ChatMessageType, SourceItem, CSVMetadata } from '../lib/types';
 import { PEVStepper } from './PEVStepper';
 import { SourcesList } from './SourcesList';
@@ -12,6 +13,7 @@ import { EnterpriseDashboard } from './EnterpriseDashboard';
 import { DashboardSkeleton } from './dashboard/DashboardSkeleton';
 import { DataSummaryView } from './DataSummaryView';
 import { ApprovalCard } from './ApprovalCard';
+import { KnowledgeDocumentsCard } from './KnowledgeDocumentsCard';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -49,6 +51,65 @@ function isDataAgentTarget(message: ChatMessageType): boolean {
   return false;
 }
 
+type VerificationKind = 'rag' | 'data' | 'db' | 'other';
+
+/** Verdict of the Verifier for a finished message: `true`/`false`, or `null` when the message carries none. */
+function verifierVerdict(message: ChatMessageType): boolean | null {
+  const candidates = [
+    message.pevEvents?.final_response?.is_verified,
+    message.pevTrace?.verifier?.is_verified,
+    message.pevTrace?.is_verified,
+    message.pevEvents?.verifying?.is_verified,
+  ];
+  const found = candidates.find((v) => typeof v === 'boolean');
+  return typeof found === 'boolean' ? found : null;
+}
+
+function verificationKind(message: ChatMessageType): VerificationKind {
+  const target = (
+    message.pevEvents?.final_response?.target_agent ||
+    message.pevEvents?.plan?.target_agent ||
+    message.pevTrace?.executor?.agent_used ||
+    message.pevTrace?.planner?.target_agent ||
+    message.agentMode ||
+    ''
+  ).toLowerCase();
+  if (target.includes('rag')) return 'rag';
+  if (target.includes('data_agent') || target.includes('data agent')) return 'data';
+  if (target.includes('db')) return 'db';
+  return 'other';
+}
+
+/** One status line at the top of a text answer: preview, verified or not verified, with what the check covered. */
+function VerificationStrip({ message, loading }: { message: ChatMessageType; loading: boolean }) {
+  const [lang] = useLang();
+  const verdict = message.isPreview || loading ? null : verifierVerdict(message);
+  if (!message.isPreview && verdict === null) return null;
+
+  const state = message.isPreview ? 'preview' : verdict ? 'verified' : 'unverified';
+  const Icon = state === 'preview' ? Hourglass : state === 'verified' ? ShieldCheck : ShieldAlert;
+  const tone =
+    state === 'verified' ? 'text-accent-verifier' : state === 'unverified' ? 'text-accent-error' : 'text-foreground-muted';
+  const label = state === 'preview' ? t(lang, 'answer.preview') : t(lang, state === 'verified' ? 'verify.verified' : 'verify.unverified');
+
+  return (
+    <div className="mb-2 text-xs">
+      <p role="status" aria-live="polite" className={`inline-flex items-center gap-1.5 font-semibold ${tone}`}>
+        <Icon className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        <span>{label}</span>
+      </p>
+      {state !== 'preview' && (
+        <details className="mt-1 text-foreground-secondary">
+          <summary className="cursor-pointer w-fit rounded font-medium hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40">
+            {t(lang, 'verify.whatChecked')}
+          </summary>
+          <p className="mt-1 leading-relaxed">{t(lang, `verify.detail.${verificationKind(message)}`)}</p>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function hasDashboardIntent(userQuery?: string, message?: ChatMessageType): boolean {
   if (userQuery && DASHBOARD_INTENT_REGEX.test(userQuery)) {
     return true;
@@ -84,6 +145,7 @@ function extractWebSourcesFromMarkdown(content: string): SourceItem[] {
 
 // Copy Code Button Component
 function CopyCodeButton({ code }: { code: string }) {
+  const [lang] = useLang();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
@@ -109,8 +171,8 @@ function CopyCodeButton({ code }: { code: string }) {
       type="button"
       onClick={handleCopy}
       className="p-1 rounded-md hover:bg-surface-overlay text-foreground-muted hover:text-foreground transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary/50"
-      title={copied ? 'Đã sao chép!' : 'Sao chép mã'}
-      aria-label="Copy code"
+      title={copied ? t(lang, 'chat.copied') : t(lang, 'chat.copyCode')}
+      aria-label={t(lang, 'chat.copyCode')}
     >
       {copied ? <Check className="w-3.5 h-3.5 text-accent-verifier" /> : <Copy className="w-3.5 h-3.5" />}
     </button>
@@ -125,8 +187,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   activeCSV,
   onGenerateDashboard,
 }) => {
+  const [lang] = useLang();
   let displayAnswer = message.content;
   let parsedSources: SourceItem[] = message.sources || [];
+  let isSummaryReply = false; // the data agent labels its text summaries `type: "text_summary"`, whatever the language
 
   const isThisMessageLoading =
     message.status === 'loading' ||
@@ -144,6 +208,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
       try {
         const parsed = JSON.parse(trimmed);
         if (parsed && typeof parsed === 'object') {
+          isSummaryReply = parsed.type === 'text_summary';
           const extractedText = parsed.explanation || parsed.content || parsed.answer || parsed.response || parsed.text;
           if (extractedText && typeof extractedText === 'string') {
             displayAnswer = extractedText;
@@ -169,12 +234,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
     message.role === 'assistant' &&
     !message.dashboardSpec &&
     Boolean(displayAnswer) &&
-    (message.agentMode?.includes('Data Agent') ||
-      displayAnswer.includes('Tóm Tắt Dữ Liệu') ||
-      displayAnswer.includes('Chỉ Số Tổng Quan') ||
-      displayAnswer.includes('Thông Tin Tập Dữ Liệu') ||
-      displayAnswer.includes('Số thuộc tính (cột)') ||
-      displayAnswer.includes('Số bản ghi (dòng)'));
+    (message.agentMode?.includes('Data Agent') || isSummaryReply);
 
   // User message
   if (message.role === 'user') {
@@ -194,7 +254,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   return (
     <div className="flex items-start justify-start gap-3 my-4 w-full">
       {/* Agent Avatar */}
-      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-accent-primary to-accent-executor p-0.5 flex items-center justify-center shrink-0 shadow-xs">
+      <div className="w-8 h-8 rounded-full bg-surface-raised border border-border flex items-center justify-center shrink-0">
         <div className="w-full h-full rounded-full bg-background flex items-center justify-center">
           <Bot className="w-4 h-4 text-accent-primary" />
         </div>
@@ -211,6 +271,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             isStreaming={isThisMessageLoading && Boolean(isSending) && !displayAnswer}
           />
         )}
+
+        {message.kind === 'knowledge-docs' && <KnowledgeDocumentsCard />}
 
         {/* Human-in-the-Loop Confirmation Card */}
         {message.approvalRequest && (
@@ -251,13 +313,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             metadata={message.metadata}
             onGenerateDashboard={
               onGenerateDashboard
-                ? () => onGenerateDashboard('Dựng dashboard trực quan từ dữ liệu này')
+                ? () => onGenerateDashboard(t(lang, 'chat.dashboardPrompt'))
                 : undefined
             }
           />
         ) : displayAnswer ? (
           /* Markdown Content */
-          <div className="font-sans text-sm text-foreground leading-relaxed">
+          <div className="font-sans text-sm text-foreground leading-relaxed" aria-busy={message.isPreview ? true : undefined}>
+            <VerificationStrip message={message} loading={Boolean(isThisMessageLoading)} />
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
@@ -265,10 +328,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                   return <h1 className="text-xl font-extrabold text-foreground my-3">{children}</h1>;
                 },
                 h2({ children }) {
-                  return <h2 className="text-lg font-bold text-foreground border-l-4 border-accent-primary pl-2.5 my-3">{children}</h2>;
+                  return <h2 className="text-lg font-bold text-foreground my-3">{children}</h2>;
                 },
                 h3({ children }) {
-                  return <h3 className="border-l-4 border-accent-primary font-bold pl-3 my-3 text-foreground text-base leading-snug">{children}</h3>;
+                  return <h3 className="font-bold my-3 text-foreground text-base leading-snug">{children}</h3>;
                 },
                 ul({ children }) {
                   return <ul className="list-disc pl-5 my-2 space-y-1.5 marker:text-accent-primary text-foreground-secondary">{children}</ul>;
@@ -310,7 +373,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                   );
                 },
                 thead({ children }) {
-                  return <thead className="bg-surface-raised text-foreground font-bold border-b border-border uppercase tracking-wider text-[11px]">{children}</thead>;
+                  return <thead className="bg-surface-raised text-foreground font-bold border-b border-border uppercase tracking-wider text-xs">{children}</thead>;
                 },
                 tr({ children }) {
                   return <tr className="border-b border-border last:border-0 hover:bg-surface-raised/50 transition-colors">{children}</tr>;
@@ -366,7 +429,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         ) : isThisMessageLoading && !displayAnswer ? (
           <div className="flex items-center gap-2.5 text-xs text-foreground-muted py-2 animate-pulse">
             <Loader2 className="w-4 h-4 animate-spin text-accent-primary" />
-            <span>Đang xử lý câu trả lời...</span>
+            <span>{t(lang, 'chat.processing')}</span>
           </div>
         ) : message.dashboardSpec ? (
           <DynamicDashboard spec={message.dashboardSpec} />
@@ -378,7 +441,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         ) : !isThisMessageLoading && !message.dashboardSpec && (message.pevTrace?.is_verified === false || message.pevTrace?.verifier?.is_verified === false || message.pevEvents?.verifying?.is_verified === false) ? (
           <div className="my-3 p-3.5 bg-accent-error/5 border border-accent-error/20 rounded-xl text-accent-error text-xs flex items-center gap-2.5 font-medium">
             <AlertTriangle className="w-4.5 h-4.5 shrink-0" />
-            <span>Dashboard generation blocked — data did not pass verification.</span>
+            <span>{t(lang, 'chat.blocked')}</span>
           </div>
         ) : null}
 

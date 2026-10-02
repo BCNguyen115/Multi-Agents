@@ -1,465 +1,199 @@
-"""Knowledge module — HyDE-enhanced semantic search via pgvector.
+"""Knowledge store: hybrid retrieval over ``rag_chunks``.
 
-Provides:
-  1. Generate text embeddings via the OpenRouter-compatible API.
-  2. Store document embeddings in PostgreSQL (pgvector).
-  3. **HyDE (Hypothetical Document Embeddings)**: generate a hypothetical
-     answer before embedding for improved retrieval accuracy.
-  4. Query the ``rag_chunks`` table for semantically similar documents.
+    query --(raw and/or HyDE embeddings)--> vector top-k (HNSW)  \
+    query --(OR keyword query)------------> full-text top-k (GIN) / --> reciprocal-rank fusion --> candidates
 
-Usage:
-    from src.agents.rag_agent.knowledge import KnowledgeStore
-
-    ks = KnowledgeStore(pg_client=pg, llm_client=llm_client)
-    await ks.ensure_table()
-    docs = await ks.search_with_hyde("What is the termination clause?",
-                                      session_id="abc")
+Vector and keyword search are two index-backed queries fused in Python with RRF, because their scores live on
+different scales (cosine 0..1 vs ts_rank ~0.001) and cannot be added. Every candidate carries its own cosine
+similarity (``vector_score``), which the agent uses to decide "nothing relevant found".
 """
 
-import json
-import logging
-from typing import Any, List, Optional
+from __future__ import annotations
 
+import asyncio
+import logging
+import re
+import time
+from collections import OrderedDict
+from typing import Any, Optional
+
+from src.agents.rag_agent.planner import QueryPlan
+from src.config import settings
+from src.ingestion.schema import ensure_schema
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
 from src.shared.postgres_client import PostgresClient
 
 logger: logging.Logger = get_logger(__name__)
 
-# Default embedding model available via OpenRouter.
-_EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
-_EMBEDDING_DIM: int = 1536
-
-# HyDE configuration
+_EMBEDDING_MODEL: str = "openai/text-embedding-3-small"  # must match the model used at ingestion
 _HYDE_SYSTEM_PROMPT: str = (
-    "You are an expert legal document analyst. Given a user's question, "
-    "write a detailed, factual paragraph that would be found in a legal "
-    "document (such as an NDA, MSA, Purchase Agreement, SOW, or Corporate "
-    "Agreement) that directly answers the question. "
-    "Write as if you are quoting from the actual document. "
-    "Do NOT say 'I think' or 'In my opinion'. Just write the document text."
+    "You write passages for a search index. Given a question, write ONE factual passage (at most 120 words), in English, "
+    "in the style of an internal contract, policy or procedure document, that would answer it. "
+    "Output only the passage, no preamble."
 )
-_HYDE_MODEL: str = "openai/gpt-4o-mini"
+_HYDE_CACHE_SIZE: int = 256
+_CATEGORY_TTL_SECONDS: float = 300.0
+_MAX_KEYWORDS: int = 12
+_TOKEN = re.compile(r"\w{3,}")
 
-# SQL templates -----------------------------------------------------------
+_COLUMNS: str = "id, content, filename, category, section_title, page, chunk_index"
+_FILTERS: str = "($2::text[] IS NULL OR category = ANY($2)) AND ($3::text[] IS NULL OR tenant_id = ANY($3))"
 
-_CREATE_TABLE_SQL: str = """
-CREATE TABLE IF NOT EXISTS knowledge_documents (
-    id        BIGSERIAL PRIMARY KEY,
-    content   TEXT NOT NULL,
-    embedding VECTOR({dim})
-);
-""".format(dim=_EMBEDDING_DIM)
-
-_INSERT_DOC_SQL: str = """
-INSERT INTO knowledge_documents (content, embedding)
-VALUES ($1, $2::vector);
-"""
-
-# Legacy search on knowledge_documents
-_SEARCH_SQL: str = """
-SELECT content,
-       embedding <=> $1::vector AS distance
-FROM   knowledge_documents
-ORDER  BY distance
-LIMIT  $2;
-"""
-
-# Vector search on rag_chunks (with rich metadata)
-_SEARCH_RAG_CHUNKS_SQL: str = """
-SELECT content,
-       filename,
-       category,
-       section_title,
-       embedding <=> $1::vector AS distance
+_VECTOR_SQL: str = f"""
+SELECT {_COLUMNS}, 1 - (embedding <=> $1::vector) AS vector_score
 FROM   rag_chunks
-ORDER  BY distance
-LIMIT  $2;
+WHERE  {_FILTERS}
+ORDER  BY embedding <=> $1::vector
+LIMIT  $4;
 """
 
-# Hybrid search on rag_chunks (Vector + Full-Text Search with Weighted Score)
-_HYBRID_SEARCH_RAG_CHUNKS_SQL: str = """
-SELECT content,
-       filename,
-       category,
-       section_title,
-       (1 - (embedding <=> $1::vector)) AS vector_score,
-       COALESCE(ts_rank_cd(to_tsvector('english', content), websearch_to_tsquery('english', $2)), 0) AS fts_score,
-       (0.7 * (1 - (embedding <=> $1::vector)) + 0.3 * COALESCE(ts_rank_cd(to_tsvector('english', content), websearch_to_tsquery('english', $2)), 0)) AS combined_score
-FROM   rag_chunks
-ORDER  BY combined_score DESC
-LIMIT  $3;
+_FTS_SQL: str = f"""
+SELECT {_COLUMNS}, 1 - (embedding <=> $1::vector) AS vector_score, ts_rank_cd(tsv, q) AS fts_score
+FROM   rag_chunks, to_tsquery('simple', immutable_unaccent($5)) q
+WHERE  tsv @@ q AND {_FILTERS}
+ORDER  BY fts_score DESC
+LIMIT  $4;
 """
+
+
+def build_tsquery(text: str, max_terms: int = _MAX_KEYWORDS) -> Optional[str]:
+    """OR-query of the distinct words of ``text`` (``'a' | 'b'``), or ``None`` when it has none.
+
+    AND semantics (``websearch_to_tsquery``) return nothing for a natural question with 20 words; OR plus
+    ``ts_rank_cd`` ranking finds the chunks that share the most terms. Words are ``\\w`` only: no quoting risk.
+    """
+    seen: list[str] = []
+    for token in _TOKEN.findall(text.lower()):
+        if token not in seen:
+            seen.append(token)
+    return " | ".join(f"'{t}'" for t in seen[:max_terms]) or None
+
+
+def detect_categories(query: str, known: list[str]) -> list[str]:
+    """Document categories named in the question (``NDA``, ``SOW``...), to narrow the search."""
+    return [c for c in known if c and re.search(rf"(?<!\w){re.escape(c)}(?!\w)", query, re.IGNORECASE)]
+
+
+def fuse(ranked_lists: list[list[dict[str, Any]]], k: int, limit: int) -> list[dict[str, Any]]:
+    """Reciprocal-rank fusion of ranked candidate lists (rows are dicts with an ``id``).
+
+    A chunk keeps its best ``vector_score`` / ``fts_score`` from any list it appears in.
+    """
+    merged: dict[Any, dict[str, Any]] = {}
+    for rows in ranked_lists:
+        for rank, row in enumerate(rows, start=1):
+            item = merged.setdefault(row["id"], {**row, "rrf_score": 0.0, "fts_score": 0.0, "vector_score": 0.0})
+            item["rrf_score"] += 1.0 / (k + rank)
+            item["vector_score"] = max(item["vector_score"], row.get("vector_score") or 0.0)
+            item["fts_score"] = max(item["fts_score"], row.get("fts_score") or 0.0)
+    return sorted(merged.values(), key=lambda r: -r["rrf_score"])[:limit]
 
 
 class KnowledgeStore:
-    """Manages document storage and semantic retrieval via pgvector.
+    """Hybrid retrieval over the ingested documents."""
 
-    Supports both legacy ``knowledge_documents`` and the new ``rag_chunks``
-    table populated by the ingestion pipeline.
-
-    Attributes:
-        pg: PostgreSQL async client instance.
-        llm_client: Unified ``LLMClient`` instance (LiteLLM + Langfuse).
-    """
-
-    def __init__(
-        self,
-        pg: PostgresClient,
-        llm_client: LLMClient,
-    ) -> None:
-        """Initialise the knowledge store.
-
-        Args:
-            pg: An already-connected ``PostgresClient``.
-            llm_client: Unified LLM client instance.
-        """
+    def __init__(self, pg: PostgresClient, llm_client: LLMClient) -> None:
         self.pg: PostgresClient = pg
         self.llm_client: LLMClient = llm_client
+        self._hyde_cache: OrderedDict[str, str] = OrderedDict()
+        self._categories: tuple[float, list[str]] = (0.0, [])
 
-    # ------------------------------------------------------------------
-    # Schema management
-    # ------------------------------------------------------------------
+    async def ensure_schema(self, session_id: str = "SYSTEM") -> None:
+        """Create/migrate ``rag_chunks`` (safe to run on every start)."""
+        await ensure_schema(self.pg, session_id=session_id)
 
-    async def ensure_table(self, session_id: str = "SYSTEM") -> None:
-        """Create the ``knowledge_documents`` table if it does not exist.
+    # ------------------------------------------------------------------ query side
 
-        Also ensures the HNSW index on ``rag_chunks`` is created for
-        optimised vector search performance.
-
-        Args:
-            session_id: Correlation ID for logging.
-        """
-        try:
-            await self.pg.execute(
-                _CREATE_TABLE_SQL, session_id=session_id
-            )
-            logger.info(
-                "knowledge_documents table verified / created",
-                extra={"session_id": session_id},
-            )
-        except Exception as exc:
-            logger.error(
-                "Failed to ensure knowledge_documents table: %s",
-                exc,
-                extra={"session_id": session_id},
-            )
-            raise
-
-        # Ensure HNSW index for accelerated vector search
-        await self._ensure_hnsw_index(session_id=session_id)
-
-    async def _ensure_hnsw_index(self, session_id: str = "SYSTEM") -> None:
-        """Create HNSW index on ``rag_chunks.embedding`` if not exists.
-
-        HNSW (Hierarchical Navigable Small World) provides sub-linear
-        approximate nearest-neighbour search, dramatically reducing query
-        latency compared to sequential scan on large vector tables.
-
-        Index parameters:
-          - ``m = 16``: Maximum number of connections per layer.
-          - ``ef_construction = 64``: Size of dynamic candidate list during build.
-
-        Args:
-            session_id: Correlation ID for logging.
-        """
-        hnsw_sql: str = (
-            "CREATE INDEX IF NOT EXISTS idx_rag_chunks_hnsw "
-            "ON rag_chunks "
-            "USING hnsw (embedding vector_cosine_ops) "
-            "WITH (m = 16, ef_construction = 64);"
+    async def _embed(self, text: str, session_id: str) -> list[float]:
+        vector: list[float] = await self.llm_client.embedding(
+            input_text=text, model=_EMBEDDING_MODEL, metadata={"purpose": "rag_search"}, session_id=session_id
         )
-        try:
-            await self.pg.execute(hnsw_sql, session_id=session_id)
-            logger.info(
-                "HNSW index on rag_chunks.embedding verified / created",
-                extra={"session_id": session_id},
-            )
-        except Exception as exc:
-            # Non-fatal: table may not exist yet (created by ingestion pipeline)
-            logger.warning(
-                "HNSW index creation skipped (table may not exist yet): %s",
-                exc,
-                extra={"session_id": session_id},
-            )
+        if not vector:
+            raise ValueError("empty embedding")
+        return vector
 
-    # ------------------------------------------------------------------
-    # Embedding generation
-    # ------------------------------------------------------------------
-
-    async def _embed_text(
-        self, text: str, session_id: str = "N/A"
-    ) -> List[float]:
-        """Generate an embedding vector for the given text.
-
-        Args:
-            text: Input text to embed.
-            session_id: Correlation ID for logging.
-
-        Returns:
-            List[float]: Embedding vector of dimension ``_EMBEDDING_DIM``.
-        """
-        try:
-            embedding: List[float] = await self.llm_client.embedding(
-                input_text=text,
-                model=_EMBEDDING_MODEL,
-                metadata={"purpose": "rag_search"},
-                session_id=session_id,
-            )
-            logger.debug(
-                "Generated embedding (dim=%d) for text len=%d",
-                len(embedding),
-                len(text),
-                extra={"session_id": session_id},
-            )
-            return embedding
-        except Exception as exc:
-            logger.error(
-                "Embedding generation failed: %s",
-                exc,
-                extra={"session_id": session_id},
-            )
-            raise
-
-    # ------------------------------------------------------------------
-    # HyDE — Hypothetical Document Generation
-    # ------------------------------------------------------------------
-
-    async def _generate_hypothetical_document(
-        self, query: str, session_id: str = "N/A"
-    ) -> str:
-        """Use an LLM to generate a hypothetical document for HyDE.
-
-        Instead of embedding the raw user query, HyDE first generates a
-        hypothetical answer passage, which is then embedded for retrieval.
-
-        Args:
-            query: The user's natural-language question.
-            session_id: Correlation ID.
-
-        Returns:
-            Generated hypothetical document text. Falls back to the raw
-            query if generation fails.
-        """
+    async def _hypothetical_passage(self, query: str, session_id: str) -> Optional[str]:
+        """HyDE: an LLM-written passage that answers ``query``; ``None`` when generation fails (raw query is used)."""
+        if query in self._hyde_cache:
+            self._hyde_cache.move_to_end(query)
+            return self._hyde_cache[query]
         try:
             response: Any = await self.llm_client.chat_completion(
-                model=_HYDE_MODEL,
-                messages=[
-                    {"role": "system", "content": _HYDE_SYSTEM_PROMPT},
-                    {"role": "user", "content": query},
-                ],
-                temperature=0.7,
-                max_tokens=512,
+                model=settings.FAST_LLM_MODEL,
+                messages=[{"role": "system", "content": _HYDE_SYSTEM_PROMPT}, {"role": "user", "content": query}],
+                temperature=0.0,
+                max_tokens=300,
                 metadata={"purpose": "hyde_generation"},
                 session_id=session_id,
             )
-            hypothetical: str = response.choices[0].message.content or ""
-            logger.info(
-                "HyDE generated hypothetical doc (%d chars) for query: %s",
-                len(hypothetical),
-                query[:80],
-                extra={"session_id": session_id},
-            )
-            return hypothetical
-        except Exception as exc:
-            logger.warning(
-                "HyDE generation failed, falling back to raw query: %s",
-                exc,
-                extra={"session_id": session_id},
-            )
-            return query
+            passage: str = (response.choices[0].message.content or "").strip()
+        except Exception as exc:  # noqa: BLE001 - HyDE is an optimisation, never a dependency
+            logger.warning("HyDE generation failed, using the raw query: %s", exc, extra={"session_id": session_id})
+            return None
+        if passage:
+            self._hyde_cache[query] = passage
+            while len(self._hyde_cache) > _HYDE_CACHE_SIZE:
+                self._hyde_cache.popitem(last=False)
+        return passage or None
 
-    # ------------------------------------------------------------------
-    # Document ingestion (legacy)
-    # ------------------------------------------------------------------
+    def invalidate_categories(self) -> None:
+        """Forget the cached category list (after documents were added), so a new category is detected at once."""
+        self._categories = (0.0, [])
 
-    async def add_document(
-        self, content: str, session_id: str = "N/A"
-    ) -> None:
-        """Embed and store a single document in the vector store.
+    async def known_categories(self, session_id: str = "N/A") -> list[str]:
+        stamp, cached = self._categories
+        if cached and time.monotonic() - stamp < _CATEGORY_TTL_SECONDS:
+            return cached
+        rows = await self.pg.fetch("SELECT DISTINCT category FROM rag_chunks WHERE category <> ''", session_id=session_id)
+        self._categories = (time.monotonic(), [r["category"] for r in rows])
+        return self._categories[1]
 
-        Args:
-            content: Raw document text.
-            session_id: Correlation ID for logging.
-        """
-        embedding: List[float] = await self._embed_text(
-            content, session_id=session_id
-        )
-        embedding_str: str = json.dumps(embedding)
-
-        try:
-            await self.pg.execute(
-                _INSERT_DOC_SQL,
-                content,
-                embedding_str,
-                session_id=session_id,
-            )
-            logger.info(
-                "Document stored (len=%d chars)",
-                len(content),
-                extra={"session_id": session_id},
-            )
-        except Exception as exc:
-            logger.error(
-                "Failed to store document: %s",
-                exc,
-                extra={"session_id": session_id},
-            )
-            raise
-
-    # ------------------------------------------------------------------
-    # Semantic search (legacy — knowledge_documents table)
-    # ------------------------------------------------------------------
+    async def _run(self, sql: str, args: tuple[Any, ...], session_id: str) -> list[dict[str, Any]]:
+        return [dict(r) for r in await self.pg.fetch(sql, *args, session_id=session_id)]
 
     async def search(
         self,
         query: str,
-        top_k: int = 3,
-        session_id: str = "N/A",
-    ) -> List[dict[str, Any]]:
-        """Search the knowledge base for documents similar to *query*.
-
-        Args:
-            query: Natural-language search query.
-            top_k: Maximum number of results to return.
-            session_id: Correlation ID for logging.
-
-        Returns:
-            List[dict[str, Any]]: List of dicts with keys ``content``
-            and ``distance``.
-        """
-        try:
-            query_embedding: List[float] = await self._embed_text(
-                query, session_id=session_id
-            )
-            embedding_str: str = json.dumps(query_embedding)
-
-            rows = await self.pg.fetch(
-                _SEARCH_SQL,
-                embedding_str,
-                top_k,
-                session_id=session_id,
-            )
-
-            results: List[dict[str, Any]] = [
-                {"content": row["content"], "distance": float(row["distance"])}
-                for row in rows
-            ]
-            logger.info(
-                "Vector search returned %d results for query len=%d",
-                len(results),
-                len(query),
-                extra={"session_id": session_id},
-            )
-            return results
-
-        except Exception as exc:
-            logger.error(
-                "Vector search failed: %s",
-                exc,
-                extra={"session_id": session_id},
-            )
-            raise
-
-    # ------------------------------------------------------------------
-    # HyDE-enhanced search (rag_chunks table)
-    # ------------------------------------------------------------------
-
-    async def search_with_hyde(
-        self,
-        query: str,
         top_k: int = 20,
         session_id: str = "N/A",
-    ) -> List[dict[str, Any]]:
-        """Search the rag_chunks table using HyDE-enhanced Hybrid Search.
+        categories: Optional[list[str]] = None,
+        plan: Optional[QueryPlan] = None,
+    ) -> list[dict[str, Any]]:
+        """Best ``top_k`` chunks for ``query``, fused from vector and keyword search.
 
-        Flow:
-          1. Generate a hypothetical document via LLM.
-          2. Embed the hypothetical document (not the raw query).
-          3. Query pgvector + FTS for top_k candidate chunks.
-
-        Args:
-            query: User's natural-language question.
-            top_k: Maximum number of raw candidate results to fetch.
-            session_id: Correlation ID.
-
-        Returns:
-            List of candidate dicts with ``content``, ``filename``, ``category``,
-            ``section_title``, and score metadata.
+        A ``plan`` (see ``planner.py``) supplies the HyDE passage, saving the store its own LLM call; without one (or
+        when planning failed) the store writes the passage itself. ``query`` is embedded and searched as typed.
+        Categories named in the question narrow the search first; if that finds nothing the whole corpus is
+        searched. Tenant restriction comes from ``settings.RAG_TENANT_IDS``. Errors propagate: the caller decides.
         """
-        try:
-            # Step 1: HyDE — generate hypothetical answer
-            hypothetical: str = await self._generate_hypothetical_document(
-                query, session_id=session_id
-            )
+        mode: str = settings.RAG_QUERY_MODE
+        passage: Optional[str] = None
+        if mode in ("hyde", "both"):
+            passage = (plan.passage if plan is not None else "") or await self._hypothetical_passage(query, session_id)
+        texts: list[str] = [query]
+        if passage:
+            texts = [passage] if mode == "hyde" else [query, passage]
+        vectors: list[list[float]] = await asyncio.gather(*(self._embed(t, session_id) for t in texts))
+        literals: list[str] = ["[" + ",".join(map(str, v)) + "]" for v in vectors]
+        keywords: Optional[str] = build_tsquery(query)
+        tenants: Optional[list[str]] = settings.RAG_TENANT_IDS
 
-            # Step 2: Embed the hypothetical document
-            hyde_embedding: List[float] = await self._embed_text(
-                hypothetical, session_id=session_id
-            )
-            embedding_str: str = json.dumps(hyde_embedding)
+        scopes: list[Optional[list[str]]] = []
+        named: list[str] = categories if categories is not None else detect_categories(query, await self.known_categories(session_id))
+        if named:
+            scopes.append(named)
+        scopes.append(None)
 
-            # Step 3: Query rag_chunks via Hybrid Search (Vector + FTS)
-            try:
-                rows = await self.pg.fetch(
-                    _HYBRID_SEARCH_RAG_CHUNKS_SQL,
-                    embedding_str,
-                    query,
-                    top_k,
-                    session_id=session_id,
-                )
-                results: List[dict[str, Any]] = [
-                    {
-                        "content": row["content"],
-                        "filename": row["filename"],
-                        "category": row["category"],
-                        "section_title": row["section_title"],
-                        "vector_score": float(row["vector_score"]),
-                        "fts_score": float(row["fts_score"]),
-                        "combined_score": float(row["combined_score"]),
-                    }
-                    for row in rows
-                ]
-            except Exception as sql_exc:
-                logger.warning(
-                    "Hybrid search query failed (%s), falling back to vector search",
-                    sql_exc,
+        for scope in scopes:
+            jobs = [self._run(_VECTOR_SQL, (lit, scope, tenants, top_k), session_id) for lit in literals]
+            if keywords:
+                jobs.append(self._run(_FTS_SQL, (literals[0], scope, tenants, top_k, keywords), session_id))
+            fused = fuse(list(await asyncio.gather(*jobs)), settings.RAG_RRF_K, top_k)
+            if fused:
+                logger.info(
+                    "Retrieved %d candidates (mode=%s, scope=%s, keywords=%s)", len(fused), mode, scope or "all", bool(keywords),
                     extra={"session_id": session_id},
                 )
-                rows = await self.pg.fetch(
-                    _SEARCH_RAG_CHUNKS_SQL,
-                    embedding_str,
-                    top_k,
-                    session_id=session_id,
-                )
-                results = [
-                    {
-                        "content": row["content"],
-                        "filename": row["filename"],
-                        "category": row["category"],
-                        "section_title": row["section_title"],
-                        "distance": float(row["distance"]),
-                    }
-                    for row in rows
-                ]
-
-            logger.info(
-                "HyDE Hybrid search returned %d candidates (query: %s)",
-                len(results),
-                query[:60],
-                extra={"session_id": session_id},
-            )
-            return results
-
-        except Exception as exc:
-            logger.error(
-                "HyDE search failed: %s",
-                exc,
-                extra={"session_id": session_id},
-            )
-            # Fallback: try legacy search
-            logger.warning(
-                "Falling back to legacy search",
-                extra={"session_id": session_id},
-            )
-            return await self.search(query, top_k=top_k, session_id=session_id)
+                return fused
+        return []

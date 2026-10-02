@@ -2,19 +2,21 @@
 
 import React, { useState } from 'react';
 import { HumanApprovalRequest } from '@/lib/types';
+import { isUnauthorized } from '@/lib/authClient';
 import {
   ShieldAlert,
   ShieldCheck,
   ShieldX,
   Check,
   X,
-  AlertTriangle,
   Loader2,
   Database,
   Globe,
   Copy,
-  ChevronDown,
 } from 'lucide-react';
+import { toast } from '@/lib/toast';
+import { apiFetch } from '@/lib/apiFetch';
+import { getLang, t, useLang } from '@/lib/i18n';
 
 interface ApprovalCardProps {
   approvalRequest: HumanApprovalRequest;
@@ -31,10 +33,12 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   sessionId,
   onDecisionSubmitted,
 }) => {
+  const [lang] = useLang();
   const [decision, setDecision] = useState<'approved' | 'rejected' | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [showReasonInput, setShowReasonInput] = useState(false);
+  const [confirmingApprove, setConfirmingApprove] = useState(false);
   const [copied, setCopied] = useState(false);
   const [executionResult, setExecutionResult] = useState<string | null>(null);
 
@@ -42,13 +46,11 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
     approvalRequest;
 
   const isCritical = risk_level === 'critical';
-  const isHigh = risk_level === 'high';
 
+  // Risk is told by the badge text; only critical gets the alert color (state colors keep their one meaning).
   const riskBadgeClass = isCritical
-    ? 'bg-red-500/15 text-red-400 border-red-500/30'
-    : isHigh
-    ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
-    : 'bg-blue-500/15 text-blue-400 border-blue-500/30';
+    ? 'bg-accent-error/15 text-accent-error border-accent-error/30'
+    : 'bg-surface-raised text-foreground-secondary border-border';
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -58,13 +60,19 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
 
   const handleDecision = async (userDecision: 'approve' | 'reject') => {
     if (userDecision === 'reject' && !showReasonInput) {
+      setConfirmingApprove(false);
       setShowReasonInput(true);
+      return;
+    }
+    if (userDecision === 'approve' && isCritical && !confirmingApprove) {
+      setShowReasonInput(false);
+      setConfirmingApprove(true);
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const res = await fetch('/api/chat/approve', {
+      const res = await apiFetch('/api/chat/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -75,93 +83,108 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (isUnauthorized(res)) throw new Error(t(getLang(), 'session.expired'));
       if (!res.ok) {
-        throw new Error(data.detail || data.message || 'Lỗi khi gửi quyết định phê duyệt');
+        throw new Error(data.detail || data.message || t(getLang(), 'approval.sendFailed'));
       }
 
       setDecision(userDecision === 'approve' ? 'approved' : 'rejected');
       const responseText = data.response || data.message || '';
       setExecutionResult(responseText);
+      if (userDecision === 'approve') {
+        toast.success(t(getLang(), 'approval.approvedToast'), { title: 'HITL' });
+      } else {
+        toast.warning(t(getLang(), 'approval.rejectedToast'), { title: 'HITL' });
+      }
       if (onDecisionSubmitted) {
         onDecisionSubmitted(action_id, userDecision, responseText);
       }
     } catch (err: any) {
-      alert(`Lỗi phê duyệt: ${err.message}`);
+      setConfirmingApprove(false);
+      toast.error(t(getLang(), 'approval.errorToast', { error: err?.message || t(getLang(), 'nav.unknownError') }), { title: t(getLang(), 'approval.errorTitle') });
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40';
+
   return (
     <div
-      className={`my-3 p-4 rounded-xl border transition-all duration-200 ${
+      role="group"
+      aria-label={t(lang, 'approval.pendingTitle')}
+      className={`my-3 p-4 rounded-xl border bg-surface transition-colors duration-200 ${
         decision === 'approved'
-          ? 'bg-emerald-950/20 border-emerald-500/30'
+          ? 'border-accent-primary/40'
           : decision === 'rejected'
-          ? 'bg-red-950/20 border-red-500/30'
+          ? 'border-border-strong'
           : isCritical
-          ? 'bg-surface-elevated/95 border-red-500/40 shadow-lg shadow-red-950/20'
-          : 'bg-surface-elevated/95 border-amber-500/40 shadow-lg shadow-amber-950/20'
+          ? 'border-accent-error/50'
+          : 'border-border-strong'
       }`}
     >
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 pb-3 border-b border-border/40">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border">
+        <div className="flex items-center gap-2 min-w-0">
           {decision === 'approved' ? (
-            <ShieldCheck className="w-5 h-5 text-emerald-400" />
+            <ShieldCheck className="w-5 h-5 shrink-0 text-accent-primary" aria-hidden="true" />
           ) : decision === 'rejected' ? (
-            <ShieldX className="w-5 h-5 text-red-400" />
+            <ShieldX className="w-5 h-5 shrink-0 text-foreground-secondary" aria-hidden="true" />
           ) : (
             <ShieldAlert
-              className={`w-5 h-5 ${
-                isCritical ? 'text-red-400 animate-pulse' : 'text-amber-400'
-              }`}
+              className={`w-5 h-5 shrink-0 ${isCritical ? 'text-accent-error' : 'text-foreground'}`}
+              aria-hidden="true"
             />
           )}
           <span className="text-xs font-semibold uppercase tracking-wider text-foreground">
             {decision === 'approved'
-              ? 'Đã Phê Duyệt & Thực Thi'
+              ? t(lang, 'approval.approvedTitle')
               : decision === 'rejected'
-              ? 'Tác Vụ Đã Bị Từ Chối'
-              : 'Xác Nhận Bảo Mật (HITL Gate)'}
+              ? t(lang, 'approval.rejectedTitle')
+              : t(lang, 'approval.pendingTitle')}
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <span
-            className={`px-2 py-0.5 text-[10px] font-semibold uppercase rounded-full border ${riskBadgeClass}`}
+            className={`px-2 py-0.5 text-xs font-semibold uppercase rounded-full border ${riskBadgeClass}`}
           >
-            Mức Độ: {risk_level}
+            {t(lang, 'approval.risk', { level: risk_level })}
           </span>
-          <span className="text-[10px] text-foreground-muted font-mono">
+          <span className="text-xs text-foreground-muted font-mono truncate max-w-[10rem]" title={action_id}>
             {action_id}
           </span>
         </div>
       </div>
 
-      {/* Description & Metadata */}
-      <div className="mt-3 text-xs text-foreground-muted space-y-1.5">
-        <div className="flex items-center gap-2">
+      {/* What will run, before the raw command */}
+      <div className="mt-3 space-y-1.5">
+        <div className="flex items-center gap-2 text-sm">
           {agent === 'db_agent' ? (
-            <Database className="w-3.5 h-3.5 text-accent-primary" />
+            <Database className="w-4 h-4 shrink-0 text-foreground-secondary" aria-hidden="true" />
           ) : (
-            <Globe className="w-3.5 h-3.5 text-accent-secondary" />
+            <Globe className="w-4 h-4 shrink-0 text-foreground-secondary" aria-hidden="true" />
           )}
           <span className="font-medium text-foreground">
             {agent === 'db_agent'
-              ? 'Database Specialist'
-              : 'Integration Specialist'}{' '}
+              ? t(lang, 'approval.agentDb')
+              : t(lang, 'approval.agentIntegration')}{' '}
             ({action_type})
           </span>
         </div>
-        <p className="text-foreground/90 text-xs leading-relaxed">{description}</p>
+        <p className="text-sm font-medium text-foreground break-words">
+          {payload.sql
+            ? t(lang, 'approval.willRunSql')
+            : t(lang, 'approval.willCall', { method: payload.method || 'POST', url: payload.url || '' })}
+        </p>
+        <p className="text-sm text-foreground-secondary leading-relaxed break-words">{description}</p>
       </div>
 
       {/* Payload / SQL Preview */}
-      <div className="mt-3 relative rounded-lg bg-surface-base border border-border/50 p-2.5 font-mono text-[11px] overflow-x-auto text-foreground/90">
-        <div className="flex justify-between items-center pb-1 mb-1 border-b border-border/30 text-[10px] text-foreground-muted">
-          <span>Chi tiết lệnh chuẩn bị thực thi:</span>
+      <div className="mt-3 relative rounded-lg bg-background border border-border p-3 font-mono text-xs overflow-x-auto text-foreground">
+        <div className="flex justify-between items-center pb-1.5 mb-1.5 border-b border-border text-xs text-foreground-muted">
+          <span>{t(lang, 'approval.commandDetails')}</span>
           <button
             type="button"
             onClick={() =>
@@ -174,27 +197,25 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
                   )}`
               )
             }
-            className="flex items-center gap-1 hover:text-foreground text-[10px] cursor-pointer"
+            className={`flex items-center gap-1 px-1.5 py-0.5 rounded hover:text-foreground text-xs cursor-pointer ${focusRing}`}
           >
-            {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-            <span>{copied ? 'Đã chép' : 'Sao chép'}</span>
+            {copied ? <Check className="w-3.5 h-3.5 text-accent-primary" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
+            <span>{copied ? t(lang, 'approval.copied') : t(lang, 'approval.copy')}</span>
           </button>
         </div>
 
         {payload.sql ? (
-          <div className="text-emerald-400 whitespace-pre-wrap break-all">
-            {payload.sql}
-          </div>
+          <div className="whitespace-pre-wrap break-all">{payload.sql}</div>
         ) : (
           <div className="space-y-1">
             <div className="flex items-center gap-1.5">
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300">
+              <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-surface-raised text-foreground border border-border">
                 {payload.method || 'POST'}
               </span>
-              <span className="text-foreground/90 break-all">{payload.url}</span>
+              <span className="break-all">{payload.url}</span>
             </div>
             {payload.payload && (
-              <pre className="text-foreground-muted text-[10px] mt-1 overflow-x-auto">
+              <pre className="text-foreground-secondary text-xs mt-1 overflow-x-auto">
                 {JSON.stringify(payload.payload, null, 2)}
               </pre>
             )}
@@ -204,11 +225,11 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
 
       {/* Execution Result Banner (After Decision) */}
       {executionResult && (
-        <div className="mt-3 p-2.5 rounded-lg bg-surface-base/80 border border-border/40 text-xs text-foreground/90">
-          <p className="font-semibold text-[11px] text-foreground mb-1">
-            Kết quả sau phản hồi:
+        <div role="status" aria-live="polite" className="mt-3 p-3 rounded-lg bg-background border border-border text-sm text-foreground">
+          <p className="font-semibold text-xs text-foreground mb-1">
+            {t(lang, 'approval.resultAfter')}
           </p>
-          <div className="whitespace-pre-wrap text-[11px] text-foreground-muted">
+          <div className="whitespace-pre-wrap text-xs text-foreground-secondary break-words">
             {executionResult}
           </div>
         </div>
@@ -216,49 +237,58 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
 
       {/* Action Decision Controls */}
       {decision === null && (
-        <div className="mt-3 pt-2.5 border-t border-border/30 space-y-2">
+        <div className="mt-3 pt-3 border-t border-border space-y-2">
           {showReasonInput && (
-            <div className="space-y-1 animate-in fade-in duration-150">
-              <label className="text-[11px] text-foreground-muted block">
-                Lý do từ chối (không bắt buộc):
+            <div className="space-y-1 animate-fade-in">
+              <label htmlFor={`reject-reason-${action_id}`} className="text-xs text-foreground-secondary block">
+                {t(lang, 'approval.reasonLabel')}
               </label>
               <input
+                id={`reject-reason-${action_id}`}
                 type="text"
                 value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
-                placeholder="Nhập lý do hủy lệnh..."
-                className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-surface-base border border-border/60 text-foreground placeholder:text-foreground-muted/60 focus:outline-none focus:border-red-500/50"
+                placeholder={t(lang, 'approval.reasonPlaceholder')}
+                className="w-full text-sm px-3 py-2 rounded-lg bg-background border border-border-strong text-foreground placeholder:text-foreground-muted focus:outline-none focus:border-accent-primary focus:ring-2 focus:ring-accent-primary/20"
               />
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-2">
+          {confirmingApprove && (
+            <p role="status" aria-live="polite" className="text-xs font-medium text-accent-error">
+              {t(lang, 'approval.criticalHint')}
+            </p>
+          )}
+
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <button
               type="button"
               disabled={isSubmitting}
               onClick={() => handleDecision('reject')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-400 border border-red-500/30 hover:bg-red-500/10 transition-colors disabled:opacity-50 cursor-pointer"
+              className={`inline-flex items-center justify-center gap-1.5 min-h-9 px-4 py-2 rounded-lg text-sm font-semibold text-foreground border border-border-strong hover:bg-surface-raised transition-colors disabled:opacity-50 cursor-pointer ${focusRing}`}
             >
-              {isSubmitting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              {isSubmitting && showReasonInput ? (
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
               ) : (
-                <X className="w-3.5 h-3.5" />
+                <X className="w-4 h-4" aria-hidden="true" />
               )}
-              <span>{showReasonInput ? 'Xác nhận Từ Chối' : 'Từ Chối'}</span>
+              <span>{showReasonInput ? t(lang, 'approval.confirmReject') : t(lang, 'approval.reject')}</span>
             </button>
 
             <button
               type="button"
               disabled={isSubmitting}
               onClick={() => handleDecision('approve')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 shadow-sm transition-colors disabled:opacity-50 cursor-pointer"
+              className={`inline-flex items-center justify-center gap-1.5 min-h-9 px-4 py-2 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 cursor-pointer ${focusRing} ${
+                confirmingApprove ? 'bg-accent-error hover:opacity-90' : 'bg-accent-primary hover:bg-accent-primary-hover'
+              }`}
             >
-              {isSubmitting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              {isSubmitting && !showReasonInput ? (
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
               ) : (
-                <Check className="w-3.5 h-3.5" />
+                <Check className="w-4 h-4" aria-hidden="true" />
               )}
-              <span>Phê Duyệt & Thực Thi</span>
+              <span>{confirmingApprove ? t(lang, 'approval.confirmApprove') : t(lang, 'approval.approve')}</span>
             </button>
           </div>
         </div>

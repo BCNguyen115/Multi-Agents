@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { authHeaders } from "@/lib/backendAuth";
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -23,6 +24,7 @@ export async function POST(req: NextRequest) {
           headers: {
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
+            ...authHeaders(req),
           },
           body: JSON.stringify(body),
         });

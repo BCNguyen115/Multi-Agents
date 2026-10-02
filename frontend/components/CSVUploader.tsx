@@ -4,12 +4,14 @@ import React, { useState, useRef } from 'react';
 import { UploadCloud, FileSpreadsheet, CheckCircle, Loader2, AlertCircle, X } from 'lucide-react';
 import { processCSVWithDuckDB } from '../lib/duckdb';
 import { CSVMetadata } from '../lib/types';
+import { getLang, t, useLang } from '../lib/i18n';
 
 interface CSVUploaderProps {
   onCSVProcessed: (csvData: { file: File; metadata: CSVMetadata; tableName: string }) => void;
 }
 
 export const CSVUploader: React.FC<CSVUploaderProps> = ({ onCSVProcessed }) => {
+  const [lang] = useLang();
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeMetadata, setActiveMetadata] = useState<CSVMetadata | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -19,7 +21,7 @@ export const CSVUploader: React.FC<CSVUploaderProps> = ({ onCSVProcessed }) => {
   const handleFile = async (file: File) => {
     setErrorMessage(null);
     if (!file.name.toLowerCase().endsWith('.csv')) {
-      setErrorMessage('Định dạng tệp không hợp lệ. Vui lòng tải lên tệp có định dạng .csv.');
+      setErrorMessage(t(getLang(), 'csv.invalidType'));
       return;
     }
 
@@ -31,7 +33,7 @@ export const CSVUploader: React.FC<CSVUploaderProps> = ({ onCSVProcessed }) => {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Error processing CSV via DuckDB-Wasm:', msg);
-      setErrorMessage(`Không thể phân tích dữ liệu CSV: ${msg}`);
+      setErrorMessage(t(getLang(), 'csv.parseFailed', { error: msg }));
     } finally {
       setIsProcessing(false);
     }
@@ -46,7 +48,7 @@ export const CSVUploader: React.FC<CSVUploaderProps> = ({ onCSVProcessed }) => {
   };
 
   return (
-    <div className="bg-surface rounded-xl border border-border p-4 shadow-sm mb-4" data-testid="csv-upload-dropzone">
+    <div className="bg-surface rounded-xl border border-border p-4 mb-4" data-testid="csv-upload-dropzone">
       {/* File input persistent in DOM to eliminate dead click issues */}
       <input
         ref={fileInputRef}
@@ -68,7 +70,7 @@ export const CSVUploader: React.FC<CSVUploaderProps> = ({ onCSVProcessed }) => {
             type="button"
             onClick={() => setErrorMessage(null)}
             className="hover:opacity-80 p-0.5 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-error/50"
-            aria-label="Đóng thông báo lỗi"
+            aria-label={t(lang, 'csv.closeError')}
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -94,7 +96,7 @@ export const CSVUploader: React.FC<CSVUploaderProps> = ({ onCSVProcessed }) => {
             {isProcessing ? (
               <>
                 <Loader2 className="w-8 h-8 text-accent-primary animate-spin" />
-                <p className="text-sm font-semibold text-foreground">DuckDB-Wasm đang nạp dữ liệu vào In-Memory Database...</p>
+                <p className="text-sm font-semibold text-foreground">{t(lang, 'csv.loading')}</p>
               </>
             ) : (
               <>
@@ -102,9 +104,9 @@ export const CSVUploader: React.FC<CSVUploaderProps> = ({ onCSVProcessed }) => {
                   <UploadCloud className="w-6 h-6" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-foreground">Kéo & thả tệp CSV vào đây hoặc click để chọn tệp</p>
+                  <p className="text-sm font-semibold text-foreground">{t(lang, 'csv.drop')}</p>
                   <p className="text-xs text-foreground-muted mt-1">
-                    Xử lý an toàn trên trình duyệt bằng <span className="font-semibold text-accent-primary">DuckDB-Wasm Engine</span>
+                    {t(lang, 'csv.safe')} <span className="font-semibold text-accent-primary">DuckDB-Wasm Engine</span>
                   </p>
                 </div>
               </>
@@ -121,11 +123,11 @@ export const CSVUploader: React.FC<CSVUploaderProps> = ({ onCSVProcessed }) => {
               <div className="flex items-center space-x-2">
                 <span className="font-semibold text-foreground text-sm truncate">{activeMetadata.filename}</span>
                 <span className="bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 text-xs font-bold px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0">
-                  <CheckCircle className="w-3 h-3" /> Sẵn sàng
+                  <CheckCircle className="w-3 h-3" /> {t(lang, 'csv.ready')}
                 </span>
               </div>
               <p className="text-xs text-foreground-muted mt-0.5 font-mono tabular-nums truncate">
-                {activeMetadata.totalRows.toLocaleString()} dòng × {activeMetadata.totalCols} cột | Số: {activeMetadata.numericCols.length} | Phân loại: {activeMetadata.categoricalCols.length}
+                {t(lang, 'csv.stats', { rows: activeMetadata.totalRows.toLocaleString(), cols: activeMetadata.totalCols, numeric: activeMetadata.numericCols.length, categorical: activeMetadata.categoricalCols.length })}
               </p>
             </div>
           </div>
@@ -135,7 +137,7 @@ export const CSVUploader: React.FC<CSVUploaderProps> = ({ onCSVProcessed }) => {
             onClick={() => fileInputRef.current?.click()}
             className="text-xs bg-surface hover:bg-accent-primary/10 text-accent-primary border border-accent-primary/20 px-3.5 py-1.5 rounded-lg cursor-pointer transition-colors font-medium shrink-0 ml-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
           >
-            Đổi file khác
+            {t(lang, 'csv.change')}
           </button>
         </div>
       )}

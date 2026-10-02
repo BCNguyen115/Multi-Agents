@@ -1,0 +1,42 @@
+# Build context for the backend image (Dockerfile at repo root).
+# Allow-list mindset: the image only needs requirements.txt, src/ and scripts/run_*.py.
+
+# VCS / editor
+.git
+.gitignore
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Secrets & local config — never bake into an image
+.env
+.env.*
+!.env.example
+
+# Python caches / virtualenvs / test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+tests/
+pytest.ini
+
+# Not part of the backend image
+frontend/
+docs/
+reports/
+legacy/
+scripts/dev/
+dataset/
+model_cache/
+*.docx
+*.pdf
+~$*
+
+# Compose / docker files themselves
+docker-compose*.yml
+Dockerfile

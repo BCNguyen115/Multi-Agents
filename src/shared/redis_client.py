@@ -172,8 +172,8 @@ class RedisClient:
         content: str,
         max_turns: int = 5,
         ttl: int = 86400,
-    ) -> None:
-        """Append a message to the session conversation history.
+    ) -> List[dict[str, str]]:
+        """Append a message to the session conversation history; returns the messages this push trimmed away.
 
         The history is stored as a Redis list of JSON-encoded dicts.
         Each entry has the form ``{"role": "...", "content": "..."}``.
@@ -196,7 +196,8 @@ class RedisClient:
 
         try:
             await self.client.rpush(key, entry)
-            # Truncate: keep only the last `max_turns * 2` messages.
+            # Truncate: keep only the last `max_turns * 2` messages; hand back what falls off (to be summarised).
+            overflow: List[str] = await self.client.lrange(key, 0, -(max_turns * 2) - 1)
             await self.client.ltrim(key, -(max_turns * 2), -1)
             await self.client.expire(key, ttl)
             logger.debug(
@@ -205,6 +206,7 @@ class RedisClient:
                 key,
                 extra={"session_id": session_id},
             )
+            return [json.loads(item) for item in overflow]
         except aioredis.RedisError as exc:
             logger.error(
                 "Failed to append to history key=%s: %s",
@@ -213,6 +215,18 @@ class RedisClient:
                 extra={"session_id": session_id},
             )
             raise
+
+    async def get_history_summary(self, session_id: str) -> str:
+        """Running summary of the messages that already fell out of the capped history ('' when there is none)."""
+        if self.client is None:
+            raise RuntimeError("Redis client is not connected.")
+        value = await self.client.get(f"history_summary:{session_id}")
+        return value.decode() if isinstance(value, bytes) else (value or "")
+
+    async def set_history_summary(self, session_id: str, summary: str, ttl: int = 86400) -> None:
+        if self.client is None:
+            raise RuntimeError("Redis client is not connected.")
+        await self.client.set(f"history_summary:{session_id}", summary, ex=ttl)
 
     async def get_history(
         self,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authHeaders } from "@/lib/backendAuth";
 
 export const maxDuration = 300; // Cho phép route chạy tối đa 5 phút
 export const dynamic = 'force-dynamic';
@@ -16,6 +17,7 @@ export async function POST(req: NextRequest) {
 
     const response = await fetch(backendUrl, {
       method: "POST",
+      headers: authHeaders(req), // no Content-Type: fetch sets the multipart boundary itself
       body: formData,
       signal: controller.signal,
     });

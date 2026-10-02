@@ -354,7 +354,12 @@ class TestRerankerCircuitBreaker:
         )
 
         assert reranker_client._is_circuit_open() is False
-        assert reranker_client._consecutive_failures == 0
+        # exactly one trial is allowed: a single failure must re-open the breaker
+        assert reranker_client._consecutive_failures == reranker_client._CIRCUIT_BREAKER_THRESHOLD - 1
+        reranker_client._record_failure()
+        assert reranker_client._is_circuit_open() is True
+        reranker_client._consecutive_failures = 0
+        reranker_client._last_failure_time = 0.0
 
     def test_circuit_breaker_stays_open_during_cooldown(self) -> None:
         """Circuit breaker should remain open during cooldown period."""
@@ -416,14 +421,12 @@ class TestModelTieringConfig:
         assert settings.HEAVY_LLM_MODEL
 
     def test_reranker_timeout_is_circuit_breaker_compatible(self) -> None:
-        """RERANKER_TIMEOUT code default should be <= 1.0s for circuit breaker pattern."""
+        """RERANKER_TIMEOUT is ONE total budget per rerank: short enough that a dead reranker costs little
+        (the old 0.8s default was below the measured CPU latency, so reranking never worked), long enough for it."""
         from src.config import Settings
 
         default_timeout: float = Settings.model_fields["RERANKER_TIMEOUT"].default
-        assert default_timeout <= 1.0, (
-            f"RERANKER_TIMEOUT code default={default_timeout} is too high "
-            f"for circuit breaker pattern (should be <= 1.0s)"
-        )
+        assert 1.0 < default_timeout <= 10.0, f"RERANKER_TIMEOUT default={default_timeout} outside the 1-10s budget"
 
     def test_fast_model_is_valid_format(self) -> None:
         """Model identifiers should follow provider/model format."""

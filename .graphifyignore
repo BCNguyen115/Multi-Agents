@@ -1,0 +1,4 @@
+# graphify: keep the graph about the project's own code (tool skills and the contract corpus would drown it)
+.agents/
+dataset/
+graphify-out/

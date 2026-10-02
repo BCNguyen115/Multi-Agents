@@ -144,6 +144,9 @@ logs/
 *.tmp
 *.temp
 scratch/tmp*
+# Office lock files & accidental nested copies of the package
+~$*
+/src/src/
 .system_generated/
 
 # ------------------------------------------------------------------------------

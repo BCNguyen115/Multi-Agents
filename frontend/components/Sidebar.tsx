@@ -4,6 +4,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { PanelLeft, PenSquare, Search, Pin, MoreVertical, Trash2, Edit3, MessageSquare, Inbox } from 'lucide-react';
 import { FptLogo } from './ui/FptLogo';
+import { isDefaultChatTitle, t, useLang, type Lang, type MessageKey } from '../lib/i18n';
+
+/** A chat that still has the default title shows it in the interface language. */
+const displayTitle = (lang: Lang, title: string): string => (isDefaultChatTitle(title) ? t(lang, 'chat.newTitle') : title);
 
 export interface ChatSession {
   id: string;
@@ -24,17 +28,17 @@ interface SidebarProps {
 }
 
 // Group sessions by time period
-function groupSessionsByDate(sessions: ChatSession[]): { label: string; sessions: ChatSession[] }[] {
+function groupSessionsByDate(sessions: ChatSession[]): { label: MessageKey; sessions: ChatSession[] }[] {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const sevenDaysAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
   const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-  const groups: { label: string; sessions: ChatSession[] }[] = [
-    { label: 'Hôm nay', sessions: [] },
-    { label: '7 ngày qua', sessions: [] },
-    { label: 'Tháng trước', sessions: [] },
-    { label: 'Cũ hơn', sessions: [] },
+  const groups: { label: MessageKey; sessions: ChatSession[] }[] = [
+    { label: 'sidebar.group.today', sessions: [] },
+    { label: 'sidebar.group.week', sessions: [] },
+    { label: 'sidebar.group.month', sessions: [] },
+    { label: 'sidebar.group.older', sessions: [] },
   ];
 
   sessions.forEach((s) => {
@@ -65,6 +69,7 @@ export function Sidebar({
   onTogglePin,
   onRenameSession,
 }: SidebarProps) {
+  const [lang] = useLang();
   const [isOpen, setIsOpen] = useState(true);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -84,6 +89,24 @@ export function Sidebar({
     document.documentElement.style.setProperty('--sidebar-width', isOpen ? '16rem' : '4rem');
   }, [isOpen]);
 
+  // Global Cmd+B / Ctrl+B to toggle sidebar
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setIsOpen((prev) => {
+          const next = !prev;
+          try {
+            localStorage.setItem(SIDEBAR_STATE_KEY, next ? 'false' : 'true');
+          } catch {}
+          return next;
+        });
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const toggleSidebar = (open: boolean) => {
     setIsOpen(open);
     try {
@@ -97,7 +120,7 @@ export function Sidebar({
 
   const handleStartRename = (session: ChatSession) => {
     setEditingSessionId(session.id);
-    setEditingTitle(session.title);
+    setEditingTitle(displayTitle(lang, session.title));
     setActiveMenuId(null);
   };
 
@@ -134,8 +157,9 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => toggleSidebar(true)}
-              className="absolute inset-0 m-auto w-8 h-8 flex items-center justify-center rounded-lg bg-surface-raised hover:bg-surface-overlay text-accent-primary opacity-0 group-hover:opacity-100 transition-opacity duration-200 ease-out shadow-sm cursor-pointer"
-              title="Mở rộng Sidebar"
+              className="absolute inset-0 m-auto w-8 h-8 flex items-center justify-center rounded-lg bg-surface-raised hover:bg-surface-overlay text-accent-primary opacity-0 group-hover:opacity-100 transition-opacity duration-200 ease-out cursor-pointer"
+              title={t(lang, 'sidebar.expand')}
+              aria-label={t(lang, 'sidebar.expand')}
             >
               <PanelLeft className="w-5 h-5" />
             </button>
@@ -143,7 +167,7 @@ export function Sidebar({
         </div>
 
         {/* Brand Text & Toggle (Expanded) */}
-        <div className={`flex items-center justify-between flex-1 overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none'}`}>
+        <div className={`flex items-center justify-between flex-1 overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none invisible'}`}>
           <span className="font-bold text-foreground whitespace-nowrap text-base">
             FPT<span className="text-accent-primary">AgentHub</span>
           </span>
@@ -151,7 +175,8 @@ export function Sidebar({
             type="button"
             onClick={() => toggleSidebar(false)}
             className="p-1.5 rounded-lg hover:bg-surface-raised text-foreground-muted hover:text-foreground transition-colors duration-200 ease-out cursor-pointer shrink-0"
-            title="Thu gọn Sidebar"
+            title={t(lang, 'sidebar.collapse')}
+            aria-label={t(lang, 'sidebar.collapse')}
           >
             <PanelLeft className="w-5 h-5" />
           </button>
@@ -164,13 +189,13 @@ export function Sidebar({
           type="button"
           onClick={onNewChat}
           className="flex items-center h-10 px-0 rounded-xl hover:bg-surface-raised w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap"
-          title="New chat"
+          title={t(lang, 'sidebar.newChat')}
         >
           <div className="w-12 h-10 flex items-center justify-center shrink-0">
             <PenSquare className="w-5 h-5 text-foreground-secondary" />
           </div>
-          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden'}`}>
-            New chat
+          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden invisible'}`}>
+            {t(lang, 'sidebar.newChat')}
           </span>
         </button>
 
@@ -178,13 +203,13 @@ export function Sidebar({
           type="button"
           onClick={onOpenSearch}
           className="flex items-center h-10 px-0 rounded-xl hover:bg-surface-raised w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap"
-          title="Search chats"
+          title={t(lang, 'sidebar.searchChats')}
         >
           <div className="w-12 h-10 flex items-center justify-center shrink-0">
             <Search className="w-5 h-5 text-foreground-secondary" />
           </div>
-          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden'}`}>
-            Search chats
+          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden invisible'}`}>
+            {t(lang, 'sidebar.searchChats')}
           </span>
         </button>
       </div>
@@ -194,8 +219,8 @@ export function Sidebar({
         {/* Pinned Section */}
         {pinnedSessions.length > 0 && (
           <div>
-            <div className={`px-3 text-[11px] font-semibold text-foreground-muted uppercase tracking-wider mb-1 flex items-center justify-between select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden'}`}>
-              <span>Pinned</span>
+            <div className={`px-3 text-2xs font-mono font-semibold text-foreground-muted uppercase tracking-wider mb-1 flex items-center justify-between select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden invisible'}`}>
+              <span>{t(lang, 'sidebar.pinned')}</span>
               <Pin className="w-3 h-3 text-foreground-muted" />
             </div>
             {pinnedSessions.map((session: ChatSession) => (
@@ -224,8 +249,8 @@ export function Sidebar({
         {groupedRecents.length > 0 ? (
           groupedRecents.map((group) => (
             <div key={group.label}>
-              <div className={`px-3 text-[11px] font-semibold text-foreground-muted uppercase tracking-wider mb-1 select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden'}`}>
-                {group.label}
+              <div className={`px-3 text-2xs font-mono font-semibold text-foreground-muted uppercase tracking-wider mb-1 select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden invisible'}`}>
+                {t(lang, group.label)}
               </div>
               {group.sessions.map((session: ChatSession) => (
                 <ChatItem
@@ -254,8 +279,8 @@ export function Sidebar({
               <div className="w-12 h-12 rounded-2xl bg-surface-raised flex items-center justify-center mb-3">
                 <Inbox className="w-6 h-6 text-foreground-muted" />
               </div>
-              <p className="text-sm font-medium text-foreground-secondary mb-1">Chưa có cuộc trò chuyện</p>
-              <p className="text-xs text-foreground-muted">Bắt đầu bằng cách tạo chat mới</p>
+              <p className="text-sm font-medium text-foreground-secondary mb-1">{t(lang, 'sidebar.empty')}</p>
+              <p className="text-xs text-foreground-muted">{t(lang, 'sidebar.emptyHint')}</p>
             </div>
           )
         )}
@@ -297,7 +322,24 @@ function ChatItem({
   setMenuOpen: (open: boolean) => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const itemRef = useRef<HTMLDivElement>(null);
+  const [lang] = useLang();
+  const shownTitle = displayTitle(lang, session.title);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const [isHovered, setIsHovered] = useState(false);
+  const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
+
+  const handleMouseEnter = () => {
+    if (!isOpen && itemRef.current) {
+      const rect = itemRef.current.getBoundingClientRect();
+      setTooltipPos({ top: rect.top, left: rect.right + 10 });
+      setIsHovered(true);
+    }
+  };
+
+  const handleMouseLeave = () => {
+    setIsHovered(false);
+  };
 
   const handleToggleMenu = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -335,12 +377,15 @@ function ChatItem({
 
   return (
     <div
+      ref={itemRef}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       className={`group relative flex items-center h-10 px-0 my-0.5 rounded-xl text-sm transition-all duration-150 ease-out cursor-pointer overflow-hidden whitespace-nowrap ${
         isActive
           ? 'bg-surface-raised font-semibold text-foreground shadow-xs before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:rounded-r-full before:bg-accent-primary'
           : 'hover:bg-surface-raised/60 text-foreground-secondary hover:text-foreground'
       }`}
-      title={session.title}
+      title={isOpen ? shownTitle : undefined}
     >
       {/* Icon Slot */}
       <div onClick={onSelect} className="w-12 h-10 flex items-center justify-center shrink-0">
@@ -348,7 +393,7 @@ function ChatItem({
       </div>
 
       {/* Text Slot & Actions */}
-      <div className={`flex items-center justify-between flex-1 overflow-hidden pr-2 whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 pointer-events-none'}`}>
+      <div className={`flex items-center justify-between flex-1 overflow-hidden pr-2 whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 pointer-events-none invisible'}`}>
         {isEditing ? (
           <input
             type="text"
@@ -359,7 +404,7 @@ function ChatItem({
               if (e.key === 'Enter') onSaveRename();
               if (e.key === 'Escape') {
                 if (onCancelRename) onCancelRename();
-                else setEditingTitle(session.title);
+                else setEditingTitle(shownTitle);
               }
             }}
             onBlur={onSaveRename}
@@ -369,10 +414,12 @@ function ChatItem({
         ) : (
           <span
             onClick={onSelect}
-            title={session.title}
-            className="truncate block max-w-full text-left text-xs flex-1 pr-1 text-foreground"
+            title={shownTitle}
+            className={`truncate block max-w-full text-left text-xs flex-1 pr-1 transition-colors ${
+              isActive ? 'text-foreground font-semibold' : 'text-foreground-secondary group-hover:text-foreground'
+            }`}
           >
-            {session.title}
+            {shownTitle}
           </span>
         )}
 
@@ -382,8 +429,11 @@ function ChatItem({
             ref={buttonRef}
             type="button"
             onClick={handleToggleMenu}
-            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-surface-overlay rounded-lg transition-opacity duration-200 ease-out cursor-pointer"
-            title="Tùy chọn"
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 hover:bg-surface-overlay rounded-lg transition-opacity duration-200 ease-out cursor-pointer"
+            title={t(lang, 'sidebar.options')}
+            aria-label={t(lang, 'sidebar.options')}
+            aria-haspopup="menu"
+            aria-expanded={isMenuOpen}
           >
             <MoreVertical className="w-3.5 h-3.5 text-foreground-muted" />
           </button>
@@ -408,7 +458,7 @@ function ChatItem({
             className="flex items-center gap-2.5 w-full px-2.5 py-2 hover:bg-surface-raised text-foreground-secondary rounded-lg cursor-pointer transition-colors"
           >
             <Pin className="w-3.5 h-3.5 text-foreground-muted shrink-0" />
-            <span>{session.isPinned ? 'Bỏ ghim' : 'Ghim cuộc trò chuyện'}</span>
+            <span>{session.isPinned ? t(lang, 'sidebar.unpin') : t(lang, 'sidebar.pin')}</span>
           </button>
 
           {onRename && (
@@ -418,7 +468,7 @@ function ChatItem({
               className="flex items-center gap-2.5 w-full px-2.5 py-2 hover:bg-surface-raised text-foreground-secondary rounded-lg cursor-pointer transition-colors"
             >
               <Edit3 className="w-3.5 h-3.5 text-foreground-muted shrink-0" />
-              <span>Đổi tên</span>
+              <span>{t(lang, 'sidebar.rename')}</span>
             </button>
           )}
 
@@ -428,8 +478,28 @@ function ChatItem({
             className="flex items-center gap-2.5 w-full px-2.5 py-2 hover:bg-accent-error/10 text-accent-error rounded-lg font-medium cursor-pointer transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5 shrink-0" />
-            <span>Xóa cuộc trò chuyện</span>
+            <span>{t(lang, 'sidebar.delete')}</span>
           </button>
+        </div>,
+        document.body
+      )}
+
+      {/* Floating Tooltip in Collapsed Mode */}
+      {!isOpen && isHovered && tooltipPos && typeof document !== 'undefined' && createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            top: `${tooltipPos.top}px`,
+            left: `${tooltipPos.left}px`,
+            zIndex: 9999,
+          }}
+          className="bg-surface border border-border-strong rounded-xl shadow-lg p-2.5 w-60 pointer-events-none select-none animate-fade-in-scale"
+        >
+          <p className="text-xs font-semibold text-foreground truncate">{shownTitle}</p>
+          <div className="flex items-center justify-between text-2xs text-foreground-muted mt-1.5 font-mono">
+            <span>{new Date(session.updatedAt).toLocaleDateString(lang === 'vi' ? 'vi-VN' : 'en-GB')}</span>
+            {session.isPinned && <span className="text-accent-planner font-semibold">{t(lang, 'sidebar.pinned')}</span>}
+          </div>
         </div>,
         document.body
       )}

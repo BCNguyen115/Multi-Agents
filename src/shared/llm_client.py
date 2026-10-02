@@ -37,6 +37,7 @@ import openai
 from litellm import acompletion, aembedding
 
 from src.config import Settings
+from src.shared import tracing
 from src.shared.logger import get_logger
 
 logger: logging.Logger = get_logger(__name__)
@@ -77,7 +78,7 @@ class LLMClient:
         api_base: The base URL for the LLM provider.
         default_model: Fallback model when none is specified.
         langfuse_enabled: Whether Langfuse tracing is active.
-        _langfuse_handler: The Langfuse callback handler (if enabled).
+        _langfuse: The shared Langfuse client (None while tracing is off).
         raw_openai_client: Native AsyncOpenAI client for robust embeddings.
         unavailable_models: Circuit Breaker registry of models returning 404.
     """
@@ -105,7 +106,6 @@ class LLMClient:
         self.api_base: str = settings.OPENROUTER_BASE_URL
         self.default_model: str = settings.OPENROUTER_MODEL
         self.langfuse_enabled: bool = settings.LANGFUSE_ENABLED
-        self._langfuse_handler: Any = None
         self.unavailable_models: set[str] = LLMClient._global_unavailable_models
 
         from src.shared.telemetry import disable_telemetry
@@ -125,135 +125,12 @@ class LLMClient:
             base_url=self.api_base,
         )
 
-        # --- Langfuse setup (if enabled) ---
-        if self.langfuse_enabled:
-            try:
-                import os
-                import sys
-                import httpx
-                import langfuse
-
-                # Health check probe with retry and detailed HTTP logging
-                candidate_hosts = [
-                    settings.LANGFUSE_HOST.rstrip("/"),
-                    "http://langfuse-web:3000",
-                    "http://localhost:3005",
-                    "http://127.0.0.1:3005",
-                ]
-                seen_hosts: set[str] = set()
-                unique_hosts: list[str] = []
-                for h in candidate_hosts:
-                    if h not in seen_hosts:
-                        seen_hosts.add(h)
-                        unique_hosts.append(h)
-
-                working_host: str | None = None
-                last_error_reason: str = "Unknown error"
-
-                with httpx.Client(timeout=5.0) as http_client:
-                    for cand in unique_hosts:
-                        for attempt in range(1, 3):  # Retry up to 2 times
-                            try:
-                                res = http_client.get(f"{cand}/api/public/health")
-                                if res.status_code in [200, 401, 403]:  # Server is up
-                                    working_host = cand
-                                    break
-                                else:
-                                    last_error_reason = f"HTTP status {res.status_code}"
-                            except httpx.ConnectError as conn_err:
-                                last_error_reason = f"ConnectionRefused ({conn_err})"
-                            except httpx.TimeoutException:
-                                last_error_reason = "Timeout (5.0s exceeded)"
-                            except Exception as http_err:
-                                last_error_reason = f"Network error ({http_err})"
-
-                        if working_host:
-                            break
-
-                is_reachable: bool = working_host is not None
-                if working_host and working_host != settings.LANGFUSE_HOST.rstrip("/"):
-                    logger.info(
-                        "Langfuse host auto-resolved from '%s' to '%s'",
-                        settings.LANGFUSE_HOST,
-                        working_host,
-                        extra={"session_id": "SYSTEM"},
-                    )
-                    settings.LANGFUSE_HOST = working_host
-
-                # Check key validity
-                has_keys: bool = bool(settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY)
-                is_dummy_key: bool = (
-                    "pk-lf-345be264" in settings.LANGFUSE_PUBLIC_KEY
-                    or "sk-lf-f005" in settings.LANGFUSE_SECRET_KEY
-                    or "change-me" in settings.LANGFUSE_PUBLIC_KEY.lower()
-                )
-
-                if not is_reachable:
-                    logger.warning(
-                        "Langfuse host '%s' is unreachable (%s). Tracing disabled gracefully.",
-                        settings.LANGFUSE_HOST,
-                        last_error_reason,
-                        extra={"session_id": "SYSTEM"},
-                    )
-                    self.langfuse_enabled = False
-                    litellm.success_callback = []
-                    litellm.failure_callback = []
-                elif is_dummy_key or not has_keys:
-                    logger.warning(
-                        "Langfuse host '%s' is reachable, but keys are default dummy placeholders. "
-                        "Tracing disabled. To enable, generate real API keys in Langfuse UI (http://localhost:3005 -> Project Settings -> API Keys) and set in .env.",
-                        settings.LANGFUSE_HOST,
-                        extra={"session_id": "SYSTEM"},
-                    )
-                    self.langfuse_enabled = False
-                    litellm.success_callback = []
-                    litellm.failure_callback = []
-                else:
-                    # Patch for litellm compatibility with newer langfuse versions
-                    if not hasattr(langfuse, "version"):
-                        import types
-                        langfuse.version = types.ModuleType("version")
-                        langfuse.version.__version__ = getattr(langfuse, "__version__", "unknown")
-                        sys.modules["langfuse.version"] = langfuse.version
-                    
-                    # Patch Langfuse.__init__ to ignore 'sdk_integration' from litellm
-                    from langfuse import Langfuse
-                    if not hasattr(Langfuse, "_patched_for_litellm"):
-                        _original_langfuse_init = Langfuse.__init__
-                        def _patched_langfuse_init(self, *args, **kwargs):
-                            kwargs.pop("sdk_integration", None)
-                            _original_langfuse_init(self, *args, **kwargs)
-                        Langfuse.__init__ = _patched_langfuse_init
-                        Langfuse._patched_for_litellm = True
-
-                    os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
-                    os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
-                    os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_HOST
-
-                    litellm.success_callback = ["langfuse"]
-                    litellm.failure_callback = ["langfuse"]
-
-                    logger.info(
-                        "Langfuse tracing ENABLED and verified (host=%s)",
-                        settings.LANGFUSE_HOST,
-                        extra={"session_id": "SYSTEM"},
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "Langfuse initialisation failed — tracing disabled: %s",
-                    exc,
-                    extra={"session_id": "SYSTEM"},
-                )
-                self.langfuse_enabled = False
-                litellm.success_callback = []
-                litellm.failure_callback = []
-        else:
+        # --- Langfuse: ONE shared client, keys proven against the server (src/shared/tracing.py) ---
+        self._langfuse: Any = tracing.connect(settings) if self.langfuse_enabled else None
+        self.langfuse_enabled = self._langfuse is not None
+        if not self.langfuse_enabled:
             litellm.success_callback = []
             litellm.failure_callback = []
-            logger.info(
-                "Langfuse tracing DISABLED (LANGFUSE_ENABLED=false)",
-                extra={"session_id": "SYSTEM"},
-            )
 
         logger.info(
             "LLMClient initialised (default_model=%s, langfuse=%s)",
@@ -319,12 +196,10 @@ class LLMClient:
             "trace_name": (metadata.get("trace_name") if metadata else None) or f"llm_chat_{session_id[:8]}",
             **(metadata or {}),
         }
+        call_metadata = tracing.with_trace(call_metadata)
 
         # OpenRouter required headers
-        extra_headers: dict[str, str] = {
-            "HTTP-Referer": "https://github.com/enterprise-multi-agent",
-            "X-Title": "Multi-Agent Enterprise System",
-        }
+        extra_headers: dict[str, str] = dict(DEFAULT_OPENROUTER_HEADERS)
         if "extra_headers" in kwargs:
             extra_headers.update(kwargs.pop("extra_headers"))
 
@@ -425,38 +300,7 @@ class LLMClient:
             )
             last_exc = exc
 
-            # 1. If Langfuse was enabled, first try disabling it and retrying the primary model
-            if self.langfuse_enabled:
-                self.langfuse_enabled = False
-                litellm.success_callback = []
-                litellm.failure_callback = []
-                try:
-                    retry_resp: Any = await acompletion(
-                        model=resolved_model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        api_key=self.api_key,
-                        api_base=self.api_base,
-                        extra_headers=extra_headers,
-                        **kwargs,
-                    )
-                    logger.info(
-                        "LLM chat_completion retry without Langfuse OK (model=%s)",
-                        resolved_model,
-                        extra={"session_id": session_id},
-                    )
-                    return retry_resp
-                except Exception as retry_exc:
-                    logger.warning(
-                        "LLM chat_completion retry without Langfuse also failed (model=%s): %s",
-                        resolved_model,
-                        retry_exc,
-                        extra={"session_id": session_id},
-                    )
-                    last_exc = retry_exc
-
-            # 2. Smart Fallback Mechanism:
+            # Smart Fallback Mechanism:
             # If the primary model encounters network issues, timeout, rate limit, or other errors,
             # automatically fallback to openrouter/openai/gpt-4o-mini to maintain PEV execution
             if resolved_model != fallback_model:
@@ -526,10 +370,7 @@ class LLMClient:
             )
             resolved_model = fallback_model
 
-        extra_headers: dict[str, str] = {
-            "HTTP-Referer": "https://github.com/enterprise-multi-agent",
-            "X-Title": "Multi-Agent Enterprise System",
-        }
+        extra_headers: dict[str, str] = dict(DEFAULT_OPENROUTER_HEADERS)
         if "extra_headers" in kwargs:
             extra_headers.update(kwargs.pop("extra_headers"))
 
@@ -642,6 +483,7 @@ class LLMClient:
             "trace_name": "embedding",
             **(metadata or {}),
         }
+        call_metadata = tracing.with_trace(call_metadata)
 
         try:
             native_resp: Any = await self.raw_openai_client.embeddings.create(
@@ -700,51 +542,13 @@ class LLMClient:
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Any:
-        """Instantiate and return a brand-new Langfuse CallbackHandler for each request."""
+        """A callback that records one request as its own Langfuse trace (None while tracing is off)."""
         if not self.langfuse_enabled:
             return None
-
-        try:
-            CallbackHandler = None
-            try:
-                from langfuse.callback import CallbackHandler
-            except ImportError:
-                try:
-                    from langfuse.langchain import CallbackHandler
-                except ImportError:
-                    try:
-                        from langfuse.langchain import LangfuseHandler as CallbackHandler
-                    except ImportError:
-                        try:
-                            from langfuse import CallbackHandler
-                        except ImportError:
-                            CallbackHandler = None
-
-            if CallbackHandler is None:
-                logger.debug("Langfuse CallbackHandler is not available (langfuse[langchain] extra missing)")
-                return None
-
-            # Each request receives a completely unique request_id and trace configuration
-            request_trace_id = str(uuid.uuid4())
-            merged_metadata = {
-                "request_id": request_trace_id,
-                **(metadata or {}),
-            }
-
-            handler = CallbackHandler(
-                public_key=self.settings.LANGFUSE_PUBLIC_KEY,
-                secret_key=self.settings.LANGFUSE_SECRET_KEY,
-                host=self.settings.LANGFUSE_HOST,
-                session_id=session_id,  # Groups traces by conversation session
-                user_id=user_id or session_id,
-                trace_name=trace_name,
-                tags=tags or ["pev_loop"],
-                metadata=merged_metadata,
-            )
-            return handler
-        except Exception as exc:
-            logger.debug("Langfuse CallbackHandler creation skipped: %s", exc)
-            return None
+        return tracing.langchain_handler(
+            self._langfuse, session_id, user_id, trace_name, tags,
+            {"request_id": str(uuid.uuid4()), **(metadata or {})},
+        )
 
     def get_langfuse_handler(
         self,
@@ -764,25 +568,18 @@ class LLMClient:
         )
 
     def flush(self) -> None:
-        """Synchronously flush pending Langfuse and LiteLLM trace buffers."""
-        if self.langfuse_enabled:
-            try:
-                import litellm
-                if hasattr(litellm, "flush") and callable(litellm.flush):
-                    litellm.flush()
-            except Exception as exc:
-                logger.debug("litellm.flush exception: %s", exc)
-
-            try:
-                from langfuse import Langfuse
-                lf = Langfuse(
-                    public_key=self.settings.LANGFUSE_PUBLIC_KEY,
-                    secret_key=self.settings.LANGFUSE_SECRET_KEY,
-                    host=self.settings.LANGFUSE_HOST,
-                )
-                lf.flush()
-            except Exception as exc:
-                logger.debug("Langfuse client flush exception: %s", exc)
+        """Send the buffered Langfuse events now (LiteLLM's logger and the shared client)."""
+        if not self.langfuse_enabled:
+            return
+        try:
+            if callable(getattr(litellm, "flush", None)):
+                litellm.flush()
+        except Exception as exc:
+            logger.debug("litellm.flush exception: %s", exc)
+        try:
+            self._langfuse.flush()
+        except Exception as exc:
+            logger.debug("Langfuse client flush exception: %s", exc)
 
     async def flush_async(self) -> None:
         """Asynchronously flush pending Langfuse trace buffers."""
@@ -810,6 +607,7 @@ class LLMClient:
         if self.langfuse_enabled:
             try:
                 self.flush()
+                self._langfuse.shutdown()
                 logger.info(
                     "Langfuse traces flushed successfully",
                     extra={"session_id": "SYSTEM"},

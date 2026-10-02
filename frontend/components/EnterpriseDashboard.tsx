@@ -3,13 +3,11 @@
 import React, { useState, useMemo } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { ColDef, GridOptions } from 'ag-grid-community';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend,
-} from 'recharts';
+import ReactECharts from 'echarts-for-react';
 import { CSVMetadata } from '../lib/types';
 import { Filter, BarChart3, Table as TableIcon, Layers, Hash } from 'lucide-react';
 import { useIsDark } from '../lib/useIsDark';
+import { t, useLang } from '../lib/i18n';
 
 interface EnterpriseDashboardProps {
   metadata: CSVMetadata;
@@ -20,6 +18,7 @@ const CHART_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#f
 
 export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metadata }) => {
   const isDark = useIsDark();
+  const [lang] = useLang();
   const [selectedFilters, setSelectedFilters] = useState<Record<string, string[]>>({});
 
   const filteredData = useMemo(() => {
@@ -94,6 +93,28 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
     return Object.entries(agg).map(([name, value]) => ({ name, value }));
   }, [filteredData, primaryCatCol, primaryNumericCol]);
 
+  // The same charting library as the dashboards of the data agent (ECharts), so the page ships one chart engine.
+  const textColor = isDark ? '#cbd5e1' : '#475569';
+  const barOption = useMemo(
+    () => ({
+      grid: { left: 44, right: 12, top: 12, bottom: 32 },
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: chartData.map((d) => d.name), axisLabel: { fontSize: 11, color: textColor } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 11, color: textColor }, splitLine: { lineStyle: { color: isDark ? '#334155' : '#e2e8f0', type: 'dashed' } } },
+      series: [{ type: 'bar', data: chartData.map((d) => d.value), itemStyle: { color: CHART_COLORS[0], borderRadius: [4, 4, 0, 0] } }],
+    }),
+    [chartData, isDark, textColor],
+  );
+  const pieOption = useMemo(
+    () => ({
+      color: CHART_COLORS,
+      tooltip: { trigger: 'item' },
+      legend: { bottom: 0, textStyle: { fontSize: 11, color: textColor } },
+      series: [{ type: 'pie', radius: ['35%', '62%'], center: ['50%', '45%'], padAngle: 2, label: { show: false }, data: chartData }],
+    }),
+    [chartData, textColor],
+  );
+
   return (
     <div data-testid="dashboard-container" className="space-y-6 my-4 bg-surface p-6 rounded-2xl border border-border shadow-xs">
       {/* Dashboard Header */}
@@ -101,16 +122,16 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
         <div>
           <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
             <Layers className="w-6 h-6 text-accent-primary" />
-            Executive Dashboard
+            {t(lang, 'ent.title')}
           </h2>
           <p className="text-xs text-foreground-muted mt-1">
-            Powered by <span className="font-semibold text-foreground-secondary">DuckDB-Wasm</span> & Recharts / AG Grid
+            {t(lang, 'ent.poweredBy')} <span className="font-semibold text-foreground-secondary">DuckDB-Wasm</span> & ECharts / AG Grid
           </p>
         </div>
 
         <div className="flex items-center space-x-2 text-xs bg-surface-raised border border-border px-3 py-1.5 rounded-lg">
           <Hash className="w-4 h-4 text-accent-primary" />
-          <span className="text-foreground-muted">Total Rows:</span>
+          <span className="text-foreground-muted">{t(lang, 'ent.totalRowsLabel')}</span>
           <span className="font-bold text-foreground tabular-nums">{totalRowsCount.toLocaleString()}</span>
         </div>
       </div>
@@ -120,11 +141,11 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
         <div className="lg:col-span-1 bg-surface-raised p-4 rounded-xl border border-border space-y-4">
           <div className="flex items-center space-x-2 font-bold text-foreground text-sm border-b border-border pb-2">
             <Filter className="w-4 h-4 text-accent-primary" />
-            <span>Filters</span>
+            <span>{t(lang, 'ent.filters')}</span>
           </div>
 
           {metadata.categoricalCols.length === 0 ? (
-            <p className="text-xs text-foreground-muted italic">No categorical columns available.</p>
+            <p className="text-xs text-foreground-muted italic">{t(lang, 'ent.noCategorical')}</p>
           ) : (
             metadata.categoricalCols.slice(0, 3).map((catCol) => {
               const uniqueVals = Array.from(
@@ -143,13 +164,13 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
                       const options = Array.from(e.target.selectedOptions, (option) => option.value);
                       setSelectedFilters((prev) => ({ ...prev, [catCol]: options }));
                     }}
-                    className="w-full text-xs border border-border rounded-lg p-2 bg-surface text-foreground focus:ring-2 focus:ring-accent-primary/30 focus:outline-none min-h-[80px]"
+                    className="w-full text-xs border border-border rounded-lg p-2 bg-surface text-foreground focus:ring-2 focus:ring-accent-primary/30 focus:outline-none min-h-20"
                   >
                     {uniqueVals.map((val) => (
                       <option key={val} value={val}>{val}</option>
                     ))}
                   </select>
-                  <p className="text-[10px] text-foreground-muted">Hold Ctrl/Cmd for multi-select</p>
+                  <p className="text-2xs font-mono text-foreground-muted">Hold Ctrl/Cmd for multi-select</p>
                 </div>
               );
             })
@@ -160,14 +181,14 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
           {/* KPI Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="enterprise-card kpi-card p-4 hover:shadow-enterprise transition-shadow" style={{ '--accent-primary': '#3b82f6' } as React.CSSProperties}>
-              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">Total Records</p>
+              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">{t(lang, 'ent.totalRecords')}</p>
               <p className="text-2xl font-extrabold text-foreground mt-1 tabular-nums">{totalRowsCount.toLocaleString()}</p>
             </div>
 
             {primaryNumericCol && (
               <div className="enterprise-card kpi-card p-4 hover:shadow-enterprise transition-shadow">
                 <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">
-                  Total {primaryNumericCol.replace(/_/g, ' ')}
+                  {t(lang, 'ent.totalOf', { column: primaryNumericCol.replace(/_/g, ' ') })}
                 </p>
                 <p className="text-2xl font-extrabold text-foreground mt-1 tabular-nums">
                   {primarySum.toLocaleString(undefined, { maximumFractionDigits: 2 })}
@@ -178,7 +199,7 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
             {primaryNumericCol && (
               <div className="enterprise-card kpi-card p-4 hover:shadow-enterprise transition-shadow" style={{ '--accent-primary': '#10b981' } as React.CSSProperties}>
                 <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider">
-                  Avg {primaryNumericCol.replace(/_/g, ' ')}
+                  {t(lang, 'ent.avgOf', { column: primaryNumericCol.replace(/_/g, ' ') })}
                 </p>
                 <p className="text-2xl font-extrabold text-foreground mt-1 tabular-nums">
                   {primaryAvg.toLocaleString(undefined, { maximumFractionDigits: 2 })}
@@ -191,49 +212,24 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
           <div className="enterprise-card p-5 space-y-4">
             <div className="flex items-center space-x-2 font-bold text-foreground text-sm border-b border-border pb-3">
               <BarChart3 className="w-4 h-4 text-accent-primary" />
-              <span>Visual Analytics</span>
+              <span>{t(lang, 'ent.visual')}</span>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="h-64">
                 <p className="text-xs font-semibold text-foreground-secondary mb-2 text-center">
-                  Distribution by {primaryCatCol.replace(/_/g, ' ')}
+                  {t(lang, 'ent.distribution', { column: primaryCatCol.replace(/_/g, ' ') })}
                 </p>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--foreground-secondary)' }} />
-                    <YAxis tick={{ fontSize: 11, fill: 'var(--foreground-secondary)' }} />
-                    <Tooltip />
-                    <Bar dataKey="value" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+                <ReactECharts option={barOption} style={{ height: '100%', width: '100%' }} notMerge />
+
               </div>
 
               <div className="h-64">
                 <p className="text-xs font-semibold text-foreground-secondary mb-2 text-center">
-                  Proportion by {primaryCatCol.replace(/_/g, ' ')}
+                  {t(lang, 'ent.proportion', { column: primaryCatCol.replace(/_/g, ' ') })}
                 </p>
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={chartData}
-                      dataKey="value"
-                      nameKey="name"
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={45}
-                      outerRadius={75}
-                      paddingAngle={3}
-                    >
-                      {chartData.map((_, index) => (
-                        <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                    <Legend wrapperStyle={{ fontSize: '11px' }} />
-                  </PieChart>
-                </ResponsiveContainer>
+                <ReactECharts option={pieOption} style={{ height: '100%', width: '100%' }} notMerge />
+
               </div>
             </div>
           </div>
@@ -245,7 +241,7 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
         <div className="flex items-center justify-between border-b border-border pb-3">
           <div className="flex items-center space-x-2 font-bold text-foreground text-sm">
             <TableIcon className="w-4 h-4 text-accent-primary" />
-            <span>Data Table</span>
+            <span>{t(lang, 'ent.dataTable')}</span>
           </div>
           <span className="text-xs text-foreground-muted font-mono">ag-grid v31</span>
         </div>

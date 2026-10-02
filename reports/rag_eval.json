@@ -1,0 +1,331 @@
+{
+  "n_answerable": 75,
+  "n_unanswerable": 12,
+  "retrieval": {
+    "modes": {
+      "raw": {
+        "hit@1": 0.267,
+        "hit@5": 0.52,
+        "hit@10": 0.667,
+        "hit@20": 0.813,
+        "mrr": 0.387,
+        "vi": {
+          "hit@1": 0.267,
+          "hit@5": 0.511,
+          "hit@10": 0.622,
+          "hit@20": 0.778,
+          "mrr": 0.38
+        },
+        "en": {
+          "hit@1": 0.267,
+          "hit@5": 0.533,
+          "hit@10": 0.733,
+          "hit@20": 0.867,
+          "mrr": 0.398
+        },
+        "followup": {
+          "hit@1": 0.0,
+          "hit@5": 0.0,
+          "hit@10": 0.333,
+          "hit@20": 0.333,
+          "mrr": 0.033
+        }
+      },
+      "both": {
+        "hit@1": 0.333,
+        "hit@5": 0.6,
+        "hit@10": 0.72,
+        "hit@20": 0.827,
+        "mrr": 0.444,
+        "vi": {
+          "hit@1": 0.333,
+          "hit@5": 0.622,
+          "hit@10": 0.644,
+          "hit@20": 0.778,
+          "mrr": 0.446
+        },
+        "en": {
+          "hit@1": 0.333,
+          "hit@5": 0.567,
+          "hit@10": 0.833,
+          "hit@20": 0.9,
+          "mrr": 0.441
+        },
+        "followup": {
+          "hit@1": 0.0,
+          "hit@5": 0.0,
+          "hit@10": 0.0,
+          "hit@20": 0.333,
+          "mrr": 0.019
+        }
+      },
+      "plan": {
+        "hit@1": 0.307,
+        "hit@5": 0.587,
+        "hit@10": 0.773,
+        "hit@20": 0.84,
+        "mrr": 0.443,
+        "vi": {
+          "hit@1": 0.311,
+          "hit@5": 0.622,
+          "hit@10": 0.756,
+          "hit@20": 0.822,
+          "mrr": 0.461
+        },
+        "en": {
+          "hit@1": 0.3,
+          "hit@5": 0.533,
+          "hit@10": 0.8,
+          "hit@20": 0.867,
+          "mrr": 0.417
+        },
+        "followup": {
+          "hit@1": 0.333,
+          "hit@5": 0.667,
+          "hit@10": 0.667,
+          "hit@20": 0.667,
+          "mrr": 0.4
+        }
+      }
+    },
+    "rerank": {
+      "single10": {
+        "hit@1": 0.453,
+        "hit@5": 0.653,
+        "hit@10": 0.653,
+        "hit@20": 0.653,
+        "mrr": 0.531,
+        "vi": {
+          "hit@1": 0.333,
+          "hit@5": 0.578,
+          "hit@10": 0.578,
+          "hit@20": 0.578,
+          "mrr": 0.422
+        },
+        "en": {
+          "hit@1": 0.633,
+          "hit@5": 0.767,
+          "hit@10": 0.767,
+          "hit@20": 0.767,
+          "mrr": 0.694
+        },
+        "followup": {
+          "hit@1": 0.0,
+          "hit@5": 0.333,
+          "hit@10": 0.333,
+          "hit@20": 0.333,
+          "mrr": 0.067
+        },
+        "median_s": 4.21,
+        "used_reranker": true,
+        "refusal_gate": {
+          "answerable_min/median": [
+            0.0,
+            0.6098
+          ],
+          "unanswerable_median/max": [
+            0.0002,
+            0.0783
+          ],
+          "thresholds": {
+            "0.005": {
+              "answerable_rejected": 0.2,
+              "unanswerable_accepted": 0.25
+            },
+            "0.01": {
+              "answerable_rejected": 0.267,
+              "unanswerable_accepted": 0.083
+            },
+            "0.02": {
+              "answerable_rejected": 0.333,
+              "unanswerable_accepted": 0.083
+            },
+            "0.05": {
+              "answerable_rejected": 0.36,
+              "unanswerable_accepted": 0.083
+            },
+            "0.1": {
+              "answerable_rejected": 0.4,
+              "unanswerable_accepted": 0.0
+            },
+            "0.2": {
+              "answerable_rejected": 0.4,
+              "unanswerable_accepted": 0.0
+            },
+            "0.3": {
+              "answerable_rejected": 0.427,
+              "unanswerable_accepted": 0.0
+            },
+            "0.5": {
+              "answerable_rejected": 0.44,
+              "unanswerable_accepted": 0.0
+            }
+          }
+        }
+      },
+      "no_rerank_fused_order": {
+        "hit@1": 0.307,
+        "hit@5": 0.587,
+        "hit@10": 0.587,
+        "hit@20": 0.587,
+        "mrr": 0.412,
+        "vi": {
+          "hit@1": 0.311,
+          "hit@5": 0.622,
+          "hit@10": 0.622,
+          "hit@20": 0.622,
+          "mrr": 0.437
+        },
+        "en": {
+          "hit@1": 0.3,
+          "hit@5": 0.533,
+          "hit@10": 0.533,
+          "hit@20": 0.533,
+          "mrr": 0.376
+        },
+        "followup": {
+          "hit@1": 0.333,
+          "hit@5": 0.667,
+          "hit@10": 0.667,
+          "hit@20": 0.667,
+          "mrr": 0.4
+        }
+      }
+    },
+    "threshold": {
+      "raw": {
+        "0.20": {
+          "answerable_rejected": 0.0,
+          "unanswerable_accepted": 0.167
+        },
+        "0.25": {
+          "answerable_rejected": 0.013,
+          "unanswerable_accepted": 0.0
+        },
+        "0.30": {
+          "answerable_rejected": 0.053,
+          "unanswerable_accepted": 0.0
+        },
+        "0.35": {
+          "answerable_rejected": 0.147,
+          "unanswerable_accepted": 0.0
+        },
+        "0.40": {
+          "answerable_rejected": 0.293,
+          "unanswerable_accepted": 0.0
+        },
+        "0.45": {
+          "answerable_rejected": 0.52,
+          "unanswerable_accepted": 0.0
+        },
+        "0.50": {
+          "answerable_rejected": 0.573,
+          "unanswerable_accepted": 0.0
+        },
+        "_scores": {
+          "answerable_min/median": [
+            0.247,
+            0.448
+          ],
+          "unanswerable_median/max": [
+            0.147,
+            0.213
+          ]
+        }
+      },
+      "both": {
+        "0.20": {
+          "answerable_rejected": 0.0,
+          "unanswerable_accepted": 0.5
+        },
+        "0.25": {
+          "answerable_rejected": 0.0,
+          "unanswerable_accepted": 0.25
+        },
+        "0.30": {
+          "answerable_rejected": 0.0,
+          "unanswerable_accepted": 0.167
+        },
+        "0.35": {
+          "answerable_rejected": 0.013,
+          "unanswerable_accepted": 0.083
+        },
+        "0.40": {
+          "answerable_rejected": 0.04,
+          "unanswerable_accepted": 0.0
+        },
+        "0.45": {
+          "answerable_rejected": 0.12,
+          "unanswerable_accepted": 0.0
+        },
+        "0.50": {
+          "answerable_rejected": 0.173,
+          "unanswerable_accepted": 0.0
+        },
+        "_scores": {
+          "answerable_min/median": [
+            0.311,
+            0.634
+          ],
+          "unanswerable_median/max": [
+            0.202,
+            0.355
+          ]
+        }
+      },
+      "plan": {
+        "0.20": {
+          "answerable_rejected": 0.0,
+          "unanswerable_accepted": 0.417
+        },
+        "0.25": {
+          "answerable_rejected": 0.0,
+          "unanswerable_accepted": 0.083
+        },
+        "0.30": {
+          "answerable_rejected": 0.0,
+          "unanswerable_accepted": 0.0
+        },
+        "0.35": {
+          "answerable_rejected": 0.0,
+          "unanswerable_accepted": 0.0
+        },
+        "0.40": {
+          "answerable_rejected": 0.013,
+          "unanswerable_accepted": 0.0
+        },
+        "0.45": {
+          "answerable_rejected": 0.027,
+          "unanswerable_accepted": 0.0
+        },
+        "0.50": {
+          "answerable_rejected": 0.107,
+          "unanswerable_accepted": 0.0
+        },
+        "_scores": {
+          "answerable_min/median": [
+            0.358,
+            0.669
+          ],
+          "unanswerable_median/max": [
+            0.173,
+            0.286
+          ]
+        }
+      }
+    },
+    "planner": {
+      "median_s": 2.81,
+      "failed": 0
+    }
+  },
+  "answers": {
+    "questions": 30,
+    "answered": 28,
+    "not_found_on_answerable": 2,
+    "cited_rate": 1.0,
+    "numbers_supported_rate": 1.0,
+    "judge_supported_mean": 0.661,
+    "correct_refusals_on_unanswerable": "12/12"
+  }
+}

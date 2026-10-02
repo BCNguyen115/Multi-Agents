@@ -68,7 +68,8 @@ class TestRowLevelSecurityAST:
         assert "is_active = TRUE" in secured or "is_active = true" in secured.lower()
         assert "department_id = 'finance'" in secured
         assert "tenant_id = 'acme_corp'" in secured
-        assert "AND (" in secured
+        assert "AND department_id = 'finance'" in secured and "AND tenant_id = 'acme_corp'" in secured  # AND-ed, never OR
+        assert " OR " not in secured
 
     def test_rls_join_query(self):
         sql = "SELECT u.name, d.title FROM users u JOIN departments d ON u.dept_id = d.id"
@@ -228,8 +229,13 @@ class TestDockerSandboxAndExportConfig:
             content = f.read()
 
         assert "python-sandbox:" in content
-        assert "network_mode: none" in content
-        assert "memory: 256M" in content
+        # a real service now (pandas/numpy inside), on an internal-only network: no route to the internet
+        assert "dockerfile: Dockerfile.sandbox" in content
+        assert "sandbox_net:" in content and "internal: true" in content
+        sandbox = content.split("python-sandbox:", 1)[1].split("\nnetworks:", 1)[0]
+        assert "read_only: true" in sandbox and "cap_drop: [ALL]" in sandbox and "no-new-privileges:true" in sandbox
+        assert "memory: 1g" in sandbox and "pids: 128" in sandbox
+        assert "SANDBOX_SECRET" in sandbox  # only signed requests from the backend are served
 
     def test_frontend_package_has_pptxgenjs(self):
         with open("frontend/package.json", "r", encoding="utf-8") as f:
