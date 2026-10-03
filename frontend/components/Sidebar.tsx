@@ -2,8 +2,9 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { PanelLeft, PenSquare, Search, Pin, MoreVertical, Trash2, Edit3, MessageSquare, Inbox } from 'lucide-react';
+import { PanelLeft, PenSquare, Search, Pin, MoreVertical, Trash2, Edit3, MessageSquare, Inbox, Info } from 'lucide-react';
 import { FptLogo } from './ui/FptLogo';
+import { useAuth } from '../context/AuthContext';
 import { UserProfileWidget } from './user/UserProfileWidget';
 import { isDefaultChatTitle, t, useLang, type Lang, type MessageKey } from '../lib/i18n';
 
@@ -71,6 +72,7 @@ export function Sidebar({
   onRenameSession,
 }: SidebarProps) {
   const [lang] = useLang();
+  const { isGuest, config, openAuthModal } = useAuth();
   const [isOpen, setIsOpen] = useState(true);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -214,6 +216,23 @@ export function Sidebar({
           </span>
         </button>
       </div>
+
+      {/* Guest hint: the chats of a guest live in this browser only */}
+      {isOpen && isGuest && config.login_enabled && (
+        <p className="shrink-0 px-4 pt-3 flex items-center gap-2.5 text-xs text-foreground-secondary">
+          <Info className="w-[18px] h-[18px] shrink-0" aria-hidden="true" />
+          <span>
+            <button
+              type="button"
+              onClick={() => openAuthModal('signin')}
+              className="underline text-foreground cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+            >
+              {t(lang, 'user.signIn')}
+            </button>{' '}
+            {t(lang, 'user.saveActivity')}
+          </span>
+        </p>
+      )}
 
       {/* 3. SESSION HISTORY (Pinned + Grouped Recents) */}
       <div className="flex-1 overflow-y-auto px-2 py-3 space-y-4 overflow-x-hidden whitespace-nowrap">

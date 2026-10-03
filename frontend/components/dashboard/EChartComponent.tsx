@@ -20,7 +20,7 @@ const DARK_PALETTE = ['#6366f1', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#e
 const LIGHT_PALETTE = ['#4F46E5', '#F37021', '#10B981', '#06B6D4', '#8B5CF6', '#EC4899', '#F59E0B'];
 
 /** Theme colours come from the global CSS design tokens (re-read whenever the theme flips). */
-function readTheme(isDark: boolean): ChartTheme {
+export function readTheme(isDark: boolean): ChartTheme {
   const token = (name: string, fallback: string) =>
     (typeof document === 'undefined' ? '' : getComputedStyle(document.documentElement).getPropertyValue(name).trim()) || fallback;
   return {
@@ -33,6 +33,7 @@ function readTheme(isDark: boolean): ChartTheme {
     fg: token('--foreground', isDark ? '#f8fafc' : '#0f172a'),
     positive: token('--accent-verifier', '#10b981'),
     negative: token('--accent-error', '#ef4444'),
+    font: token('--font-sans', 'system-ui, sans-serif'),
   };
 }
 

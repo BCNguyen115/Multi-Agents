@@ -17,6 +17,8 @@ export interface ChartTheme {
   fg: string;
   positive: string;
   negative: string;
+  /** CSS font-family list for the chart text (canvas does not inherit it from the page). */
+  font?: string;
 }
 
 export type EChartsOptionLike = Record<string, unknown>;
@@ -288,6 +290,11 @@ function waterfall(chart: ChartItem, theme: ChartTheme): EChartsOptionLike {
 
 /** ECharts option for a server-computed chart. ``selected`` dims every other category (active cross-filter). */
 export function buildOption(chart: ChartItem, theme: ChartTheme, selected?: string | null): EChartsOptionLike {
+  const option = chartBody(chart, theme, selected);
+  return theme.font ? { textStyle: { fontFamily: theme.font }, ...option } : option;
+}
+
+function chartBody(chart: ChartItem, theme: ChartTheme, selected?: string | null): EChartsOptionLike {
   switch (chart.type) {
     case 'line':
     case 'area':

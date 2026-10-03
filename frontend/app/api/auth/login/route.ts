@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SESSION_COOKIE } from "@/lib/backendAuth";
+import { SESSION_COOKIE, clientIpHeaders } from "@/lib/backendAuth";
 import { serverMsg } from "@/lib/serverMessages";
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
   try {
     const response = await fetch(backendUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-UI-Lang": req.headers.get("x-ui-lang") ?? "vi" },
+      headers: { "Content-Type": "application/json", "X-UI-Lang": req.headers.get("x-ui-lang") ?? "vi", ...clientIpHeaders(req) },
       body: JSON.stringify(await req.json()),
     });
     const data = await response.json().catch(() => ({}));

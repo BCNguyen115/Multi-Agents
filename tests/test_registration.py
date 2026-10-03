@@ -157,7 +157,8 @@ def test_change_password_needs_the_current_one_and_the_new_one_works_afterwards(
     assert wrong.value.status_code == 400
     with pytest.raises(gateway.HTTPException):
         change(gateway, carol, "a long enough password", "a long enough password")  # the same password again
-    assert change(gateway, carol, "a long enough password", "another long password") == {"ok": True}
+    changed = change(gateway, carol, "a long enough password", "another long password")
+    assert changed["ok"] and changed["access_token"]  # a fresh token: this session carries on, the older ones are revoked
     assert sign_in(gateway, "carol", "another long password").user["user"] == "carol"
     with pytest.raises(gateway.HTTPException):
         sign_in(gateway, "carol", "a long enough password")

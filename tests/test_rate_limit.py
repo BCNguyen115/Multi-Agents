@@ -106,3 +106,27 @@ def test_when_redis_is_down_the_limit_still_holds_in_process():
     with pytest.raises(HTTPException) as refused:
         call(redis, ALICE, request())
     assert refused.value.status_code == 429
+
+
+def test_a_daily_budget_is_counted_apart_from_the_per_minute_limit_and_says_so():
+    redis = FakeRedis()
+    day = lambda: asyncio.run(rate_limit.enforce(redis, ALICE, request(), "chat-day", 2, window=86400))  # noqa: E731
+    day()
+    day()
+    with pytest.raises(HTTPException) as over:
+        day()
+    assert over.value.status_code == 429 and "2" in over.value.detail and "ngày" in over.value.detail  # the daily wording, not "per minute"
+    assert int(over.value.headers["Retry-After"]) >= 1
+    call(redis, ALICE, request(), limit=5)  # the per-minute group is a different counter: still open
+    assert list(redis.ttls.values()).count(86400 + 5) == 1
+
+
+def test_minute_and_day_counters_do_not_reset_each_other_while_redis_is_down():
+    redis = FakeRedis()
+    redis.down = True
+    rate_limit._local.clear()
+    asyncio.run(rate_limit.enforce(redis, ALICE, request(), "chat-day", 2, window=86400))
+    call(redis, ALICE, request(), limit=5)  # a one-minute call in between must not wipe the daily count
+    asyncio.run(rate_limit.enforce(redis, ALICE, request(), "chat-day", 2, window=86400))
+    with pytest.raises(HTTPException):
+        asyncio.run(rate_limit.enforce(redis, ALICE, request(), "chat-day", 2, window=86400))

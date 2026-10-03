@@ -20,6 +20,7 @@ from typing import Any, Optional
 from src.agents.rag_agent.planner import QueryPlan
 from src.config import settings
 from src.ingestion.schema import ensure_schema
+from src.shared.auth import knowledge_tenants
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
 from src.shared.postgres_client import PostgresClient
@@ -177,7 +178,7 @@ class KnowledgeStore:
         vectors: list[list[float]] = await asyncio.gather(*(self._embed(t, session_id) for t in texts))
         literals: list[str] = ["[" + ",".join(map(str, v)) + "]" for v in vectors]
         keywords: Optional[str] = build_tsquery(query)
-        tenants: Optional[list[str]] = settings.RAG_TENANT_IDS
+        tenants: Optional[list[str]] = knowledge_tenants()  # the caller's, not a global setting
 
         scopes: list[Optional[list[str]]] = []
         named: list[str] = categories if categories is not None else detect_categories(query, await self.known_categories(session_id))

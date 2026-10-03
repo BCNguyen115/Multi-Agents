@@ -68,8 +68,8 @@ module.exports = {
 
       /* ── Font Family ─────────────────────────────────── */
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Fira Code', 'Cascadia Code', 'ui-monospace', 'monospace'],
+        sans: ['var(--font-sans)'],
+        mono: ['var(--font-mono)'],
       },
 
       /* ── Spacing (8pt Grid Extensions) ──────────────── */

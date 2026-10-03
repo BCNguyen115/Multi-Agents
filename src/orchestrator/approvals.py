@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any, Optional
 
+from src.shared import audit
 from src.orchestrator.state import AgentState
 from src.shared.auth import current_scope
 from src.shared.logger import get_logger
@@ -33,6 +34,9 @@ class ApprovalMixin:
         and the payload, not the whole graph state (which can carry an uploaded file)."""
         client = getattr(self.redis_client, "client", None)
         record = self.pending_approvals.get(action_id)
+        if record is not None:  # on the record from the moment it is asked for, whoever answers later
+            asked = record["payload"]
+            await audit.record("hitl.requested", action_id, "pending", {"agent": asked.get("agent"), "request": asked.get("payload")})
         if client is None or record is None:
             return
         state = record.get("state", {})

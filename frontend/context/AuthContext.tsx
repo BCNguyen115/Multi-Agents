@@ -13,7 +13,6 @@ import {
   type Me,
 } from '../lib/authClient';
 import { clearLocalConversations } from '../lib/conversationSync';
-import { STORAGE_MESSAGES_KEY, STORAGE_SESSIONS_KEY } from '../lib/storage';
 import { useLang, type Lang } from '../lib/i18n';
 
 export type Theme = 'dark' | 'light' | 'system';
@@ -232,41 +231,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const finishSignIn = useCallback(() => window.location.reload(), []);
 
   const logout = useCallback(async () => {
-    clearLocalConversations([STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY]); // the next person on this browser must not see these chats
+    if (me?.authenticated) clearLocalConversations(me.user); // the next person on this browser must not see these chats
     await logoutRequest();
     window.location.reload();
-  }, []);
+  }, [me]);
 
   const user: AuthUser = useMemo(
     () => (me?.authenticated ? { id: me.user, name: me.name || me.user, role: roleOf(me) } : GUEST),
     [me]
   );
 
-  const value: AuthContextValue = {
-    user,
-    isAuthenticated: Boolean(me?.authenticated),
-    isGuest: !me?.authenticated,
-    loading,
-    me,
-    config,
-    theme,
-    resolvedTheme: resolve(theme),
-    language,
-    login,
-    register,
-    resetPassword,
-    changePassword,
-    finishSignIn,
-    logout,
-    setTheme,
-    setLanguage,
-    authModal,
-    openAuthModal,
-    closeAuthModal,
-    changePasswordOpen,
-    openChangePassword,
-    closeChangePassword,
-  };
+  // Memoised: every consumer re-renders when this object changes, so it only changes when something it holds does
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      user,
+      isAuthenticated: Boolean(me?.authenticated),
+      isGuest: !me?.authenticated,
+      loading,
+      me,
+      config,
+      theme,
+      resolvedTheme: resolve(theme),
+      language,
+      login,
+      register,
+      resetPassword,
+      changePassword,
+      finishSignIn,
+      logout,
+      setTheme,
+      setLanguage,
+      authModal,
+      openAuthModal,
+      closeAuthModal,
+      changePasswordOpen,
+      openChangePassword,
+      closeChangePassword,
+    }),
+    [
+      user, me, loading, config, theme, language, login, register, resetPassword, changePassword, finishSignIn, logout,
+      setTheme, setLanguage, authModal, openAuthModal, closeAuthModal, changePasswordOpen, openChangePassword, closeChangePassword,
+    ]
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

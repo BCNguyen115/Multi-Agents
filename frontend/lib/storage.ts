@@ -3,6 +3,12 @@ import { ChatMessage } from './types';
 export const STORAGE_SESSIONS_KEY = 'fpt_chat_sessions';
 export const STORAGE_MESSAGES_KEY = 'fpt_chat_messages_map';
 
+/** Whose chats the browser holds when nobody is signed in. */
+export const GUEST_OWNER = 'guest';
+
+/** The browser's copy is kept per account (`<key>:<user>`): one account never reads or overwrites another's chats. */
+export const localKey = (base: string, owner: string): string => `${base}:${owner}`;
+
 /** Rows of a dashboard's data table kept in localStorage (the full table is re-created by re-running the analysis). */
 export const MAX_STORED_TABLE_ROWS = 2000;
 
@@ -33,12 +39,12 @@ export function sanitizeMessagesForStorage(messagesMap: Record<string, ChatMessa
 /**
  * Ghi dữ liệu tin nhắn an toàn vào localStorage chống lỗi QuotaExceededError & crash React app.
  */
-export function safeSaveChatMessagesMap(messagesMap: Record<string, ChatMessage[]>) {
+export function safeSaveChatMessagesMap(messagesMap: Record<string, ChatMessage[]>, key: string = STORAGE_MESSAGES_KEY) {
   if (typeof window === 'undefined') return;
 
   try {
     const sanitizedData = sanitizeMessagesForStorage(messagesMap);
-    localStorage.setItem(STORAGE_MESSAGES_KEY, JSON.stringify(sanitizedData));
+    localStorage.setItem(key, JSON.stringify(sanitizedData));
   } catch (error: any) {
     if (
       error &&
@@ -61,7 +67,7 @@ export function safeSaveChatMessagesMap(messagesMap: Record<string, ChatMessage[
 
         try {
           const sanitizedReduced = sanitizeMessagesForStorage(recentSessionsMap);
-          localStorage.setItem(STORAGE_MESSAGES_KEY, JSON.stringify(sanitizedReduced));
+          localStorage.setItem(key, JSON.stringify(sanitizedReduced));
           return;
         } catch (e) {
           console.warn('Second attempt to save reduced chat history failed, clearing heavy specs...');
@@ -83,10 +89,10 @@ export function safeSaveChatMessagesMap(messagesMap: Record<string, ChatMessage[
             return m;
           });
         }
-        localStorage.setItem(STORAGE_MESSAGES_KEY, JSON.stringify(ultraCleanMap));
+        localStorage.setItem(key, JSON.stringify(ultraCleanMap));
       } catch (finalErr) {
         console.error('Critical storage quota reached. Clearing localStorage messages map to prevent crash.');
-        localStorage.removeItem(STORAGE_MESSAGES_KEY);
+        localStorage.removeItem(key);
       }
     }
   }

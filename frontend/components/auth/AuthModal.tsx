@@ -5,51 +5,14 @@ import { createPortal } from 'react-dom';
 import { Check, Copy, Loader2, X } from 'lucide-react';
 import { useAuth, type AuthTab } from '../../context/AuthContext';
 import { t, useLang, type MessageKey } from '../../lib/i18n';
+import { useDialogA11y } from '../../lib/useDialogA11y';
+import { Field } from './Field';
 
 // The same rules the backend enforces (RegisterRequest): checking them here only saves a round trip.
 const USERNAME_RULE = /^[A-Za-z0-9._-]{3,32}$/;
 const MIN_PASSWORD = 10;
 
 type View = 'form' | 'forgot' | 'recovery';
-
-interface FieldProps {
-  id: string;
-  label: string;
-  type?: string;
-  value: string;
-  onChange: (value: string) => void;
-  error?: string;
-  autoComplete: string;
-  inputRef?: React.Ref<HTMLInputElement>;
-}
-
-function Field({ id, label, type = 'text', value, onChange, error, autoComplete, inputRef }: FieldProps) {
-  return (
-    <div className="space-y-1.5">
-      <label htmlFor={id} className="block text-sm font-medium text-foreground-secondary">
-        {label}
-      </label>
-      <input
-        id={id}
-        ref={inputRef}
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        autoComplete={autoComplete}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={error ? `${id}-error` : undefined}
-        className={`w-full rounded-xl bg-background border px-3.5 py-2.5 text-sm text-foreground placeholder:text-foreground-muted transition-colors focus:outline-none focus:ring-2 ${
-          error ? 'border-accent-error focus:ring-accent-error/30' : 'border-border-strong focus:border-accent-primary focus:ring-accent-primary/30'
-        }`}
-      />
-      {error && (
-        <p id={`${id}-error`} className="text-xs text-accent-error">
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
 
 const PRIMARY_BUTTON =
   'flex w-full min-h-11 items-center justify-center gap-2 rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent-primary-hover disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface';
@@ -96,29 +59,8 @@ export function AuthModal() {
     firstFieldRef.current?.focus();
   }, [authModal.open, tab, view]);
 
-  // Escape closes (unless locked); Tab stays inside the dialog.
-  useEffect(() => {
-    if (!authModal.open) return undefined;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy && !locked) {
-        closeAuthModal();
-      } else if (event.key === 'Tab' && dialogRef.current) {
-        const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button, input, [href], [tabindex]:not([tabindex="-1"])')).filter((el) => !el.hasAttribute('disabled'));
-        if (!focusable.length) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [authModal.open, busy, locked, closeAuthModal]);
+  // Escape closes (unless locked or busy); Tab stays inside the dialog; closing returns the focus to where it was.
+  useDialogA11y(authModal.open, dialogRef, closeAuthModal, !busy && !locked);
 
   if (!authModal.open || typeof document === 'undefined') return null;
 

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from src.config import settings
 from src.ingestion.preview import render_page
+from src.shared import audit
 from src.shared.auth import Principal, authenticate
 from src.shared.logger import get_logger
 from src.shared.messages import msg
@@ -99,6 +100,8 @@ def _file_path(doc_key: str) -> Path:
 async def list_documents(
     request: Request, category: Optional[str] = Query(default=None, max_length=40), principal: Principal = Depends(authenticate)
 ) -> list[dict[str, Any]]:
+    if principal.unassigned:  # the list itself (file names, categories) is already knowledge
+        raise HTTPException(status_code=403, detail=msg("forbidden.pending"))
     rows = await _pg(request).fetch(
         f"""
         SELECT {_SQL_KEY} AS doc_key, max(filename) AS filename, max(category) AS category, count(*) AS chunks,
@@ -143,6 +146,7 @@ async def delete_document(
     store = getattr(request.app.state, "knowledge_store", None)
     if store is not None:
         store.invalidate_categories()
+    await audit.record("kb.delete", doc_key, "ok", {"chunks": deleted, "file_removed": removed}, principal=principal)
     logger.info("Knowledge delete by user=%s tenant=%s: %s (%d chunks, file removed=%s)", principal.user_id, principal.tenant_id, doc_key, deleted, removed)
     return DeleteResult(doc_key=doc_key, deleted_chunks=deleted, file_removed=removed)
 
@@ -155,6 +159,8 @@ async def page_image(
     scale: float = Query(default=1.6, ge=0.5, le=3.0),
     principal: Principal = Depends(authenticate),
 ) -> Response:
+    if principal.unassigned:
+        raise HTTPException(status_code=403, detail=msg("forbidden.pending"))
     path = _file_path(doc_key)
     if path.suffix.lower() != ".pdf" or not path.is_file():
         raise HTTPException(status_code=404, detail=msg("kb.page_unavailable"))

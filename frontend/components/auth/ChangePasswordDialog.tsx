@@ -5,38 +5,10 @@ import { createPortal } from 'react-dom';
 import { CheckCircle2, Loader2, X } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { t, useLang } from '../../lib/i18n';
+import { useDialogA11y } from '../../lib/useDialogA11y';
+import { Field } from './Field';
 
 const MIN_PASSWORD = 10;
-
-function PasswordField({ id, label, value, onChange, error, autoComplete, inputRef }: {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  error?: string;
-  autoComplete: string;
-  inputRef?: React.Ref<HTMLInputElement>;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <label htmlFor={id} className="block text-sm font-medium text-foreground-secondary">{label}</label>
-      <input
-        id={id}
-        ref={inputRef}
-        type="password"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        autoComplete={autoComplete}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={error ? `${id}-error` : undefined}
-        className={`w-full rounded-xl bg-background border px-3.5 py-2.5 text-sm text-foreground transition-colors focus:outline-none focus:ring-2 ${
-          error ? 'border-accent-error focus:ring-accent-error/30' : 'border-border-strong focus:border-accent-primary focus:ring-accent-primary/30'
-        }`}
-      />
-      {error && <p id={`${id}-error`} className="text-xs text-accent-error">{error}</p>}
-    </div>
-  );
-}
 
 /** Change the signed-in user's password: the current one is the proof. Opened from the settings menu. */
 export function ChangePasswordDialog() {
@@ -64,28 +36,7 @@ export function ChangePasswordDialog() {
     firstFieldRef.current?.focus();
   }, [changePasswordOpen]);
 
-  useEffect(() => {
-    if (!changePasswordOpen) return undefined;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) {
-        closeChangePassword();
-      } else if (event.key === 'Tab' && dialogRef.current) {
-        const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button, input')).filter((el) => !el.hasAttribute('disabled'));
-        if (!focusable.length) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [changePasswordOpen, busy, closeChangePassword]);
+  useDialogA11y(changePasswordOpen, dialogRef, closeChangePassword, !busy);
 
   if (!changePasswordOpen || typeof document === 'undefined') return null;
 
@@ -147,9 +98,9 @@ export function ChangePasswordDialog() {
           </div>
         ) : (
           <form onSubmit={submit} noValidate className="mt-5 space-y-4">
-            <PasswordField id="pwd-current" label={t(lang, 'pwd.current')} value={current} onChange={setCurrent} error={errors.current} autoComplete="current-password" inputRef={firstFieldRef} />
-            <PasswordField id="pwd-new" label={t(lang, 'pwd.new')} value={next} onChange={setNext} error={errors.next} autoComplete="new-password" />
-            <PasswordField id="pwd-confirm" label={t(lang, 'pwd.confirm')} value={confirm} onChange={setConfirm} error={errors.confirm} autoComplete="new-password" />
+            <Field type="password" id="pwd-current" label={t(lang, 'pwd.current')} value={current} onChange={setCurrent} error={errors.current} autoComplete="current-password" inputRef={firstFieldRef} />
+            <Field type="password" id="pwd-new" label={t(lang, 'pwd.new')} value={next} onChange={setNext} error={errors.next} autoComplete="new-password" />
+            <Field type="password" id="pwd-confirm" label={t(lang, 'pwd.confirm')} value={confirm} onChange={setConfirm} error={errors.confirm} autoComplete="new-password" />
             {formError && (
               <p role="alert" className="rounded-xl border border-accent-error/30 bg-accent-error/10 px-3.5 py-2.5 text-sm text-accent-error">{formError}</p>
             )}
