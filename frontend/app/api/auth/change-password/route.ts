@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authHeaders } from "@/lib/backendAuth";
+import { SESSION_COOKIE, authHeaders } from "@/lib/backendAuth";
 import { serverMsg } from "@/lib/serverMessages";
 
 export const dynamic = 'force-dynamic';
@@ -18,7 +18,11 @@ export async function POST(req: NextRequest) {
       const detail = Array.isArray(data.detail) ? data.detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join('; ') : data.detail;
       return NextResponse.json({ detail: detail || serverMsg(req, 'proxy.loginFailed') }, { status: response.status });
     }
-    return NextResponse.json(data);
+    // Every other session of this account was just revoked; this one continues with the fresh token the backend issued
+    const secure = req.nextUrl.protocol === 'https:' || req.headers.get('x-forwarded-proto') === 'https';
+    const result = NextResponse.json({ ok: true });
+    if (data.access_token) result.cookies.set(SESSION_COOKIE, data.access_token, { httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge: data.expires_in });
+    return result;
   } catch (error: any) {
     return NextResponse.json({ detail: error.message || serverMsg(req, 'proxy.unreachable') }, { status: 502 });
   }

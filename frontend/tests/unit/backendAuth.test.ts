@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
-import { authHeaders } from "../../lib/backendAuth";
+import { authHeaders, clientIpHeaders } from "../../lib/backendAuth";
 
 const request = (headers: Record<string, string> = {}) => new NextRequest("http://localhost/api/chat", { method: "POST", headers });
 
@@ -21,5 +21,16 @@ describe("authHeaders", () => {
     expect(authHeaders(request({ authorization: "Bearer from-proxy", cookie: "access_token=from-cookie" }))).toEqual({
       Authorization: "Bearer from-proxy",
     });
+  });
+});
+
+describe("clientIpHeaders", () => {
+  it("passes on the address a proxy in front reported", () => {
+    expect(clientIpHeaders(request({ "x-forwarded-for": "203.0.113.7, 10.0.0.2" }))).toEqual({ "X-Forwarded-For": "203.0.113.7, 10.0.0.2" });
+    expect(authHeaders(request({ "x-forwarded-for": "203.0.113.7" }))).toEqual({ "X-Forwarded-For": "203.0.113.7" });
+  });
+
+  it("invents nothing when there is no proxy", () => {
+    expect(clientIpHeaders(request())).toEqual({});
   });
 });

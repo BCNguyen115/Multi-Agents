@@ -1,4 +1,13 @@
 import React from 'react';
+// Self-hosted from npm (no request to Google at build or run time); each file carries latin, latin-ext and vietnamese
+// faces with unicode-range, so a page only downloads the ones its text needs. Only the weights the UI uses.
+import '@fontsource/ibm-plex-sans/400.css';
+import '@fontsource/ibm-plex-sans/500.css';
+import '@fontsource/ibm-plex-sans/600.css';
+import '@fontsource/ibm-plex-sans/700.css';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
+import '@fontsource/ibm-plex-mono/700.css';
 import './globals.css';
 import { SkipLink } from '../components/SkipLink';
 import { AuthProvider } from '../context/AuthContext';

@@ -102,7 +102,9 @@ from src.shared.memory_manager import MemoryManager
 from src.shared.migrations import upgrade_to_head
 from src.shared.postgres_client import PostgresClient
 from src.shared.history_summary import persist_turn
-from src.shared.rate_limit import enforce as enforce_rate_limit
+from src.shared import audit
+from src.shared.auth import needs_rehash, revoke_token, revoke_user_sessions
+from src.shared.rate_limit import check_failures, clear_failures, enforce as enforce_rate_limit, record_failure
 from src.shared.redis_client import RedisClient
 from src.shared.csv_sanitizer import DatasetReadError, clean_csv_content
 from src.shared.messages import msg, pick_lang, reset_lang, set_lang
@@ -157,6 +159,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     try:
         await pg_client.connect()
+        audit.configure(pg_client)
     except Exception as exc:
         logger.error(
             "PostgreSQL connection failed during startup: %s", exc,
@@ -289,15 +292,18 @@ app: FastAPI = FastAPI(
     description="Gateway API for the Multi-Agent orchestration system.",
     version="0.1.0",
     lifespan=lifespan,
+    **({"docs_url": None, "redoc_url": None, "openapi_url": None} if settings.APP_ENV == "production" and not settings.EXPOSE_API_DOCS else {}),
 )
 
 app.state.pg_client = pg_client  # the conversations router reads it from here
+app.state.redis_client = redis_client  # `authenticate` asks it for revoked tokens
 app.include_router(conversations_router)
 app.include_router(knowledge_router)
 
 
 async def limit_chat(request: Request, principal: Principal = Depends(authenticate)) -> None:
     await enforce_rate_limit(redis_client, principal, request, "chat", settings.RATE_LIMIT_CHAT_PER_MINUTE)
+    await enforce_rate_limit(redis_client, principal, request, "chat-day", settings.RATE_LIMIT_CHAT_PER_DAY, window=86400)
 
 
 async def limit_analyze(request: Request, principal: Principal = Depends(authenticate)) -> None:
@@ -704,9 +710,14 @@ async def chat_approve(request: ApprovalDecisionRequest, principal: Principal = 
             "HITL decision refused: user=%s has none of the approver roles %s (action_id=%s)",
             principal.user_id, settings.HITL_APPROVER_ROLES, request.action_id, extra={"session_id": session_id},
         )
+        await audit.record("hitl.refused", request.action_id, "forbidden", {"roles": sorted(principal.roles)}, principal=principal)
         raise HTTPException(status_code=403, detail=msg("forbidden.approve"))
 
-    # Audit trail: who decided what, for which action
+    # Audit trail: who decided what, for which action. The decision row comes FIRST and is required: no record, no execution.
+    try:
+        await audit.record(f"hitl.{request.decision}", request.action_id, "decided", {"feedback": request.feedback}, principal=principal, required=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=msg("audit.unavailable")) from exc
     logger.info(
         "HITL decision: user=%s tenant=%s action_id=%s decision=%s",
         principal.user_id, principal.tenant_id, request.action_id, request.decision,
@@ -720,6 +731,7 @@ async def chat_approve(request: ApprovalDecisionRequest, principal: Principal = 
         feedback=request.feedback,
     )
 
+    await audit.record("hitl.result", request.action_id, str(result.get("status", "")), {"decision": request.decision}, principal=principal)
     if result.get("status") == "error":
         raise HTTPException(
             status_code=404,
@@ -908,6 +920,7 @@ def _who(principal: Principal) -> dict[str, Any]:
         "can_approve": principal.can_approve,
         "can_manage_knowledge": principal.can_manage_knowledge,
         "name": principal.display_name,
+        "access_pending": principal.unassigned,  # a fresh self-registration: chat works, documents and data come after an administrator grants access
     }
 
 
@@ -942,7 +955,8 @@ async def auth_config() -> dict[str, bool]:
 
 @app.post("/api/auth/register", response_model=LoginResponse, summary="Create an account and sign in (only with AUTH_ALLOW_REGISTRATION)")
 async def register(body: RegisterRequest, request: Request) -> LoginResponse:
-    """New accounts get no roles and the default tenant/department: they can chat but not approve or manage the knowledge base."""
+    """New accounts get no roles and the pending tenant/department: they can chat, but see no document and no database row until an
+    administrator moves them (``python -m scripts.grant_user``)."""
     if not registration_enabled():
         raise HTTPException(status_code=404, detail=msg("register.disabled"))
     guest = Principal("anonymous", settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
@@ -954,11 +968,11 @@ async def register(body: RegisterRequest, request: Request) -> LoginResponse:
     display_name = body.display_name.strip()
     recovery_key = new_recovery_key()  # shown once in this response; only its hash is stored
     recovery_hash = await asyncio.to_thread(hash_recovery_key, recovery_key)
-    created = await create_user(pg_client, username, display_name, password_hash, recovery_hash, settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
+    created = await create_user(pg_client, username, display_name, password_hash, recovery_hash, settings.REGISTRATION_TENANT_ID, settings.REGISTRATION_DEPARTMENT_ID)
     if not created:
         raise HTTPException(status_code=409, detail=msg("register.taken"))
     logger.info("Sign-up: user=%s", username)
-    user = {"username": username, "display_name": display_name, "roles": [], "tenant_id": settings.RLS_TENANT_ID, "department_id": settings.RLS_DEPARTMENT_ID}
+    user = {"username": username, "display_name": display_name, "roles": [], "tenant_id": settings.REGISTRATION_TENANT_ID, "department_id": settings.REGISTRATION_DEPARTMENT_ID}
     return _session_response(user, recovery_key=recovery_key)
 
 
@@ -969,14 +983,18 @@ async def reset_password(body: ResetPasswordRequest, request: Request) -> LoginR
         raise HTTPException(status_code=404, detail=msg("register.disabled"))
     guest = Principal("anonymous", settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
     await enforce_rate_limit(redis_client, guest, request, "reset", settings.RATE_LIMIT_PASSWORD_PER_MINUTE)
+    await check_failures(redis_client, "reset", body.username, settings.AUTH_MAX_FAILURES)
     try:
         user = await get_user(pg_client, body.username)
     except Exception as exc:  # noqa: BLE001 - a database hiccup reads as "wrong key", never as a 500 that tells more
         logger.warning("Could not look up the account for a reset: %s", exc)
         user = None
     if not await asyncio.to_thread(verify_recovery_key, body.recovery_key, user) or user is None:
+        await record_failure(redis_client, "reset", body.username)
         logger.warning("Failed password reset for %r from %s", body.username[:64], request.client.host if request.client else "unknown")
         raise HTTPException(status_code=400, detail=msg("reset.bad"))
+    await clear_failures(redis_client, "reset", body.username)
+    await revoke_user_sessions(redis_client, user["username"])  # whoever held the old password (or a stolen session) is signed out
     new_key = new_recovery_key()
     password_hash = await asyncio.to_thread(hash_password, body.new_password)
     recovery_hash = await asyncio.to_thread(hash_recovery_key, new_key)
@@ -986,23 +1004,28 @@ async def reset_password(body: ResetPasswordRequest, request: Request) -> LoginR
 
 
 @app.post("/api/auth/change-password", summary="Change the signed-in user's password (self-registered accounts)")
-async def change_password(body: ChangePasswordRequest, request: Request, principal: Principal = Depends(authenticate)) -> dict[str, bool]:
+async def change_password(body: ChangePasswordRequest, request: Request, principal: Principal = Depends(authenticate)) -> dict[str, Any]:
     """Needs the current password. Accounts in ``AUTH_USERS`` live in the environment and are changed by an administrator.
-    A token issued before the change stays valid until it expires (tokens are stateless)."""
+    Tokens issued before the change are revoked; the answer carries a fresh one so the caller stays signed in."""
     if not principal.authenticated or not registration_enabled():
         raise HTTPException(status_code=400, detail=msg("password.managed"))
     await enforce_rate_limit(redis_client, principal, request, "password", settings.RATE_LIMIT_PASSWORD_PER_MINUTE)
+    await check_failures(redis_client, "password", principal.user_id, settings.AUTH_MAX_FAILURES)
     user = await get_user(pg_client, principal.user_id)
     if user is None:  # an AUTH_USERS account
         raise HTTPException(status_code=400, detail=msg("password.managed"))
     if not await asyncio.to_thread(verify_user_row, body.current_password, user):
+        await record_failure(redis_client, "password", principal.user_id)
         logger.warning("Wrong current password on a change attempt: user=%s", principal.user_id)
         raise HTTPException(status_code=400, detail=msg("password.wrong"))
+    await clear_failures(redis_client, "password", principal.user_id)
     if body.new_password == body.current_password:
         raise HTTPException(status_code=400, detail=msg("password.same"))
     await set_password(pg_client, user["username"], await asyncio.to_thread(hash_password, body.new_password))
+    await revoke_user_sessions(redis_client, user["username"])  # every OTHER open session ends; this one continues with the new token
     logger.info("Password changed: user=%s", user["username"])
-    return {"ok": True}
+    token, expires_in = issue_login_token(user)
+    return {"ok": True, "access_token": token, "expires_in": expires_in}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse, summary="Sign in with a username and password (jwt mode, AUTH_USERS)")
@@ -1013,14 +1036,31 @@ async def login(body: LoginRequest, request: Request) -> LoginResponse:
     # throttle per client IP; this route is reachable without a token, so it is the brute-force target
     guest = Principal("anonymous", settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
     await enforce_rate_limit(redis_client, guest, request, "login", settings.RATE_LIMIT_LOGIN_PER_MINUTE)
+    await check_failures(redis_client, "login", body.username, settings.AUTH_MAX_FAILURES)  # per ACCOUNT: the IP may be shared
     user = await asyncio.to_thread(authenticate_user, body.username, body.password)  # scrypt is CPU-bound: keep it off the event loop
+    stored_account = False
     if user is None and settings.AUTH_ALLOW_REGISTRATION:
         user = await _registered_user(body.username, body.password)
+        stored_account = user is not None
     if user is None:
+        await record_failure(redis_client, "login", body.username)  # unknown names count too: a lock-out must not reveal accounts
         logger.warning("Failed sign-in for %r from %s", body.username[:64], request.client.host if request.client else "unknown")
         raise HTTPException(status_code=401, detail=msg("login.bad"))
+    await clear_failures(redis_client, "login", body.username)
+    if stored_account and needs_rehash(str(user.get("password_hash", ""))):  # the password is in hand now: store it at today's cost
+        try:
+            await set_password(pg_client, user["username"], await asyncio.to_thread(hash_password, body.password))
+        except Exception as exc:  # noqa: BLE001 - the sign-in itself succeeded
+            logger.warning("Could not upgrade the password hash of %s: %s", user["username"], exc)
     logger.info("Sign-in: user=%s tenant=%s", user["username"], user.get("tenant_id") or settings.RLS_TENANT_ID)
     return _session_response(user)
+
+
+@app.post("/api/auth/logout", summary="Sign out: the token used for this call stops working everywhere")
+async def logout(principal: Principal = Depends(authenticate)) -> dict[str, bool]:
+    revoked = await revoke_token(redis_client, principal)
+    logger.info("Sign-out: user=%s revoked=%s", principal.user_id, revoked)
+    return {"ok": True}
 
 
 @app.get("/api/auth/me", summary="Who am I? (the UI uses it to decide between the chat and the login screen)")
@@ -1071,6 +1111,7 @@ async def upload_knowledge(
         raise HTTPException(status_code=502, detail=msg("upload.failed")) from exc
 
     knowledge_store.invalidate_categories()  # a new category must be recognisable in questions straight away
+    await audit.record("kb.upload", result["doc_key"], result["status"], {"filename": result["filename"], "category": result["category"], "chunks": result.get("chunks")}, principal=principal)
     logger.info(
         "Knowledge upload by user=%s tenant=%s: %s -> %s (%s)", principal.user_id, principal.tenant_id, result["filename"], result["doc_key"], result["status"],
         extra={"session_id": scoped_session},
@@ -1111,7 +1152,8 @@ async def _probe(check) -> str:
         await asyncio.wait_for(check(), timeout=_READY_TIMEOUT_SECONDS)
         return "ok"
     except Exception as exc:  # noqa: BLE001
-        return f"{type(exc).__name__}: {exc}"[:120] or "error"
+        logger.warning("Readiness check failed: %s: %s", type(exc).__name__, exc)  # the detail stays in the log, not in the answer
+        return type(exc).__name__
 
 
 @app.get("/ready", summary="Readiness: can this instance serve requests right now?")

@@ -18,9 +18,11 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import re
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +35,7 @@ from src.ingestion.context import contextualize_chunks
 from src.ingestion.document_loader import SUPPORTED_EXTENSIONS, Section, SectionedDocument, load_document
 from src.ingestion.ocr import ocr_available
 from src.ingestion.embedder import IngestionEmbedder
+from src.shared.isolated import IsolatedError, run_isolated
 from src.shared.logger import get_logger
 from src.shared.messages import msg
 
@@ -197,12 +200,52 @@ def build_upload_chunks(doc: SectionedDocument) -> tuple[list[DocumentChunk], Ch
 # ---------------------------------------------------------------------------
 
 
+MAX_ARCHIVE_ENTRIES: int = 10_000
+
+
+def check_file(filename: str, data: bytes) -> None:
+    """Refuse a file whose bytes are not what its name claims, or that would blow up when opened. Cheap, in-process, safe."""
+    ext: str = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        ok = b"%PDF-" in data[:1024]
+    elif ext in (".docx", ".pptx"):
+        if not zipfile.is_zipfile(io.BytesIO(data)):
+            ok = False
+        else:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                entries = archive.infolist()
+                if len(entries) > MAX_ARCHIVE_ENTRIES or sum(e.file_size for e in entries) > settings.KNOWLEDGE_MAX_UNCOMPRESSED_MB * 1024 * 1024:
+                    raise UploadError(msg("upload.archive_too_big", mb=settings.KNOWLEDGE_MAX_UNCOMPRESSED_MB))
+            ok = True
+    else:  # .txt / .md: text has no NUL bytes
+        ok = b"\x00" not in data[:8192]
+    if not ok:
+        raise UploadError(msg("upload.bad_content", ext=ext))
+
+
+def _parse(path: str, category: str, filename: str) -> SectionedDocument | None:
+    """Open the file. In a child process with a deadline and memory limit unless ``KNOWLEDGE_PARSE_ISOLATED`` is off (tests, dev)."""
+    if not settings.KNOWLEDGE_PARSE_ISOLATED:
+        return load_document(path, category, filename)
+    try:
+        return run_isolated(
+            load_document, path, category, filename,
+            timeout=settings.KNOWLEDGE_PARSE_TIMEOUT_SECONDS, memory_mb=settings.KNOWLEDGE_PARSE_MEMORY_MB,
+        )
+    except TimeoutError:
+        logger.warning("Parsing %s took longer than %s s: stopped", filename, settings.KNOWLEDGE_PARSE_TIMEOUT_SECONDS, extra={"session_id": "INGESTION"})
+        raise UploadError(msg("upload.parse_timeout")) from None
+    except IsolatedError as exc:
+        logger.warning("Parsing %s failed in its worker: %s", filename, exc, extra={"session_id": "INGESTION"})
+        return None  # reads as an unreadable file
+
+
 def _load(data: bytes, filename: str, category: str | None, known: list[str]) -> SectionedDocument:
     """Blocking: write the bytes to a temp file (the readers want a path) and analyse it. Runs in a worker thread."""
     with tempfile.TemporaryDirectory() as tmp:
         path: Path = Path(tmp) / filename
         path.write_bytes(data)
-        doc: SectionedDocument | None = load_document(str(path), category or DEFAULT_CATEGORY, filename)
+        doc: SectionedDocument | None = _parse(str(path), category or DEFAULT_CATEGORY, filename)
         if doc is None:
             raise UploadError(msg("upload.no_text_ocr" if ocr_available() else "upload.no_text"))
         if category is None:  # the text is only known now: settle the category, and with it the document identity
@@ -243,6 +286,7 @@ async def ingest_upload(
     """
     filename = safe_filename(filename)
     category = safe_category(category)
+    check_file(filename, data)
     doc: SectionedDocument = await asyncio.to_thread(_load, data, filename, category, known_categories or [])
     chunks, report = build_upload_chunks(doc)
     if not chunks:

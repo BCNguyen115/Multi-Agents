@@ -12,7 +12,7 @@
  * `planSync` is pure so these rules can be tested without a browser or a server.
  */
 
-import { sanitizeMessagesForStorage } from './storage';
+import { localKey, sanitizeMessagesForStorage, STORAGE_MESSAGES_KEY, STORAGE_SESSIONS_KEY } from './storage';
 import { isUnauthorized } from './authClient';
 import type { ChatMessage } from './types';
 import { getLang, t } from './i18n';
@@ -103,29 +103,49 @@ export function planSync(local: LocalView[], remote: RemoteSummary[], state: Syn
   return plan;
 }
 
-export function loadSyncState(): SyncState {
+export function loadSyncState(owner: string): SyncState {
   try {
-    const raw = localStorage.getItem(SYNC_STATE_KEY);
+    const raw = localStorage.getItem(localKey(SYNC_STATE_KEY, owner));
     return raw ? (JSON.parse(raw) as SyncState) : {};
   } catch {
     return {};
   }
 }
 
-export function saveSyncState(state: SyncState): void {
+export function saveSyncState(state: SyncState, owner: string): void {
   try {
-    localStorage.setItem(SYNC_STATE_KEY, JSON.stringify(state));
+    localStorage.setItem(localKey(SYNC_STATE_KEY, owner), JSON.stringify(state));
   } catch {
     /* storage full or blocked: the next sync simply starts from what the server says */
   }
 }
 
-/** Everything the browser keeps about conversations (used on sign-out and when another user signs in on this browser). */
-export function clearLocalConversations(keys: string[]): void {
+/** Everything this browser keeps about ONE account's conversations (used on its sign-out; other accounts' copies stay). */
+export function clearLocalConversations(owner: string): void {
   try {
-    [SYNC_STATE_KEY, SYNC_OWNER_KEY, ...keys].forEach((key) => localStorage.removeItem(key));
+    [STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY, SYNC_STATE_KEY].forEach((base) => localStorage.removeItem(localKey(base, owner)));
   } catch {
     /* nothing to clear */
+  }
+}
+
+/**
+ * Before conversations were kept per account, every account on this browser shared one set of keys. That copy is handed to
+ * the account recorded as its owner (nobody else: anything of unknown or other ownership is dropped), then the shared keys go.
+ */
+export function migrateLegacyLocalConversations(owner: string): void {
+  try {
+    const legacyOwner = localStorage.getItem(SYNC_OWNER_KEY);
+    const legacyKeys = [STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY, SYNC_STATE_KEY];
+    if (legacyOwner === owner) {
+      for (const base of legacyKeys) {
+        const value = localStorage.getItem(base);
+        if (value !== null && localStorage.getItem(localKey(base, owner)) === null) localStorage.setItem(localKey(base, owner), value);
+      }
+    }
+    [...legacyKeys, SYNC_OWNER_KEY].forEach((key) => localStorage.removeItem(key));
+  } catch {
+    /* storage blocked: nothing to migrate */
   }
 }
 

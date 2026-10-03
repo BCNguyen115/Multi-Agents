@@ -54,6 +54,8 @@ class Principal:
     roles: frozenset[str] = frozenset()
     authenticated: bool = False
     display_name: str = ""  # shown in the UI; the ``name`` claim of a built-in sign-in token, empty otherwise
+    token_id: str = ""      # the token's ``jti`` (what a sign-out revokes); empty for a token without one
+    token_exp: int = 0      # the token's ``exp``: how long a revocation has to be remembered
 
     def session(self, client_session_id: str) -> str:
         """The session key used everywhere behind the gateway: bound to the user when authenticated."""
@@ -63,6 +65,12 @@ class Principal:
     def can_approve(self) -> bool:
         """Anonymous dev mode may approve; with authentication only the configured roles may."""
         return not self.authenticated or bool(self.roles & set(settings.HITL_APPROVER_ROLES))
+
+    @property
+    def unassigned(self) -> bool:
+        """A signed-in account nobody has moved out of the pending tenant yet (a fresh self-registration): it may chat,
+        but sees no document of the knowledge base and no database row."""
+        return self.authenticated and self.tenant_id == settings.REGISTRATION_TENANT_ID
 
     @property
     def can_manage_knowledge(self) -> bool:
@@ -78,6 +86,20 @@ def current_scope() -> tuple[str, str]:
     """(tenant id, department id) of the request being served; the configured defaults outside a request."""
     principal = _current.get()
     return (principal.tenant_id, principal.department_id) if principal else (settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
+
+
+def current_principal() -> Optional[Principal]:
+    """The caller of the request being served (``None`` outside a request)."""
+    return _current.get()
+
+
+def knowledge_tenants() -> Optional[list[str]]:
+    """Tenants whose chunks the caller may retrieve (``None`` = all). An unassigned account gets only its own pending tenant,
+    under which no chunk is ever stored."""
+    principal = _current.get()
+    if principal is not None and principal.unassigned:
+        return [principal.tenant_id]
+    return settings.RAG_TENANT_IDS
 
 
 def memory_user_id(session_id: str) -> str:
@@ -99,6 +121,8 @@ def validate_auth_config() -> None:
     if mode not in ("off", "jwt"):
         raise RuntimeError(f"AUTH_MODE must be 'off' or 'jwt', got {mode!r}")
     if mode == "off":
+        if settings.APP_ENV == "production":
+            raise RuntimeError("APP_ENV=production refuses AUTH_MODE=off: every caller would be an anonymous administrator")
         if settings.INTERNAL_JWT_SECRET and _looks_like_placeholder(settings.INTERNAL_JWT_SECRET):
             logger.warning("INTERNAL_JWT_SECRET is still a placeholder value; set a real secret before exposing the service")
         logger.warning("AUTH_MODE=off: the gateway accepts anonymous requests (fine for local development only)")
@@ -150,6 +174,8 @@ def _principal_from_claims(claims: dict[str, Any]) -> Principal:
         roles=frozenset(str(r) for r in ([roles] if isinstance(roles, str) else roles)),
         authenticated=True,
         display_name=str(claims.get("name") or "")[:64],
+        token_id=str(claims.get("jti") or ""),
+        token_exp=int(claims.get("exp") or 0),
     )
 
 
@@ -157,15 +183,22 @@ def _principal_from_claims(claims: dict[str, Any]) -> Principal:
 # Built-in sign-in (the browser login screen): users from AUTH_USERS, scrypt password hashes, HS256 tokens
 # ---------------------------------------------------------------------------
 
-_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
+_SCRYPT_R, _SCRYPT_P = 8, 2
+_SCRYPT_MAXMEM = 256 * 1024 * 1024  # hashlib's default (32 MiB) is below what N=2**16 needs
+_SCRYPT_MAX_LOG2_N = 20  # a stored hash asking for more than this is refused, not computed
+
+
+def _scrypt_n() -> int:
+    return 1 << settings.AUTH_SCRYPT_LOG2_N
 _DUMMY_HASH: str = ""  # verified against when the user is unknown, so a miss costs as much as a wrong password (no user enumeration)
 
 
 def hash_password(password: str, salt: Optional[bytes] = None) -> str:
     """``scrypt$N$r$p$<salt hex>$<hash hex>``: the format stored in ``AUTH_USERS[].password_hash``."""
     salt = salt or secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32)
-    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt.hex()}${digest.hex()}"
+    n = _scrypt_n()
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=n, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32, maxmem=_SCRYPT_MAXMEM)
+    return f"scrypt${n}${_SCRYPT_R}${_SCRYPT_P}${salt.hex()}${digest.hex()}"
 
 
 def verify_password(password: str, stored: str) -> bool:
@@ -174,9 +207,20 @@ def verify_password(password: str, stored: str) -> bool:
         scheme, n, r, p, salt_hex, hash_hex = stored.split("$")
         if scheme != "scrypt":
             return False
-        digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), n=int(n), r=int(r), p=int(p), dklen=len(hash_hex) // 2)
+        if int(n) > (1 << _SCRYPT_MAX_LOG2_N):
+            return False
+        digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), n=int(n), r=int(r), p=int(p), dklen=len(hash_hex) // 2, maxmem=_SCRYPT_MAXMEM)
         return hmac.compare_digest(digest.hex(), hash_hex)
     except (ValueError, TypeError):
+        return False
+
+
+def needs_rehash(stored: str) -> bool:
+    """Was this hash made with a lower cost than today's setting? (it is then replaced after a successful sign-in)"""
+    try:
+        _, n, r, p, _, _ = stored.split("$")
+        return int(n) < _scrypt_n() or int(r) < _SCRYPT_R or int(p) < _SCRYPT_P
+    except ValueError:
         return False
 
 
@@ -241,6 +285,7 @@ def issue_login_token(user: dict[str, Any]) -> tuple[str, int]:
         "sub": str(user["username"]),
         "iat": now,
         "exp": now + ttl,
+        "jti": secrets.token_urlsafe(12),  # lets a sign-out revoke exactly this token
         settings.AUTH_TENANT_CLAIM: str(user.get("tenant_id") or settings.RLS_TENANT_ID),
         settings.AUTH_DEPARTMENT_CLAIM: str(user.get("department_id") or settings.RLS_DEPARTMENT_ID),
         settings.AUTH_ROLES_CLAIM: list(user.get("roles") or []),
@@ -254,6 +299,59 @@ def issue_login_token(user: dict[str, Any]) -> tuple[str, int]:
     return jwt.encode(claims, settings.AUTH_JWT_SECRET, algorithm="HS256"), ttl
 
 
+# ---------------------------------------------------------------------------
+# Revocation: tokens are stateless, so "signed out" and "password changed" are remembered in Redis for as long as a token could
+# still be valid. Two kinds of entry: one token (``jti``, sign-out) and everything issued to a user before a moment (password
+# change or reset). If Redis cannot be asked the token is accepted (fail open, like the rate limiter: Redis down must not lock
+# everybody out); the token's own expiry still applies.
+# ---------------------------------------------------------------------------
+
+_REVOKED_KEY = "authrevoked:"
+_VALID_AFTER_KEY = "authvalid:"
+
+
+async def revoke_token(redis_client: Any, principal: Principal) -> bool:
+    """Make this one token unusable from now on (sign-out). ``False`` when there was nothing to revoke or Redis failed."""
+    client = getattr(redis_client, "client", None)
+    if client is None or not principal.token_id:
+        return False
+    try:
+        await client.set(_REVOKED_KEY + principal.token_id, "1", ex=max(principal.token_exp - int(time.time()), 1) + 5)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not revoke a token: %s", exc or type(exc).__name__)
+        return False
+
+
+async def revoke_user_sessions(redis_client: Any, user_id: str) -> bool:
+    """Every token issued to ``user_id`` before now stops working (a password change or reset); tokens issued afterwards do."""
+    client = getattr(redis_client, "client", None)
+    if client is None:
+        return False
+    try:
+        await client.set(_VALID_AFTER_KEY + user_id, str(int(time.time())), ex=settings.AUTH_TOKEN_TTL_MINUTES * 60 + 60)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not revoke the sessions of %s: %s", user_id, exc or type(exc).__name__)
+        return False
+
+
+async def _is_revoked(redis_client: Any, claims: dict[str, Any]) -> bool:
+    client = getattr(redis_client, "client", None)
+    if client is None:
+        return False
+    jti = str(claims.get("jti") or "")
+    keys = [_VALID_AFTER_KEY + str(claims["sub"])] + ([_REVOKED_KEY + jti] if jti else [])
+    try:
+        values = await client.mget(keys)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Revocation list unavailable, the token is accepted: %s", exc or type(exc).__name__)
+        return False
+    if len(values) > 1 and values[1]:
+        return True
+    return bool(values[0]) and int(claims.get("iat") or 0) < int(values[0])
+
+
 async def authenticate(request: Request) -> Principal:
     """FastAPI dependency for every protected route."""
     if settings.AUTH_MODE != "jwt":
@@ -263,9 +361,13 @@ async def authenticate(request: Request) -> Principal:
         if scheme.lower() != "bearer" or not token.strip():
             raise HTTPException(status_code=401, detail=msg("auth.missing"), headers={"WWW-Authenticate": "Bearer"})
         try:
-            principal = _principal_from_claims(_decode(token.strip()))
+            claims = _decode(token.strip())
         except jwt.PyJWTError as exc:
             logger.info("Rejected token: %s", type(exc).__name__)
             raise HTTPException(status_code=401, detail=msg("auth.invalid"), headers={"WWW-Authenticate": "Bearer"}) from exc
+        if await _is_revoked(getattr(request.app.state, "redis_client", None), claims):
+            logger.info("Rejected a revoked token (signed out, or the password changed since)")
+            raise HTTPException(status_code=401, detail=msg("auth.invalid"), headers={"WWW-Authenticate": "Bearer"})
+        principal = _principal_from_claims(claims)
     _current.set(principal)
     return principal

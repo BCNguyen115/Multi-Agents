@@ -9,6 +9,8 @@ export interface Me {
   roles: string[];
   can_approve: boolean;
   can_manage_knowledge: boolean;
+  /** A fresh sign-up: chat works, documents and database rows come after an administrator grants access. */
+  access_pending?: boolean;
 }
 
 export const LOGIN_PATH = '/login';

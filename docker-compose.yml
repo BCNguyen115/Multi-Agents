@@ -13,8 +13,8 @@ x-langfuse-env: &langfuse-env
   DIRECT_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agentdb}?schema=langfuse
   REDIS_HOST: redis
   REDIS_PORT: "6379"
-  REDIS_CONNECTION_STRING: redis://redis:6379
-  REDIS_AUTH: ""
+  REDIS_CONNECTION_STRING: redis://default:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (hex, no special characters)}@redis:6379
+  REDIS_AUTH: ${REDIS_PASSWORD}
   NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?Set LANGFUSE_NEXTAUTH_SECRET in .env}
   SALT: ${LANGFUSE_SALT:?Set LANGFUSE_SALT in .env}
   TELEMETRY_ENABLED: "false"
@@ -46,12 +46,17 @@ services:
     <<: *restart
     image: redis:8-alpine  # the existing redis_data volume was written by Redis 8 (RDB v15); an older major cannot load it
     container_name: agent_redis
+    # Everything on the Docker network can reach Redis, and it holds pending approvals, chat history, cached files and the
+    # rate-limit counters: it asks for a password. Use a URL-safe one (e.g. `openssl rand -hex 24`).
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (hex, no special characters)}"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}   # lets the health check below log in
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -71,12 +76,18 @@ services:
         required: false
     environment:   # service-network values override anything in .env
       POSTGRES_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agentdb}
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      APP_ENV: ${APP_ENV:-production}   # production refuses AUTH_MODE=off and hides /docs (EXPOSE_API_DOCS=true shows it)
+      AUTH_MODE: ${AUTH_MODE:-jwt}      # secure by default; AUTH_MODE=off only for a local trial
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
       LANGFUSE_HOST: http://langfuse-web:3000
       MEM0_VECTOR_STORE: pgvector   # long-term memory in PostgreSQL: it survives restarts
+      # Which peers may tell the backend a visitor's real address (X-Forwarded-For). Default: nobody, so the backend sees the
+      # frontend's address for everyone. Behind a reverse proxy that OVERWRITES the header, set this to the frontend's address
+      # or network (e.g. 172.18.0.0/16); never "*" while the backend port is reachable by clients.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       DB_AGENT_PASSWORD: ${DB_AGENT_PASSWORD:-}   # >= 16 chars: the Database Agent then runs SQL as a read-only role
       RERANKER_ENDPOINT: http://tei-reranker:80/rerank
       SANDBOX_URL: http://python-sandbox:8080     # LLM-written analysis code runs there, not next to the API's secrets
@@ -107,7 +118,7 @@ services:
     environment:
       API_URL: http://backend:8000
     ports:
-      - "3001:3000"
+      - "${FRONTEND_BIND:-0.0.0.0}:3001:3000"   # behind a TLS proxy set FRONTEND_BIND=127.0.0.1 (deploy/nginx-tls.example.conf)
     depends_on:
       backend:
         condition: service_healthy

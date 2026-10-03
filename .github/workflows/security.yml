@@ -1,0 +1,63 @@
+# Security scans. Not yet run on GitHub itself: written against the project layout and the audits run locally.
+#   dependencies: informational for now. `npm audit` reports 3 high + 1 moderate that need MAJOR upgrades (Next 16, pptxgenjs 4);
+#                 remove `continue-on-error` once those land, so a new high severity fails the build.
+#   secrets:      blocking. A false positive goes into .gitleaks.toml (allowlist), never a `continue-on-error`.
+#   filesystem:   Trivy over the repository (dependencies' known CVEs, Dockerfile and compose misconfigurations).
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1" # weekly: new advisories appear without any commit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit (pinned versions)
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.lock --no-deps --disable-pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: npm audit (runtime dependencies)
+        continue-on-error: true
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the whole history: a secret removed later is still in it
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  filesystem:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scanners: vuln,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0" # informational until the dependency upgrades above are done

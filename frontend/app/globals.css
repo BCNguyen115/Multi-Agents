@@ -2,7 +2,7 @@
    MULTI-AGENT ENTERPRISE SYSTEM — GLOBAL DESIGN TOKENS & STYLES
    Design Language: Modern Enterprise B2B AI Studio (Linear/Vercel/Datadog)
    Color Mode: Dark-First (default), Light Mode supported
-   Grid System: 8-point grid | Font: Inter + System Font Stack
+   Grid System: 8-point grid | Font: IBM Plex Sans + IBM Plex Mono (@fontsource, app/layout.tsx)
    ============================================================================ */
 
 /* AG-Grid Theme Imports (Quartz for Dark/Light parity) */
@@ -19,9 +19,6 @@
     @apply inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface-raised hover:bg-surface-overlay text-foreground border border-border rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40;
   }
 }
-
-/* ── Google Font: Inter (variable weight) ────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 
 /* ============================================================================
    1. CSS CUSTOM PROPERTIES — LIGHT MODE (Base / Default Root)
@@ -71,8 +68,9 @@
   --shadow-glow-emerald:  0 0 20px rgba(5, 150, 105, 0.1);
 
   /* ── Typography ── */
-  --font-sans:            'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono:            'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  /* IBM Plex is loaded in app/layout.tsx from @fontsource */
+  --font-sans:            'IBM Plex Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono:            'IBM Plex Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
 
   /* ── Spacing (8pt grid) ── */
   --space-1:  4px;
@@ -158,7 +156,6 @@
    ============================================================================ */
 html {
   font-family: var(--font-sans);
-  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;

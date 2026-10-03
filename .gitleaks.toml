@@ -1,0 +1,16 @@
+# gitleaks: the default rules plus an allowlist for placeholders that are not secrets.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "placeholders in documentation, examples and tests"
+paths = [
+  '''\.env\.example$''',
+  '''tests/''',
+  '''docs/''',
+]
+regexes = [
+  '''change-me''',
+  '''your-[a-z-]*-key''',
+  '''ci-sandbox-secret-0123456789''',
+]

@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
-import ReactMarkdown from 'react-markdown';
+import React, { useState, useCallback, useMemo } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import { t, useLang } from '../lib/i18n';
 import remarkGfm from 'remark-gfm';
 import { Bot, User, ExternalLink, AlertTriangle, Copy, Check, Loader2, ShieldCheck, ShieldAlert, Hourglass } from 'lucide-react';
@@ -179,7 +179,122 @@ function CopyCodeButton({ code }: { code: string }) {
   );
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({
+/** The text and sources of a JSON-wrapped assistant reply; `isSummary` is the data agent's `type: "text_summary"` label, whatever the language. */
+function parseWrappedReply(role: string, content: unknown): { text?: string; sources?: SourceItem[]; isSummary: boolean } {
+  if (role !== 'assistant' || !content || typeof content !== 'string') return { isSummary: false };
+  const trimmed = content.trim();
+  if (!(trimmed.startsWith('{') && trimmed.endsWith('}'))) return { isSummary: false };
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return { isSummary: false };
+    const text = parsed.explanation || parsed.content || parsed.answer || parsed.response || parsed.text;
+    return {
+      text: text && typeof text === 'string' ? text : undefined,
+      sources: Array.isArray(parsed.sources) ? parsed.sources : undefined,
+      isSummary: parsed.type === 'text_summary',
+    };
+  } catch {
+    return { isSummary: false }; // fall back to the raw content
+  }
+}
+
+// Defined once: a new object on every render makes ReactMarkdown rebuild its tree on every streamed token
+const MARKDOWN_COMPONENTS: Components = {
+    h1({ children }) {
+      return <h1 className="text-xl font-bold text-foreground my-3">{children}</h1>;
+    },
+    h2({ children }) {
+      return <h2 className="text-lg font-bold text-foreground my-3">{children}</h2>;
+    },
+    h3({ children }) {
+      return <h3 className="font-bold my-3 text-foreground text-base leading-snug">{children}</h3>;
+    },
+    ul({ children }) {
+      return <ul className="list-disc pl-5 my-2 space-y-1.5 marker:text-accent-primary text-foreground-secondary">{children}</ul>;
+    },
+    ol({ children }) {
+      return <ol className="list-decimal pl-5 my-2 space-y-1.5 text-foreground-secondary">{children}</ol>;
+    },
+    li({ children }) {
+      return <li className="leading-relaxed text-sm">{children}</li>;
+    },
+    strong({ children }) {
+      return (
+        <strong className="font-semibold text-foreground bg-accent-primary/8 px-1 py-0.5 rounded border border-accent-primary/15">
+          {children}
+        </strong>
+      );
+    },
+    a({ href, children }) {
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-0.5 text-accent-primary hover:text-accent-primary-hover underline font-medium hover:bg-accent-primary/5 px-1 rounded transition-colors"
+        >
+          {children}
+          <ExternalLink className="w-3 h-3 ml-0.5 inline shrink-0" />
+        </a>
+      );
+    },
+    p({ children }) {
+      return <p className="my-2 leading-relaxed text-foreground-secondary text-sm">{children}</p>;
+    },
+    table({ children }) {
+      return (
+        <div className="overflow-x-auto my-3.5 rounded-lg border border-border shadow-xs">
+          <table className="w-full text-xs border-collapse text-left">{children}</table>
+        </div>
+      );
+    },
+    thead({ children }) {
+      return <thead className="bg-surface-raised text-foreground font-bold border-b border-border uppercase tracking-wider text-xs">{children}</thead>;
+    },
+    tr({ children }) {
+      return <tr className="border-b border-border last:border-0 hover:bg-surface-raised/50 transition-colors">{children}</tr>;
+    },
+    th({ children }) {
+      return <th className="p-2.5 font-bold text-foreground">{children}</th>;
+    },
+    td({ children }) {
+      const textContent = String(children || '');
+      const isNumeric = /^-?\d[\d,.]*$/;
+      return (
+        <td className={`p-2.5 text-foreground-secondary ${isNumeric.test(textContent.trim()) ? 'font-mono text-right tabular-nums' : ''}`}>
+          {children}
+        </td>
+      );
+    },
+    code({ className, children, ...props }) {
+      const isInline = !className;
+      if (isInline) {
+        return (
+          <code className="bg-surface-raised text-accent-error px-1.5 py-0.5 rounded text-xs font-mono" {...props}>
+            {children}
+          </code>
+        );
+      }
+      const codeString = String(children).replace(/\n$/, '');
+      return (
+        <div className="relative group my-3.5 rounded-xl overflow-hidden border border-border shadow-xs">
+          {/* Code Block Header */}
+          <div className="flex items-center justify-between px-3.5 py-1.5 bg-surface-raised/80 border-b border-border text-xs font-mono text-foreground-muted select-none">
+            <span>{className ? className.replace('language-', '').toUpperCase() : 'CODE'}</span>
+            <CopyCodeButton code={codeString} />
+          </div>
+          {/* Theme-aware Code Content */}
+          <pre className="p-4 bg-surface-raised/40 text-foreground overflow-x-auto text-xs font-mono leading-relaxed">
+            <code className={className} {...props}>
+              {children}
+            </code>
+          </pre>
+        </div>
+      );
+    },
+};
+
+const ChatMessageView: React.FC<ChatMessageProps> = ({
   message,
   userQuery,
   isSending,
@@ -188,9 +303,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   onGenerateDashboard,
 }) => {
   const [lang] = useLang();
-  let displayAnswer = message.content;
-  let parsedSources: SourceItem[] = message.sources || [];
-  let isSummaryReply = false; // the data agent labels its text summaries `type: "text_summary"`, whatever the language
+  // The reply may be a JSON envelope: parsed when the content changes, not on every render
+  const wrapped = useMemo(() => parseWrappedReply(message.role, message.content), [message.role, message.content]);
+  const displayAnswer = wrapped.text ?? message.content;
+  let parsedSources: SourceItem[] = wrapped.sources ?? message.sources ?? [];
+  const isSummaryReply = wrapped.isSummary;
 
   const isThisMessageLoading =
     message.status === 'loading' ||
@@ -200,28 +317,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   const isDashboardIntent = hasDashboardIntent(userQuery, message);
   const shouldRenderDashboardSkeleton =
     isThisMessageLoading && message.role === 'assistant' && isTargetData && isDashboardIntent;
-
-  // Parse JSON response if wrapped
-  if (message.role === 'assistant' && message.content && typeof message.content === 'string') {
-    const trimmed = message.content.trim();
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed === 'object') {
-          isSummaryReply = parsed.type === 'text_summary';
-          const extractedText = parsed.explanation || parsed.content || parsed.answer || parsed.response || parsed.text;
-          if (extractedText && typeof extractedText === 'string') {
-            displayAnswer = extractedText;
-          }
-          if (Array.isArray(parsed.sources)) {
-            parsedSources = parsed.sources;
-          }
-        }
-      } catch {
-        // fallback to raw content
-      }
-    }
-  }
 
   if (displayAnswer && parsedSources.length === 0) {
     const extractedWebSources = extractWebSourcesFromMarkdown(displayAnswer);
@@ -323,100 +418,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             <VerificationStrip message={message} loading={Boolean(isThisMessageLoading)} />
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
-              components={{
-                h1({ children }) {
-                  return <h1 className="text-xl font-extrabold text-foreground my-3">{children}</h1>;
-                },
-                h2({ children }) {
-                  return <h2 className="text-lg font-bold text-foreground my-3">{children}</h2>;
-                },
-                h3({ children }) {
-                  return <h3 className="font-bold my-3 text-foreground text-base leading-snug">{children}</h3>;
-                },
-                ul({ children }) {
-                  return <ul className="list-disc pl-5 my-2 space-y-1.5 marker:text-accent-primary text-foreground-secondary">{children}</ul>;
-                },
-                ol({ children }) {
-                  return <ol className="list-decimal pl-5 my-2 space-y-1.5 text-foreground-secondary">{children}</ol>;
-                },
-                li({ children }) {
-                  return <li className="leading-relaxed text-sm">{children}</li>;
-                },
-                strong({ children }) {
-                  return (
-                    <strong className="font-semibold text-foreground bg-accent-primary/8 px-1 py-0.5 rounded border border-accent-primary/15">
-                      {children}
-                    </strong>
-                  );
-                },
-                a({ href, children }) {
-                  return (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-0.5 text-accent-primary hover:text-accent-primary-hover underline font-medium hover:bg-accent-primary/5 px-1 rounded transition-colors"
-                    >
-                      {children}
-                      <ExternalLink className="w-3 h-3 ml-0.5 inline shrink-0" />
-                    </a>
-                  );
-                },
-                p({ children }) {
-                  return <p className="my-2 leading-relaxed text-foreground-secondary text-sm">{children}</p>;
-                },
-                table({ children }) {
-                  return (
-                    <div className="overflow-x-auto my-3.5 rounded-lg border border-border shadow-xs">
-                      <table className="w-full text-xs border-collapse text-left">{children}</table>
-                    </div>
-                  );
-                },
-                thead({ children }) {
-                  return <thead className="bg-surface-raised text-foreground font-bold border-b border-border uppercase tracking-wider text-xs">{children}</thead>;
-                },
-                tr({ children }) {
-                  return <tr className="border-b border-border last:border-0 hover:bg-surface-raised/50 transition-colors">{children}</tr>;
-                },
-                th({ children }) {
-                  return <th className="p-2.5 font-bold text-foreground">{children}</th>;
-                },
-                td({ children }) {
-                  const textContent = String(children || '');
-                  const isNumeric = /^-?\d[\d,.]*$/;
-                  return (
-                    <td className={`p-2.5 text-foreground-secondary ${isNumeric.test(textContent.trim()) ? 'font-mono text-right tabular-nums' : ''}`}>
-                      {children}
-                    </td>
-                  );
-                },
-                code({ className, children, ...props }) {
-                  const isInline = !className;
-                  if (isInline) {
-                    return (
-                      <code className="bg-surface-raised text-accent-error px-1.5 py-0.5 rounded text-xs font-mono" {...props}>
-                        {children}
-                      </code>
-                    );
-                  }
-                  const codeString = String(children).replace(/\n$/, '');
-                  return (
-                    <div className="relative group my-3.5 rounded-xl overflow-hidden border border-border shadow-xs">
-                      {/* Code Block Header */}
-                      <div className="flex items-center justify-between px-3.5 py-1.5 bg-surface-raised/80 border-b border-border text-xs font-mono text-foreground-muted select-none">
-                        <span>{className ? className.replace('language-', '').toUpperCase() : 'CODE'}</span>
-                        <CopyCodeButton code={codeString} />
-                      </div>
-                      {/* Theme-aware Code Content */}
-                      <pre className="p-4 bg-surface-raised/40 text-foreground overflow-x-auto text-xs font-mono leading-relaxed">
-                        <code className={className} {...props}>
-                          {children}
-                        </code>
-                      </pre>
-                    </div>
-                  );
-                },
-              }}
+              components={MARKDOWN_COMPONENTS}
             >
               {displayAnswer}
             </ReactMarkdown>
@@ -452,3 +454,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
     </div>
   );
 };
+
+/** Memoised: while one reply streams, the other messages keep their props and are not rendered again. */
+export const ChatMessage = React.memo(ChatMessageView);

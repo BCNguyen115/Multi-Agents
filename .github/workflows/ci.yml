@@ -61,6 +61,7 @@ jobs:
           POSTGRES_PASSWORD: ci
           LANGFUSE_NEXTAUTH_SECRET: ci
           LANGFUSE_SALT: ci
+          REDIS_PASSWORD: ci
           SANDBOX_SECRET: ci-sandbox-secret-0123456789
       - name: Tests
         run: python -m pytest tests -q

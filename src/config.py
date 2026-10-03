@@ -109,6 +109,10 @@ class Settings(BaseSettings):
     # ponytail: single static tenant until the gateway carries an authenticated identity
     RLS_TENANT_ID: str = "tenant_enterprise"
     RLS_DEPARTMENT_ID: str = "dept_general"
+    # Self-registered accounts start here: nothing is stored under this tenant, so they see no document and no database row
+    # until an administrator moves them (python -m scripts.grant_user)
+    REGISTRATION_TENANT_ID: str = "tenant_pending"
+    REGISTRATION_DEPARTMENT_ID: str = "dept_pending"
     HITL_APPROVAL_TTL_SECONDS: int = 900
 
     # --- Gateway authentication (see src/shared/auth.py) ---
@@ -125,13 +129,20 @@ class Settings(BaseSettings):
     # Make the hash with `python -m scripts.make_user`. With an identity provider (AUTH_JWKS_URL) leave this empty.
     AUTH_USERS: list[dict[str, Any]] = []
     AUTH_TOKEN_TTL_MINUTES: int = 480   # lifetime of a token issued by /api/auth/login
+    AUTH_SCRYPT_LOG2_N: int = 16        # password hash cost (N = 2**this, r=8, p=2: the OWASP minimum, 64 MiB per hash); older hashes are upgraded at sign-in
     # Self-service sign-up (POST /api/auth/register): OFF by default, an internal system normally gets its accounts from an
     # administrator. New accounts get NO roles (no approving, no knowledge upload) and the default tenant/department below.
     AUTH_ALLOW_REGISTRATION: bool = False
-    RATE_LIMIT_LOGIN_PER_MINUTE: int = 10     # sign-in attempts per IP per minute (brute force); 0 = unlimited
+    # Sign-in attempts per client IP per minute: only a flood guard (scrypt costs CPU). Behind the frontend every caller may share
+    # one IP unless a trusted proxy forwards X-Forwarded-For (see FORWARDED_ALLOW_IPS in docker-compose.yml), so the real brute-force
+    # defence is the per-ACCOUNT lock-out below. 0 = unlimited
+    RATE_LIMIT_LOGIN_PER_MINUTE: int = 60
+    AUTH_MAX_FAILURES: int = 8                # wrong passwords / recovery keys for ONE account within the window, then it waits; 0 = off
+    AUTH_FAILURE_WINDOW_MINUTES: int = 15     # how long failures count, and how long the account then waits
     RATE_LIMIT_REGISTER_PER_MINUTE: int = 5   # sign-up attempts per IP per minute; 0 = unlimited
     RATE_LIMIT_PASSWORD_PER_MINUTE: int = 5   # password change / reset attempts per IP (reset) or user (change) per minute; 0 = unlimited
     RATE_LIMIT_CHAT_PER_MINUTE: int = 30      # chat / stream / title calls per user (or IP) per minute; 0 = unlimited
+    RATE_LIMIT_CHAT_PER_DAY: int = 500        # the same calls per user (or IP) per day: every one costs several LLM calls; 0 = unlimited
     RATE_LIMIT_ANALYZE_PER_MINUTE: int = 10   # uploads / analyses per user (or IP) per minute; 0 = unlimited
     HITL_APPROVER_ROLES: list[str] = ["approver", "admin"]  # roles allowed to approve a sensitive action (authenticated mode)
 
@@ -141,6 +152,10 @@ class Settings(BaseSettings):
     KNOWLEDGE_UPLOAD_ROLES: list[str] = ["admin"]  # roles allowed to add/replace documents (authenticated mode; anonymous dev may)
     KNOWLEDGE_MAX_FILE_MB: int = 25
     KNOWLEDGE_MAX_CHUNKS: int = 2000    # one document may not produce more chunks than this (embedding cost)
+    KNOWLEDGE_MAX_UNCOMPRESSED_MB: int = 200   # a DOCX/PPTX may not unpack to more than this (decompression bombs)
+    KNOWLEDGE_PARSE_ISOLATED: bool = True      # open uploads in a child process (src/shared/isolated.py); off = in this process
+    KNOWLEDGE_PARSE_TIMEOUT_SECONDS: int = 120
+    KNOWLEDGE_PARSE_MEMORY_MB: int = 3072      # address-space limit of that child (Linux)
     KNOWLEDGE_DIR: str = "dataset"      # a copy of each upload is kept in <KNOWLEDGE_DIR>/<category>/ so run_ingestion --prune/--reset keep it
     # OCR of scanned PDFs (needs the tesseract program; see src/ingestion/ocr.py)
     OCR_ENABLED: bool = True
@@ -158,6 +173,13 @@ class Settings(BaseSettings):
 
     # --- Application ---
     LOG_LEVEL: str = "INFO"
+    # What the trace server (Langfuse) may see: personal data (VN phone, CCCD, email, card numbers) is masked in the traces this
+    # backend sends. LiteLLM sends the prompts and answers of each model call by itself: set LANGFUSE_LOG_LLM_MESSAGES=false when
+    # they may hold salary, HR or contract text you do not want stored there (the calls are still traced, without their content).
+    LANGFUSE_MASK_PII: bool = True
+    LANGFUSE_LOG_LLM_MESSAGES: bool = True
+    APP_ENV: str = "development"       # production: refuses AUTH_MODE=off and hides /docs, /redoc, /openapi.json
+    EXPOSE_API_DOCS: bool = False     # show the API docs even in production (behind your own proxy rules)
     # Browser origins allowed to call the gateway (set as JSON list in .env for other deployments)
     CORS_ALLOW_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
 

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useRef, useState } from 'react';
-import { Settings } from 'lucide-react';
+import { LogIn, Settings } from 'lucide-react';
 import { useAuth, type UserRole } from '../../context/AuthContext';
 import { t, useLang, type MessageKey } from '../../lib/i18n';
 import { SettingsMenu } from './SettingsMenu';
@@ -21,7 +21,8 @@ const ROLE_LABEL: Record<UserRole, MessageKey> = {
 /** Avatar, name, status and the settings button at the foot of the sidebar. */
 export function UserProfileWidget({ isCollapsed = false }: UserProfileWidgetProps) {
   const [lang] = useLang();
-  const { user, isGuest } = useAuth();
+  const { user, isGuest, config, openAuthModal } = useAuth();
+  const guestCanSignIn = isGuest && config.login_enabled; // a guest with nothing to sign in to keeps the plain guest card
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const gearRef = useRef<HTMLButtonElement>(null);
@@ -63,7 +64,33 @@ export function UserProfileWidget({ isCollapsed = false }: UserProfileWidgetProp
 
   return (
     <div ref={containerRef} data-testid="user-profile-widget">
-      {isCollapsed ? (
+      {guestCanSignIn ? (
+        isCollapsed ? (
+          <div className="flex flex-col items-center gap-2 py-1">
+            {gear}
+            <button
+              type="button"
+              onClick={() => openAuthModal('signin')}
+              aria-label={t(lang, 'user.signIn')}
+              title={t(lang, 'user.signIn')}
+              className="w-9 h-9 rounded-full flex items-center justify-center bg-surface-raised text-foreground hover:bg-surface-overlay transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+            >
+              <LogIn className="w-[18px] h-[18px]" aria-hidden="true" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-2 py-1">
+            <button
+              type="button"
+              onClick={() => openAuthModal('signin')}
+              className="rounded-full bg-surface-raised px-5 py-2 text-sm font-medium text-foreground hover:bg-surface-overlay transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+            >
+              {t(lang, 'user.signIn')}
+            </button>
+            {gear}
+          </div>
+        )
+      ) : isCollapsed ? (
         <div className="flex flex-col items-center gap-2 py-1">
           {gear}
           <span title={`${displayName} · ${status}`}>{avatar}</span>

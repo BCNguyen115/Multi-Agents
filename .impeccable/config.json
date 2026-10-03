@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "frontend/app/globals.css"
+        ],
+        "createdAt": "2026-10-02T16:20:07.498Z",
+        "reason": "user confirmed: the 3px KPI accent bar (.kpi-card::before) is the KPI signature in DESIGN.md; chose 'Giu nguyen' in the critique of 2026-10-02"
+      }
+    ]
+  }
+}
