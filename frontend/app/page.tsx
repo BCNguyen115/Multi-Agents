@@ -16,6 +16,7 @@ import { exportDashboardToPDF, exportDashboardToPPTX } from '../lib/exportEngine
 import { toast } from '../lib/toast';
 import { getLang, isDefaultChatTitle, t, useLang } from '../lib/i18n';
 import { apiFetch } from '../lib/apiFetch';
+import { findEmptyChat } from '../lib/newChat';
 
 export default function HomePage() {
   const [currentAgentMode, setCurrentAgentMode] = useState<string>('RAG Agent');
@@ -30,6 +31,8 @@ export default function HomePage() {
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const isMounted = loadedFor !== null;
   const [lang] = useLang();
+  // "New chat" on a conversation nobody has written in: its row in the sidebar flashes (n makes a repeat click flash again)
+  const [flash, setFlash] = useState<{ id: string; n: number } | null>(null);
 
   // A fresh sign-up has no data access yet: say so once, instead of leaving the empty answers unexplained
   const accessPending = Boolean(me?.access_pending);
@@ -158,6 +161,14 @@ export default function HomePage() {
   };
 
   const handleNewChat = () => {
+    // Only a conversation with a user prompt earns another one: otherwise go back to the empty one that already exists
+    const reuse = findEmptyChat(sessions, messagesMap, activeSessionId);
+    if (reuse) {
+      setActiveSessionId(reuse);
+      setViewMode('chat');
+      setFlash((prev) => ({ id: reuse, n: (prev?.n ?? 0) + 1 }));
+      return;
+    }
     const newId = `session-${Date.now()}`;
     const newSession: ChatSession = {
       id: newId,
@@ -361,6 +372,7 @@ export default function HomePage() {
         activeSessionId={activeSessionId}
         onSelectSession={handleSelectSession}
         onNewChat={handleNewChat}
+        flash={flash}
         onDeleteSession={handleDeleteSession}
         onTogglePin={handleTogglePin}
         onRenameSession={handleRenameSession}

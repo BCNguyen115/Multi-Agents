@@ -23,6 +23,8 @@ interface SidebarProps {
   activeSessionId: string;
   onSelectSession: (id: string) => void;
   onNewChat: () => void;
+  /** A conversation to draw the eye to ("New chat" sent the user back to it); `n` changes on every request. */
+  flash?: { id: string; n: number } | null;
   onDeleteSession: (id: string) => void;
   onTogglePin: (id: string) => void;
   onRenameSession?: (id: string, newTitle: string) => void;
@@ -66,6 +68,7 @@ export function Sidebar({
   activeSessionId,
   onSelectSession,
   onNewChat,
+  flash,
   onOpenSearch,
   onDeleteSession,
   onTogglePin,
@@ -249,6 +252,7 @@ export function Sidebar({
                 session={session}
                 isOpen={isOpen}
                 isActive={session.id === activeSessionId}
+                flashKey={flash?.id === session.id ? flash.n : 0}
                 onSelect={() => onSelectSession(session.id)}
                 onDelete={() => onDeleteSession(session.id)}
                 onTogglePin={() => onTogglePin(session.id)}
@@ -278,6 +282,7 @@ export function Sidebar({
                   session={session}
                   isOpen={isOpen}
                   isActive={session.id === activeSessionId}
+                flashKey={flash?.id === session.id ? flash.n : 0}
                   onSelect={() => onSelectSession(session.id)}
                   onDelete={() => onDeleteSession(session.id)}
                   onTogglePin={() => onTogglePin(session.id)}
@@ -319,6 +324,7 @@ function ChatItem({
   session,
   isOpen,
   isActive,
+  flashKey,
   onSelect,
   onDelete,
   onTogglePin,
@@ -334,6 +340,7 @@ function ChatItem({
   session: ChatSession;
   isOpen: boolean;
   isActive: boolean;
+  flashKey: number;
   onSelect: () => void;
   onDelete: () => void;
   onTogglePin: () => void;
@@ -352,6 +359,16 @@ function ChatItem({
   const shownTitle = displayTitle(lang, session.title);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
   const [isHovered, setIsHovered] = useState(false);
+  const [flashing, setFlashing] = useState(false);
+
+  // "New chat" sent the user back to this conversation: bring the row into view and let it flash once
+  useEffect(() => {
+    if (!flashKey) return undefined;
+    itemRef.current?.scrollIntoView({ block: 'nearest' });
+    setFlashing(true);
+    const timer = setTimeout(() => setFlashing(false), 900);
+    return () => clearTimeout(timer);
+  }, [flashKey]);
   const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
 
   const handleMouseEnter = () => {
@@ -405,7 +422,7 @@ function ChatItem({
       ref={itemRef}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className={`group relative flex items-center h-10 px-0 my-0.5 rounded-xl text-sm transition-all duration-150 ease-out cursor-pointer overflow-hidden whitespace-nowrap ${
+      className={`group relative flex items-center h-10 px-0 my-0.5 rounded-xl text-sm transition-all duration-150 ease-out cursor-pointer overflow-hidden whitespace-nowrap ${flashing ? 'animate-flash-link ' : ''}${
         isActive
           ? 'bg-surface-raised font-semibold text-foreground shadow-xs before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:rounded-r-full before:bg-accent-primary'
           : 'hover:bg-surface-raised/60 text-foreground-secondary hover:text-foreground'
