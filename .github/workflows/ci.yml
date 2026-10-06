@@ -66,7 +66,7 @@ jobs:
           LANGFUSE_SALT: ci
           REDIS_PASSWORD: ci
           SANDBOX_SECRET: ci-sandbox-secret-0123456789
-      - name: Tests (the whole suite, including the real-database ones: RAG_TEST_DSN is set)
+      - name: Tests (whole suite, real-database tests included because RAG_TEST_DSN is set)
         run: python -m pytest tests -q --cov=src --cov-report=term:skip-covered --cov-report=xml
       - uses: actions/upload-artifact@v4
         if: always()

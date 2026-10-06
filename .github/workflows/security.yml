@@ -54,7 +54,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: aquasecurity/trivy-action@0.28.0
+      # Pinned to the commit of v0.36.0 (the repository only has `v`-prefixed tags now; `0.28.0` no longer exists). A moving tag
+      # would let whoever controls it change what runs here; bump the SHA together with the version comment.
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scanners: vuln,misconfig
