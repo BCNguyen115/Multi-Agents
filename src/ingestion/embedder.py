@@ -20,21 +20,29 @@ from typing import Any
 import numpy as np
 import openai
 
+from src.agents.data_agent.i18n import detect_language
+from src.config import settings
 from src.ingestion.chunker import DocumentChunk
+from src.ingestion.passages import split_passages
 from src.ingestion.schema import ensure_schema
 from src.shared.logger import get_logger
 from src.shared.postgres_client import PostgresClient
 
 logger: logging.Logger = get_logger(__name__)
 
-EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
 DEDUP_THRESHOLD: float = 0.95
 EMBEDDING_BATCH_SIZE: int = 100
 
 _INSERT_CHUNK_SQL: str = """
 INSERT INTO rag_chunks (content, raw_content, embedding, filename, category, section_title,
-                        detected_pattern, doc_key, doc_hash, chunk_index, page)
-VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11);
+                        detected_pattern, doc_key, doc_hash, chunk_index, page, lang)
+VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+"""
+
+_INSERT_CHUNK_RETURNING_SQL: str = _INSERT_CHUNK_SQL.rstrip().rstrip(";") + " RETURNING id;"
+
+_INSERT_PASSAGE_SQL: str = """
+INSERT INTO rag_passages (chunk_id, position, content, embedding) VALUES ($1, $2, $3, $4::vector);
 """
 
 # Also removes rows written before doc_key existed (matched by category + filename)
@@ -71,16 +79,48 @@ def _doc_key(chunk: DocumentChunk) -> str:
 class IngestionEmbedder:
     """Embeds chunks and keeps ``rag_chunks`` in sync with the dataset folder."""
 
-    def __init__(self, pg: PostgresClient, openai_client: openai.AsyncOpenAI, model: str = EMBEDDING_MODEL) -> None:
+    def __init__(self, pg: PostgresClient, openai_client: openai.AsyncOpenAI, model: str | None = None) -> None:
         self.pg: PostgresClient = pg
         self.openai_client: openai.AsyncOpenAI = openai_client
-        self.model: str = model
+        self.model: str = model or settings.EMBEDDING_MODEL
 
     async def ensure_schema(self, session_id: str = "INGESTION") -> None:
         await ensure_schema(self.pg, session_id=session_id)
 
+    @property
+    def embedding_label(self) -> str:
+        """What identifies the vector space: the model and, when it is cut down, the size."""
+        return f"{self.model}|{settings.EMBEDDING_DIMENSIONS or 'default'}"
+
+    async def _guard_embedding_model(self, session_id: str = "INGESTION") -> None:
+        """One corpus, one embedding model: vectors of two models are not comparable and search would quietly degrade.
+        Records the model on first use; raises when a different one is asked for (re-embed everything: run_ingestion --reset)."""
+        try:
+            rows = await self.pg.fetch("SELECT value FROM rag_meta WHERE key = 'embedding_model'", session_id=session_id)
+            stored: str | None = rows[0]["value"] if rows else None
+        except Exception as exc:  # noqa: BLE001 - the table comes with migration 0007; before that there is nothing to guard
+            logger.warning("Could not read rag_meta (%s); the embedding model is not checked", exc, extra={"session_id": session_id})
+            return
+        if stored is not None and stored != self.embedding_label:
+            raise RuntimeError(
+                f"the corpus was embedded with {stored!r} but this run uses {self.embedding_label!r}: "
+                "re-embed the whole corpus with `python -m scripts.run_ingestion --reset`"
+            )
+        if stored is None:
+            try:
+                await self.pg.execute(
+                    "INSERT INTO rag_meta (key, value) VALUES ('embedding_model', $1) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()",
+                    self.embedding_label, session_id=session_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - recording is a safeguard, never a reason to refuse a document
+                logger.warning("Could not record the embedding model: %s", exc, extra={"session_id": session_id})
+
     async def clear_table(self, session_id: str = "INGESTION") -> None:
-        await self.pg.execute("TRUNCATE TABLE rag_chunks;", session_id=session_id)
+        await self.pg.execute("TRUNCATE TABLE rag_chunks CASCADE;", session_id=session_id)  # CASCADE: rag_passages references it
+        try:  # an empty corpus has no model yet: the next ingestion decides
+            await self.pg.execute("DELETE FROM rag_meta WHERE key = 'embedding_model'", session_id=session_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not clear rag_meta: %s", exc, extra={"session_id": session_id})
         logger.info("rag_chunks truncated", extra={"session_id": session_id})
 
     async def existing_documents(self, session_id: str = "INGESTION") -> dict[str, str]:
@@ -95,7 +135,8 @@ class IngestionEmbedder:
 
     async def _embed_batch(self, texts: list[str], session_id: str = "INGESTION") -> list[list[float]]:
         try:
-            response: Any = await self.openai_client.embeddings.create(model=self.model, input=texts)
+            dimensions: dict[str, int] = {"dimensions": settings.EMBEDDING_DIMENSIONS} if settings.EMBEDDING_DIMENSIONS else {}
+            response: Any = await self.openai_client.embeddings.create(model=self.model, input=texts, **dimensions)
             return [item.embedding for item in response.data]
         except openai.APIError as exc:
             logger.error("Embedding API call failed: %s", exc, extra={"session_id": session_id})
@@ -134,10 +175,22 @@ class IngestionEmbedder:
             rows.append((
                 chunk.content, chunk.raw_content, json.dumps(vector.tolist()), m.get("filename", ""), m.get("category", ""),
                 m.get("section_title", ""), m.get("detected_pattern", ""), doc_key, m.get("doc_hash"), m.get("chunk_index"), m.get("page"),
+                detect_language(chunk.raw_content[:600]),
             ))
+        passages: list[tuple[int, int, str]] = []  # (index of the chunk, position, text)
+        if settings.RAG_INDEX_PASSAGES:
+            for index, chunk in enumerate(chunks):
+                passages += [(index, position, text) for position, text in enumerate(split_passages(chunk.raw_content))]
+        passage_vectors: list[list[float]] = []
+        for start in range(0, len(passages), EMBEDDING_BATCH_SIZE):  # the network part first: the transaction stays short
+            passage_vectors.extend(await self._embed_batch([p[2] for p in passages[start:start + EMBEDDING_BATCH_SIZE]], session_id=session_id))
         async with self.pg.transaction() as conn:
             await conn.execute(_DELETE_DOC_SQL, doc_key, first.get("category", ""), first.get("filename", ""))
-            await conn.executemany(_INSERT_CHUNK_SQL, rows)
+            if passages:
+                ids = [await conn.fetchval(_INSERT_CHUNK_RETURNING_SQL, *row) for row in rows]
+                await conn.executemany(_INSERT_PASSAGE_SQL, [(ids[i], pos, text, json.dumps(vec)) for (i, pos, text), vec in zip(passages, passage_vectors)])
+            else:
+                await conn.executemany(_INSERT_CHUNK_SQL, rows)
         return len(rows)
 
     async def prune(self, keep_keys: set[str], session_id: str = "INGESTION") -> int:
@@ -157,6 +210,7 @@ class IngestionEmbedder:
         by_doc: dict[str, list[DocumentChunk]] = {}
         for chunk in chunks:
             by_doc.setdefault(_doc_key(chunk), []).append(chunk)
+        await self._guard_embedding_model(session_id)
 
         stored: dict[str, str] = await self.existing_documents(session_id)
         stats: dict[str, Any] = {

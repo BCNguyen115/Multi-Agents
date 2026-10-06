@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import random
 import statistics
 import sys
@@ -50,6 +51,7 @@ from src.shared.security import wrap_user_input  # noqa: E402
 
 QUESTIONS_PATH = _ROOT / "dataset" / "rag_eval.json"
 MANUAL_PATH = _ROOT / "dataset" / "rag_eval_manual.json"
+FEEDBACK_PATH = Path(__file__).resolve().parent.parent / "dataset" / "rag_eval_feedback.json"  # scripts/export_feedback_eval.py
 REPORT_DIR = _ROOT / "reports"
 KS = (1, 5, 10, 20)
 THRESHOLDS = (0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50)
@@ -121,6 +123,18 @@ def _transcript(item: dict[str, Any]) -> str:
     return "\n".join(f"{m['role']}: {m['content']}" for m in item.get("history", []))
 
 
+def bootstrap_ci(ranks: list[int | None], rounds: int = 1000, seed: int = 0) -> dict[str, list[float]]:
+    """95% bootstrap interval of hit@5 and MRR over the questions (resampled with replacement)."""
+    rng, n = random.Random(seed), len(ranks)
+    samples: dict[str, list[float]] = {"hit@5": [], "mrr": []}
+    for _ in range(rounds):
+        picked = [ranks[rng.randrange(n)] for _ in range(n)]
+        samples["hit@5"].append(sum(1 for r in picked if r and r <= 5) / n)
+        samples["mrr"].append(sum(1 / r for r in picked if r) / n)
+    low, high = int(0.025 * rounds), int(0.975 * rounds) - 1
+    return {key: [round(sorted(values)[low], 3), round(sorted(values)[high], 3)] for key, values in samples.items()}
+
+
 def _retrieval_metrics(ranks: list[int | None]) -> dict[str, float]:
     n = len(ranks)
     metrics = {f"hit@{k}": sum(1 for r in ranks if r and r <= k) / n for k in KS}
@@ -131,6 +145,8 @@ def _retrieval_metrics(ranks: list[int | None]) -> dict[str, float]:
 def _metrics_by_language(data: dict[str, Any], ranks: list[int | None]) -> dict[str, Any]:
     """Overall metrics plus the same metrics for the Vietnamese and English questions separately."""
     out: dict[str, Any] = _retrieval_metrics(ranks)
+    out["ci95"] = bootstrap_ci(ranks)
+    out["ranks"] = ranks  # per question, so scripts/compare_rag_eval.py can compare two runs on the SAME questions
     groups = {"vi": lambda i: i.get("lang") == "vi", "en": lambda i: i.get("lang") == "en", "followup": lambda i: bool(i.get("history"))}
     for name, member in groups.items():
         subset = [r for r, item in zip(ranks, data["answerable"]) if member(item)]
@@ -144,10 +160,15 @@ MODES = [("raw", "raw", False), ("both", "both", False), ("plan", "both", True)]
 RERANK_INPUT = "plan"  # candidate lists the rerank presets are applied to
 
 # name -> settings overrides (MAX_RERANK_TEXT_LENGTH stays at 1000 chars)
-RERANK_PRESETS: dict[str, dict[str, int]] = {
+RERANK_PRESETS: dict[str, dict[str, Any]] = {
     "single10": {"RERANK_POOL_K": 10},
     "single20": {"RERANK_POOL_K": 20},
+    "titled_raw10": {"RERANK_POOL_K": 10, "RERANK_TEXT_MODE": "titled_raw"},  # section title + raw text, no ingestion prefix
+    "window10": {"RERANK_POOL_K": 10, "RERANK_TEXT_MODE": "window"},          # the best-matching 1000 characters of a long chunk
+    "adaptive10": {"RERANK_POOL_K": 10, "RERANK_SKIP_MIN_SCORE": 0.55, "RERANK_SKIP_MARGIN": 0.05},  # no cross-encoder when the first candidate leads clearly
+    "passage10": {"RERANK_POOL_K": 10, "RERANK_TEXT_MODE": "passage"},        # the matching ~600 character passage (needs --set RAG_PASSAGE_SEARCH=true and scripts/build_passages.py)
 }
+DEFAULT_PRESETS = "single10,single20"
 
 
 RERANK_THRESHOLDS = (0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5)
@@ -222,13 +243,16 @@ async def evaluate_retrieval(store: KnowledgeStore, planner: QueryPlanner, data:
 
     if rerank_presets:
         lists = fused_cache[RERANK_INPUT]
-        saved = {k: getattr(settings, k) for k in ("RERANK_POOL_K", "RERANKER_TIMEOUT")}
+        saved = {k: getattr(settings, k) for k in {"RERANKER_TIMEOUT", *(key for name in rerank_presets for key in RERANK_PRESETS[name])}}
         settings.RERANKER_TIMEOUT = 120.0  # measure the real latency of every preset; a timeout would trip the circuit breaker and skip the rest
         for name in rerank_presets:
+            for key in saved:  # every preset starts from the run's own settings, not from the previous preset's
+                setattr(settings, key, saved[key])
+            settings.RERANKER_TIMEOUT = 120.0
             for key, value in RERANK_PRESETS[name].items():
                 setattr(settings, key, value)
             reranker_client._consecutive_failures = 0
-            ranks, latencies, best_rerank = [], [], []
+            ranks, latencies, best_rerank, reached = [], [], [], []
             for item, candidates in zip(data["answerable"], lists):
                 plan = plans[item["question"]]
                 query = plan.standalone
@@ -237,11 +261,13 @@ async def evaluate_retrieval(store: KnowledgeStore, planner: QueryPlanner, data:
                 latencies.append(time.time() - started)
                 top5 = top[: settings.RERANK_TOP_K]
                 best_rerank.append(top[0].get("rerank_score", 0.0) if top else 0.0)
+                reached.append(any("rerank_score" in d for d in top))
                 ranks.append(_rank(top5, item))
             report["rerank"][name] = {
                 **_metrics_by_language(data, ranks),
                 "median_s": round(statistics.median(latencies), 2),
-                "used_reranker": any("rerank_score" in d for d in top),
+                "used_reranker": any(reached),
+                "rerank_share": round(sum(reached) / len(reached), 2),  # < 1 only when a preset skips the cross-encoder on purpose
             }
             if report["rerank"][name]["used_reranker"] and name == rerank_presets[0]:
                 report["rerank"][name]["refusal_gate"] = await _rerank_refusal_gate(best_rerank, data, plans, unanswerable_cache[RERANK_INPUT])
@@ -252,6 +278,54 @@ async def evaluate_retrieval(store: KnowledgeStore, planner: QueryPlanner, data:
             setattr(settings, key, value)
         report["rerank"]["no_rerank_fused_order"] = _metrics_by_language(data, [_rank(candidates[: settings.RERANK_TOP_K], item) for item, candidates in zip(data["answerable"], lists)])
     return report
+
+
+_GRADE_PROMPT = (
+    "You judge whether a document passage helps answer a question.\nQuestion: {question}\n\nPassage:\n{passage}\n\n"
+    'Reply with JSON only: {{"grade": 0, 1 or 2}} where 2 = the passage states the answer, 1 = related but does not state it, 0 = unrelated.'
+)
+
+
+def ndcg_at(grades: list[int], k: int = 5) -> float:
+    """nDCG@k of a ranked list of graded relevance (0..2); the ideal order is the same grades sorted best first."""
+    def dcg(values: list[int]) -> float:
+        return sum((2 ** g - 1) / math.log2(i + 2) for i, g in enumerate(values[:k]))
+
+    ideal = dcg(sorted(grades, reverse=True))
+    return dcg(grades) / ideal if ideal else 0.0
+
+
+def judged_metrics(grades_per_question: list[list[int]], k: int = 5) -> dict[str, float]:
+    """Relevance judged per retrieved chunk (not "is it THE source chunk"): any chunk in the top k that states the answer / is related."""
+    n = len(grades_per_question)
+    return {
+        "answer_hit@5": round(sum(1 for g in grades_per_question if 2 in g[:k]) / n, 3),
+        "related_hit@5": round(sum(1 for g in grades_per_question if any(x >= 1 for x in g[:k])) / n, 3),
+        "precision@5": round(sum(sum(1 for x in g[:k] if x >= 1) / k for g in grades_per_question) / n, 3),
+        "ndcg@5": round(sum(ndcg_at(g, k) for g in grades_per_question) / n, 3),
+    }
+
+
+async def evaluate_judged(store: KnowledgeStore, planner: QueryPlanner, llm: LLMClient, data: dict[str, Any], k_questions: int) -> dict[str, Any]:
+    """An LLM grades the top-10 chunks of K questions. "Is it the chunk the question was written from" undercounts retrieval when
+    several chunks answer it: this shows how much, on the same questions (fused order, no reranker)."""
+    sample = random.Random(0).sample(data["answerable"], min(k_questions, len(data["answerable"])))
+    grades_per_question: list[list[int]] = []
+    exact: list[int | None] = []
+    for item in sample:
+        plan = await planner.plan(item["question"], _transcript(item), "eval")
+        results = await store.search(plan.standalone, top_k=10, plan=plan)
+        exact.append(_rank(results, item))
+
+        async def grade(doc: dict[str, Any], question: str = item["question"]) -> int:
+            try:
+                prompt = _GRADE_PROMPT.format(question=question, passage=(doc.get("raw_content") or doc["content"])[:1500])
+                return max(0, min(2, int((await _chat_json(llm, prompt, 30))["grade"])))
+            except Exception:  # noqa: BLE001 - an unreadable verdict counts as "unrelated", never as a hit
+                return 0
+
+        grades_per_question.append(list(await asyncio.gather(*(grade(d) for d in results))))
+    return {"questions": len(sample), **judged_metrics(grades_per_question), "exact_chunk_hit@5": _retrieval_metrics(exact)["hit@5"]}
 
 
 async def evaluate_answers(store: KnowledgeStore, llm: LLMClient, data: dict[str, Any], k: int) -> dict[str, Any]:
@@ -300,10 +374,15 @@ def write_report(report: dict[str, Any], report_name: str = "rag_eval") -> None:
     lines = ["# RAG evaluation", "", f"Questions: {report['n_answerable']} answerable, {report['n_unanswerable']} unanswerable. Settings: "
              f"`RAG_MIN_VECTOR_SCORE={settings.RAG_MIN_VECTOR_SCORE}`, pool `{settings.HYBRID_CANDIDATES_K}`, rerank pool `{settings.RERANK_POOL_K}`.", "",
              f"Query planner (one LLM call): {report['retrieval']['planner']}", "",
+             f"Settings changed for this run (--set): {report.get('overrides') or 'none'}", "",
              "## Retrieval by query mode (`plan` = the planner's standalone question + its HyDE passage)", "",
              f"| mode | hit@1 | hit@5 | hit@10 | hit@20 | MRR | {_GROUP_COLUMNS} |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for mode, m in report["retrieval"]["modes"].items():
         lines.append(_row(mode, m, ("hit@1", "hit@5", "hit@10", "hit@20", "mrr")))
+    lines += ["", "95% bootstrap intervals over the questions (a difference smaller than these is noise):", ""]
+    for name, m in {**report["retrieval"]["modes"], **report["retrieval"]["rerank"]}.items():
+        if isinstance(m, dict) and "ci95" in m:
+            lines.append(f"- `{name}`: hit@5 {m['hit@5']} {m['ci95']['hit@5']}, MRR {m['mrr']} {m['ci95']['mrr']}")
     if report["retrieval"]["rerank"]:
         lines += ["", f"## Reranking of `{RERANK_INPUT}` candidates (top 5 after the cross-encoder, 1000 chars; presets in RERANK_PRESETS)", "",
                   f"| preset | hit@1 | hit@5 | MRR | {_GROUP_COLUMNS} | median s | reranker used |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -323,6 +402,8 @@ def write_report(report: dict[str, Any], report_name: str = "rag_eval") -> None:
         lines += ["| threshold | answerable rejected | unanswerable accepted |", "|---|---|---|"]
         lines += [f"| {t} | {v['answerable_rejected']} | {v['unanswerable_accepted']} |" for t, v in table.items() if t != "_scores"]
         lines.append("")
+    if report["retrieval"].get("judged"):
+        lines += ["## Relevance judged by an LLM (top 10, fused order, no reranker)", "", "```json", json.dumps(report["retrieval"]["judged"], indent=2), "```", ""]
     if report.get("answers"):
         lines += ["## Answers", "", "```json", json.dumps(report["answers"], ensure_ascii=False, indent=2), "```"]
     (REPORT_DIR / f"{report_name}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -340,13 +421,26 @@ async def main_async(args: argparse.Namespace) -> None:
         if args.manual or args.only_manual:
             manual = [{"id": 1000 + i, "lang": "vi", **item} for i, item in enumerate(json.loads(MANUAL_PATH.read_text(encoding="utf-8")), start=1)]
             data = {"answerable": manual if args.only_manual else data["answerable"] + manual, "unanswerable": data["unanswerable"]}
+        if args.feedback:
+            if not FEEDBACK_PATH.exists():
+                sys.exit(f"--feedback: {FEEDBACK_PATH} does not exist (run python -m scripts.export_feedback_eval first)")
+            from src.agents.data_agent.i18n import detect_language
+
+            users = [{"id": 2000 + i, "lang": detect_language(item["question"]), **item}
+                     for i, item in enumerate(json.loads(FEEDBACK_PATH.read_text(encoding="utf-8")), start=1)]
+            data = {"answerable": data["answerable"] + users, "unanswerable": data["unanswerable"]}
         store = KnowledgeStore(pg, llm)
         await store.ensure_schema()
         print(f"Evaluating {len(data['answerable'])} answerable + {len(data['unanswerable'])} unanswerable questions")
         presets = args.rerank_presets.split(",") if args.rerank else []
         retrieval = await evaluate_retrieval(store, QueryPlanner(llm), data, presets)
         answers = await evaluate_answers(store, llm, data, args.answers) if args.answers else None
-        write_report({"n_answerable": len(data["answerable"]), "n_unanswerable": len(data["unanswerable"]), "retrieval": retrieval, "answers": answers},
+        judged = await evaluate_judged(store, QueryPlanner(llm), llm, data, args.judge) if args.judge else None
+        if judged:
+            print(f"  judged relevance: {judged}")
+            retrieval["judged"] = judged
+        write_report({"n_answerable": len(data["answerable"]), "n_unanswerable": len(data["unanswerable"]), "overrides": args.applied,
+                      "retrieval": retrieval, "answers": answers},
                      "rag_eval_manual" if args.only_manual else "rag_eval")
         if args.min_hit5 or args.min_mrr or args.baseline or args.save_baseline:
             check_gate(retrieval, args)
@@ -377,11 +471,35 @@ def check_gate(retrieval: dict[str, Any], args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def apply_overrides(pairs: list[str]) -> dict[str, Any]:
+    """``KEY=VALUE`` pairs applied to ``settings`` for this run (the value is read as the setting's own type)."""
+    applied: dict[str, Any] = {}
+    for pair in pairs:
+        key, _, raw = pair.partition("=")
+        if not key or not hasattr(settings, key):
+            sys.exit(f"--set {pair!r}: {key!r} is not a setting")
+        current = getattr(settings, key)
+        if isinstance(current, bool):
+            value: Any = raw.strip().lower() in ("1", "true", "yes", "on")
+        elif isinstance(current, int):
+            value = int(raw)
+        elif isinstance(current, float):
+            value = float(raw)
+        else:
+            value = raw
+        setattr(settings, key, value)
+        applied[key] = value
+    return applied
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--set", dest="overrides", action="append", default=[], metavar="KEY=VALUE",
+                        help="change a setting for this run, e.g. --set RAG_FTS_SOURCE=passage (repeatable; recorded in the report)")
     parser.add_argument("--build", type=int, default=0, help="generate N questions from random chunks (then evaluate unless --no-eval)")
     parser.add_argument("--no-eval", dest="evaluate", action="store_false", help="only build the question set")
     parser.add_argument("--manual", action="store_true", help=f"add the hand-written questions in {MANUAL_PATH.name} (answer = a chunk of the named file that contains a phrase; some are follow-ups with chat history)")
+    parser.add_argument("--feedback", action="store_true", help="add the questions users approved with a thumbs-up (dataset/rag_eval_feedback.json, see scripts/export_feedback_eval.py)")
     parser.add_argument("--only-manual", action="store_true", help="evaluate only the hand-written questions (report: reports/rag_eval_manual.md)")
     parser.add_argument("--gate-on", default="plan", help="mode or rerank preset checked by --min-hit5 / --min-mrr")
     parser.add_argument("--min-hit5", type=float, default=0.0, help="CI gate: exit 1 if hit@5 of --gate-on is lower")
@@ -390,9 +508,12 @@ def main() -> None:
     parser.add_argument("--max-drop", type=float, default=0.03, help="largest accepted fall against --baseline (absolute, default 0.03)")
     parser.add_argument("--save-baseline", default="", help="write this run's hit@5/MRR of --gate-on to PATH when the gate passes")
     parser.add_argument("--rerank", action="store_true", help="also measure the TEI cross-encoder (see --rerank-presets)")
-    parser.add_argument("--rerank-presets", default=",".join(RERANK_PRESETS), help=f"comma list of: {', '.join(RERANK_PRESETS)}")
+    parser.add_argument("--rerank-presets", default=DEFAULT_PRESETS, help=f"comma list of: {', '.join(RERANK_PRESETS)}")
+    parser.add_argument("--judge", type=int, default=0, help="an LLM grades the top-10 chunks of K questions: relevance of ANY chunk, not only the source chunk (answer_hit@5, nDCG@5)")
     parser.add_argument("--answers", type=int, default=0, help="also generate and judge answers for K questions")
-    asyncio.run(main_async(parser.parse_args()))
+    args = parser.parse_args()
+    args.applied = apply_overrides(args.overrides)
+    asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":

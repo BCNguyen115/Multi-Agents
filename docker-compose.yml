@@ -23,7 +23,7 @@ services:
   # 1. PostgreSQL + pgvector
   postgres:
     <<: *restart
-    image: ${POSTGRES_IMAGE:-ankane/pgvector:latest}  # pin a tag per environment; a major-version change needs a dump/restore
+    image: ${POSTGRES_IMAGE:-ankane/pgvector:latest}  # pin a tag per environment; a major-version change needs a dump/restore. This image is no longer maintained: the maintained one is pgvector/pgvector:pg16 (CI uses it); iterative HNSW scans (RAG_HNSW_ITERATIVE) need pgvector >= 0.8: SELECT extversion FROM pg_extension WHERE extname='vector'
     container_name: agent_postgres
     command: postgres -c max_connections=250 -c shared_buffers=256MB -c idle_in_transaction_session_timeout=60000
     environment:
@@ -182,7 +182,7 @@ services:
       - "127.0.0.1:8080:80"
     volumes:
       - reranker_data:/data
-    command: --model-id BAAI/bge-reranker-base --auto-truncate
+    command: --model-id ${RERANKER_MODEL:-BAAI/bge-reranker-base} --auto-truncate   # e.g. BAAI/bge-reranker-v2-m3 (multilingual, slower on CPU): measure with scripts/run_rag_eval first
 
   # 7. Analysis sandbox: runs the Data Agent's LLM-written pandas code (src/agents/data_agent/sandbox_server.py).
   # It sits on an internal-only network (no route to the internet, no database, no Redis): only the backend can reach it,

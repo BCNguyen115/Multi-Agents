@@ -25,9 +25,10 @@ import hmac
 import logging
 import secrets
 import time
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import jwt
 from fastapi import HTTPException, Request
@@ -86,6 +87,17 @@ def current_scope() -> tuple[str, str]:
     """(tenant id, department id) of the request being served; the configured defaults outside a request."""
     principal = _current.get()
     return (principal.tenant_id, principal.department_id) if principal else (settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID)
+
+
+@contextmanager
+def acting_as(principal: Principal) -> Iterator[None]:
+    """Run a block with ``principal`` as the caller of the request: a second approver's decision is executed in the scope
+    (tenant, department) of the person who asked, so the data returned is the data THEY were allowed to see."""
+    token = _current.set(principal)
+    try:
+        yield
+    finally:
+        _current.reset(token)
 
 
 def current_principal() -> Optional[Principal]:

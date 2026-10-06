@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/copy-duckdb.mjs",
     "dev": "next dev -H 0.0.0.0 -p 3000",
+    "prebuild": "node scripts/copy-duckdb.mjs",
     "build": "next build",
     "start": "next start -H 0.0.0.0 -p 3000",
     "lint": "next lint",
@@ -40,5 +42,11 @@
     "tailwindcss": "^3.4.3",
     "typescript": "^5.4.5",
     "vitest": "^2.1.9"
+  },
+  "overrides": {
+    "image-size": "^2.0.4",
+    "next": {
+      "postcss": "^8.5.28"
+    }
   }
 }

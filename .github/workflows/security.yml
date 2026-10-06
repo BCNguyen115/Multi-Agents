@@ -1,6 +1,7 @@
 # Security scans. Not yet run on GitHub itself: written against the project layout and the audits run locally.
-#   dependencies: informational for now. `npm audit` reports 3 high + 1 moderate that need MAJOR upgrades (Next 16, pptxgenjs 4);
-#                 remove `continue-on-error` once those land, so a new high severity fails the build.
+#   dependencies: `npm audit` BLOCKS (0 vulnerabilities in the runtime dependencies: image-size and Next's postcss are pinned by
+#                 `overrides` in frontend/package.json; drop an override when its parent ships the fix). pip-audit is still informational:
+#                 run it locally once, fix what it finds, then remove its `continue-on-error`.
 #   secrets:      blocking. A false positive goes into .gitleaks.toml (allowlist), never a `continue-on-error`.
 #   filesystem:   Trivy over the repository (dependencies' known CVEs, Dockerfile and compose misconfigurations).
 name: Security
@@ -34,7 +35,6 @@ jobs:
         with:
           node-version: 20
       - name: npm audit (runtime dependencies)
-        continue-on-error: true
         working-directory: frontend
         run: npm audit --omit=dev --audit-level=high
 

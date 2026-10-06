@@ -42,7 +42,7 @@ warnings.filterwarnings(
 )
 
 import openai
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, Path
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -57,6 +57,7 @@ from src.agents.rag_agent.knowledge import KnowledgeStore
 from src.agents.search_agent.agent import SearchAgent
 from src.config import settings
 from src.gateway.conversations import router as conversations_router
+from src.gateway.feedback import router as feedback_router
 from src.gateway.knowledge import describe_upload, router as knowledge_router
 from src.gateway.schemas import (  # noqa: F401  (re-exported: tests and callers use them as main.<Name>)
     AnalyzeResponse,
@@ -299,6 +300,7 @@ app.state.pg_client = pg_client  # the conversations router reads it from here
 app.state.redis_client = redis_client  # `authenticate` asks it for revoked tokens
 app.include_router(conversations_router)
 app.include_router(knowledge_router)
+app.include_router(feedback_router)
 
 
 async def limit_chat(request: Request, principal: Principal = Depends(authenticate)) -> None:
@@ -729,7 +731,11 @@ async def chat_approve(request: ApprovalDecisionRequest, principal: Principal = 
         action_id=request.action_id,
         decision=request.decision,
         feedback=request.feedback,
+        approver=principal,
     )
+    if result.get("code") == "self_approval":
+        await audit.record("hitl.refused", request.action_id, "self_approval", principal=principal)
+        raise HTTPException(status_code=403, detail=result.get("message", msg("forbidden.self_approval")))
 
     await audit.record("hitl.result", request.action_id, str(result.get("status", "")), {"decision": request.decision}, principal=principal)
     if result.get("status") == "error":
@@ -746,6 +752,25 @@ async def chat_approve(request: ApprovalDecisionRequest, principal: Principal = 
         response=result.get("response"),
         data=result.get("data"),
     )
+
+
+@app.get("/api/approvals", summary="Pending sensitive actions of OTHER users that this approver may decide (two-person approval)")
+async def pending_approvals(principal: Principal = Depends(authenticate)) -> list[dict[str, Any]]:
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail=msg("service.starting"))
+    if not principal.can_approve:
+        raise HTTPException(status_code=403, detail=msg("forbidden.approve"))
+    return await orchestrator.list_pending_approvals(principal)
+
+
+@app.get("/api/chat/approve/{action_id}/result", summary="The outcome of an action another user approved, for the person who asked")
+async def approval_result(action_id: str = Path(..., pattern=r"^act_[0-9a-f]{8}$"), principal: Principal = Depends(authenticate)) -> dict[str, Any]:
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail=msg("service.starting"))
+    outcome = await orchestrator.approval_result(action_id, principal)
+    if outcome is None:
+        raise HTTPException(status_code=404, detail=msg("approval.result_unknown"))
+    return outcome
 
 
 @app.post(
@@ -920,6 +945,7 @@ def _who(principal: Principal) -> dict[str, Any]:
         "can_approve": principal.can_approve,
         "can_manage_knowledge": principal.can_manage_knowledge,
         "name": principal.display_name,
+        "two_person_approval": principal.authenticated and settings.HITL_REQUIRE_OTHER_APPROVER,  # the UI then shows the approvals inbox
         "access_pending": principal.unassigned,  # a fresh self-registration: chat works, documents and data come after an administrator grants access
     }
 

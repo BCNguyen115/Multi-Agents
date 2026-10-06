@@ -13,6 +13,7 @@ import { SkipLink } from '../components/SkipLink';
 import { AuthProvider } from '../context/AuthContext';
 import { AuthModal } from '../components/auth/AuthModal';
 import { ChangePasswordDialog } from '../components/auth/ChangePasswordDialog';
+import { ApprovalInbox } from '../components/ApprovalInbox';
 
 export const metadata = {
   title: 'Multi-Agent Enterprise System',
@@ -56,6 +57,7 @@ export default function RootLayout({
           {children}
           <AuthModal />
           <ChangePasswordDialog />
+          <ApprovalInbox />
         </AuthProvider>
       </body>
     </html>

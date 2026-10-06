@@ -67,6 +67,9 @@ interface AuthContextValue {
   changePasswordOpen: boolean;
   openChangePassword: () => void;
   closeChangePassword: () => void;
+  approvalsOpen: boolean;
+  openApprovals: () => void;
+  closeApprovals: () => void;
 }
 
 export const THEME_KEY = 'theme';
@@ -121,6 +124,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const openChangePassword = useCallback(() => setChangePasswordOpen(true), []);
   const closeChangePassword = useCallback(() => setChangePasswordOpen(false), []);
+  const [approvalsOpen, setApprovalsOpen] = useState(false);
+  const openApprovals = useCallback(() => setApprovalsOpen(true), []);
+  const closeApprovals = useCallback(() => setApprovalsOpen(false), []);
 
   // Who is signed in, and what the dialog may offer. A 401 (backend needs a login) makes the visitor a guest and asks for one.
   useEffect(() => {
@@ -267,10 +273,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       changePasswordOpen,
       openChangePassword,
       closeChangePassword,
+      approvalsOpen,
+      openApprovals,
+      closeApprovals,
     }),
     [
       user, me, loading, config, theme, language, login, register, resetPassword, changePassword, finishSignIn, logout,
       setTheme, setLanguage, authModal, openAuthModal, closeAuthModal, changePasswordOpen, openChangePassword, closeChangePassword,
+      approvalsOpen, openApprovals, closeApprovals,
     ]
   );
 

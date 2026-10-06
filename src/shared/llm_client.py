@@ -486,9 +486,11 @@ class LLMClient:
         call_metadata = tracing.with_trace(call_metadata)
 
         try:
+            dimensions: dict[str, int] = {"dimensions": int(kwargs["dimensions"])} if kwargs.get("dimensions") else {}
             native_resp: Any = await self.raw_openai_client.embeddings.create(
                 model=clean_model,
                 input=raw_text,
+                **dimensions,
             )
             emb_vector = native_resp.data[0].embedding
             logger.debug(
@@ -510,6 +512,7 @@ class LLMClient:
                     api_key=self.api_key,
                     api_base=self.api_base,
                     metadata=call_metadata,
+                    **dimensions,
                 )
                 emb_vector = response.data[0]["embedding"]
                 logger.info(

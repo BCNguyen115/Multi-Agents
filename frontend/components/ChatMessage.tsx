@@ -8,6 +8,7 @@ import { Bot, User, ExternalLink, AlertTriangle, Copy, Check, Loader2, ShieldChe
 import { ChatMessage as ChatMessageType, SourceItem, CSVMetadata } from '../lib/types';
 import { PEVStepper } from './PEVStepper';
 import { SourcesList } from './SourcesList';
+import { FeedbackButtons } from './FeedbackButtons';
 import { DynamicDashboard } from './dashboard/DynamicDashboard';
 import { EnterpriseDashboard } from './EnterpriseDashboard';
 import { DashboardSkeleton } from './dashboard/DashboardSkeleton';
@@ -450,6 +451,10 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
 
         {/* Sources */}
         {parsedSources.length > 0 && <SourcesList sources={parsedSources} />}
+        {/* Thumbs: only for answers that cite documents (web results have no `file`) and are finished */}
+        {!isThisMessageLoading && Boolean(userQuery) && parsedSources.some((s) => s.file) && (
+          <FeedbackButtons messageId={message.id} query={userQuery as string} sources={parsedSources} />
+        )}
       </div>
     </div>
   );

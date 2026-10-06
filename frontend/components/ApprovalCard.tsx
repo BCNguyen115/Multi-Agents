@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { HumanApprovalRequest } from '@/lib/types';
 import { isUnauthorized } from '@/lib/authClient';
 import {
@@ -16,6 +16,8 @@ import {
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { apiFetch } from '@/lib/apiFetch';
+import { useAuth } from '@/context/AuthContext';
+import { describeOutcome, type ApprovalOutcome } from '@/lib/approvalResult';
 import { getLang, t, useLang } from '@/lib/i18n';
 
 interface ApprovalCardProps {
@@ -34,6 +36,9 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   onDecisionSubmitted,
 }) => {
   const [lang] = useLang();
+  const { me } = useAuth();
+  const waitingForOther = Boolean(me?.two_person_approval); // somebody ELSE decides: this card only waits for the outcome
+  const [expired, setExpired] = useState(false);
   const [decision, setDecision] = useState<'approved' | 'rejected' | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
@@ -51,6 +56,36 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   const riskBadgeClass = isCritical
     ? 'bg-accent-error/15 text-accent-error border-accent-error/30'
     : 'bg-surface-raised text-foreground-secondary border-border';
+
+  // Two-person approval: poll for the outcome until the other person has decided (or the request expired)
+  useEffect(() => {
+    if (!waitingForOther || decision !== null || expired) return undefined;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const response = await apiFetch(`/api/chat/approve/${encodeURIComponent(action_id)}/result`, { cache: 'no-store' });
+        if (stopped) return;
+        if (response.status === 404) {
+          setExpired(true);
+          return;
+        }
+        if (!response.ok) return;
+        const outcome = describeOutcome((await response.json()) as ApprovalOutcome);
+        if (!outcome || stopped) return;
+        setDecision(outcome.decision);
+        setExecutionResult(outcome.text);
+        onDecisionSubmitted?.(action_id, outcome.decision === 'approved' ? 'approve' : 'reject', outcome.text);
+      } catch {
+        /* offline for a moment: the next tick tries again */
+      }
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 3000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [waitingForOther, decision, expired, action_id, onDecisionSubmitted]);
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -235,8 +270,16 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
         </div>
       )}
 
+      {/* Two-person approval: the requester cannot decide; they wait for the answer of another approver */}
+      {decision === null && waitingForOther && (
+        <p role="status" aria-live="polite" className="mt-3 flex items-center gap-2 border-t border-border pt-3 text-sm text-foreground-secondary">
+          {!expired && <Loader2 className="w-4 h-4 shrink-0 animate-spin" aria-hidden="true" />}
+          {expired ? t(lang, 'approval.expired') : t(lang, 'approval.waitingOther')}
+        </p>
+      )}
+
       {/* Action Decision Controls */}
-      {decision === null && (
+      {decision === null && !waitingForOther && (
         <div className="mt-3 pt-3 border-t border-border space-y-2">
           {showReasonInput && (
             <div className="space-y-1 animate-fade-in">

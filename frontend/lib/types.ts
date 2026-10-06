@@ -10,6 +10,8 @@ export interface SourceItem {
   title?: string;
   domain?: string;
   snippet?: string;
+  /** A verbatim quote of the source that the backend checked against it (RAG_QUOTE_MODE). */
+  quote?: string;
   content?: string;
   [key: string]: any;
 }

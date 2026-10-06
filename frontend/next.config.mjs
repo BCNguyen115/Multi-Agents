@@ -1,14 +1,14 @@
 /** @type {import('next').NextConfig} */
 // Browser-side hardening. The CSP is REPORT-ONLY on purpose: it was written without running the app in a browser, so first open
-// the app and the dashboards with the console visible, fix what it reports (DuckDB-WASM loads its worker and wasm from cdn.jsdelivr.net),
-// then rename the header to Content-Security-Policy to enforce it.
+// the app and the dashboards with the console visible (DuckDB-WASM now loads its worker and wasm from this origin: public/duckdb),
+// fix what it reports, then rename the header to Content-Security-Policy to enforce it.
 const csp = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  "connect-src 'self' https://cdn.jsdelivr.net",
+  "connect-src 'self'",
   "worker-src 'self' blob:",
   "object-src 'none'",
   "base-uri 'self'",

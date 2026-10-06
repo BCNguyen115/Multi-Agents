@@ -1,0 +1,25 @@
+# The cross-encoder reranker on a GPU (an override: merge it over docker-compose.yml, nothing else changes).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d tei-reranker
+#
+# Needs an NVIDIA GPU, the NVIDIA driver and the NVIDIA Container Toolkit on the host. The image tag depends on the card (see
+# https://github.com/huggingface/text-embeddings-inference#docker-images): TEI_GPU_IMAGE=ghcr.io/huggingface/text-embeddings-inference:1.5
+# for Ampere 80 (A100), :86-1.5 for Ampere 86 (A10, RTX 30xx), :89-1.5 for Ada (RTX 40xx), :turing-1.5 for Turing (T4).
+#
+# Why: on CPU the rerank takes ~4 s at the measured defaults and the budget (RERANKER_TIMEOUT=8) forbids a bigger pool. On a GPU
+# the same call takes a fraction of a second, so the settings that were rejected for speed can be measured again
+# (docs/RAG_REVIEW_AND_FIXES.md: pool 20 gave MRR +0.015 but 7.8 s on CPU):
+#
+#   python -m scripts.run_rag_eval --rerank --set RERANK_POOL_K=20 ...      then scripts/compare_rag_eval.py
+#
+# and a multilingual reranker becomes affordable: RERANKER_MODEL=BAAI/bge-reranker-v2-m3 in .env.
+services:
+  tei-reranker:
+    image: ${TEI_GPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.5}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

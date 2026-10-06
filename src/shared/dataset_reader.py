@@ -11,11 +11,13 @@ import csv
 import io
 import json
 import logging
+import zipfile
 from dataclasses import dataclass, field
 from typing import Any, Optional, Union
 
 import pandas as pd
 
+from src.config import settings
 from src.shared.logger import get_logger
 
 logger: logging.Logger = get_logger(__name__)
@@ -179,7 +181,32 @@ def _read_csv_text(text: str, meta: ReadMeta) -> pd.DataFrame:
     return frame
 
 
+_MAX_ARCHIVE_ENTRIES = 10_000
+
+
+def _check_workbook(raw: bytes) -> None:
+    """An .xlsx is a zip: refuse one that unpacks to far more than ``DATA_MAX_UNCOMPRESSED_MB`` before openpyxl inflates it."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            entries = archive.infolist()
+    except zipfile.BadZipFile as exc:
+        raise DatasetReadError("parse", f"Cannot read Excel workbook: {exc}") from exc
+    if len(entries) > _MAX_ARCHIVE_ENTRIES or sum(e.file_size for e in entries) > settings.DATA_MAX_UNCOMPRESSED_MB * 1024 * 1024:
+        raise DatasetReadError("unsafe", "The workbook unpacks to far more data than allowed.")
+
+
+def _check_parquet(raw: bytes) -> None:
+    """Parquet compresses columns hard: read only its footer and refuse a file with too many rows or too many unpacked bytes."""
+    import pyarrow.parquet as pq
+
+    meta = pq.ParquetFile(io.BytesIO(raw)).metadata
+    unpacked = sum(meta.row_group(i).total_byte_size for i in range(meta.num_row_groups))
+    if meta.num_rows > settings.DATA_MAX_PARQUET_ROWS or unpacked > settings.DATA_MAX_UNCOMPRESSED_MB * 1024 * 1024:
+        raise DatasetReadError("unsafe", f"The Parquet file declares {meta.num_rows} rows / {unpacked} unpacked bytes: more than allowed.")
+
+
 def _read_excel(raw: bytes, meta: ReadMeta) -> pd.DataFrame:
+    _check_workbook(raw)
     try:
         sheets = pd.read_excel(io.BytesIO(raw), sheet_name=None, engine="openpyxl")
     except Exception as exc:
@@ -223,6 +250,7 @@ def read_table(content: Union[bytes, str], filename: str = "") -> tuple[pd.DataF
         else:
             meta.format = _detect_format(content, filename)
             if meta.format == "parquet":
+                _check_parquet(content)
                 df = pd.read_parquet(io.BytesIO(content))
             elif meta.format == "excel":
                 df = _read_excel(content, meta)
