@@ -75,7 +75,7 @@ def _die():
 
 
 def test_the_result_comes_back_from_another_process():
-    result = run_isolated(_answer, 2, 3, timeout=60)
+    result = run_isolated(_answer, 2, 3, timeout=180)
     assert result["sum"] == 5 and result["pid"] != os.getpid()
 
 
@@ -88,9 +88,9 @@ def test_a_worker_that_takes_too_long_is_killed():
 
 def test_a_worker_that_raises_or_dies_is_reported_not_propagated():
     with pytest.raises(IsolatedError, match="ValueError: boom"):
-        run_isolated(_explode, timeout=60)
+        run_isolated(_explode, timeout=180)
     with pytest.raises(IsolatedError, match="died"):
-        run_isolated(_die, timeout=60)
+        run_isolated(_die, timeout=180)
 
 
 def test_a_real_document_is_read_through_the_worker(monkeypatch, tmp_path):

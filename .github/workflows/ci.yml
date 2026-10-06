@@ -1,7 +1,10 @@
 # CI: backend tests (with a real pgvector database for the RAG integration test), frontend checks, image builds.
 # Not yet run on GitHub itself. Its steps were run locally in Linux containers that mirror the jobs (python:3.12 with a
-# pgvector/pgvector:pg16 database for `backend`, node:20 for `frontend`): 564 backend tests (one Linux-only sandbox bug
-# found and fixed that way), lint, `docker compose config`, and the frontend install/lint/tsc/tests/build all pass.
+# pgvector/pgvector:pg16 database for `backend`, node:20 for `frontend`): lint, `docker compose config`, and the frontend
+# install/lint/tsc/tests/build all pass. The backend suite was last run on Windows against a scratch database of the
+# compose Postgres (RAG_TEST_DSN set, so the real-database tests ran): 800 passed, 1 skipped, plus one process-spawn test
+# that timed out under load and passes alone (its timeouts were raised). That run found three tests that left the
+# database half-migrated or ignored the test DSN (fixed in tests/). The data agent has its own workflow: data-agent.yml.
 # What a local run cannot show: GitHub-hosted runner differences (disk, caches, network) and the `images` job.
 name: CI
 
@@ -63,8 +66,13 @@ jobs:
           LANGFUSE_SALT: ci
           REDIS_PASSWORD: ci
           SANDBOX_SECRET: ci-sandbox-secret-0123456789
-      - name: Tests
-        run: python -m pytest tests -q
+      - name: Tests (the whole suite, including the real-database ones: RAG_TEST_DSN is set)
+        run: python -m pytest tests -q --cov=src --cov-report=term:skip-covered --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage
+          path: coverage.xml
 
   frontend:
     runs-on: ubuntu-latest

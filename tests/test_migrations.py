@@ -43,7 +43,7 @@ class TestAgainstPostgres:
     def reset():
         engine = create_engine(database_url(DSN))
         with engine.begin() as connection:
-            connection.execute(text("DROP TABLE IF EXISTS rag_chunks, alembic_version"))
+            connection.execute(text("DROP TABLE IF EXISTS rag_passages, rag_feedback, rag_meta, rag_chunks, alembic_version CASCADE"))
         engine.dispose()
 
     @staticmethod

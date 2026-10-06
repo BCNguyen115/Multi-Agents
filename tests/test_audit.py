@@ -105,7 +105,7 @@ def test_the_table_refuses_update_delete_and_truncate_in_the_database_itself():
 
     from src.shared.migrations import upgrade_to_head
 
-    upgrade_to_head()
+    upgrade_to_head(DSN)  # the scratch database, not whatever POSTGRES_URL points at
 
     async def scenario():
         conn = await asyncpg.connect(DSN)
