@@ -30,7 +30,7 @@ python-pptx>=1.0             # PowerPoint decks in the knowledge base (src/inges
 pypdfium2>=4.30              # renders PDF pages: OCR input and the cited-page preview (src/ingestion/ocr.py, preview.py)
 pytesseract>=0.3             # wrapper for the tesseract program (installed in the backend image)
 tavily-python>=0.3.0
-crawl4ai>=0.4.0              # web crawl (needs Chromium: see Dockerfile INSTALL_BROWSER)
+crawl4ai>=0.9.4              # web crawl (needs Chromium: see Dockerfile INSTALL_BROWSER)
 
 # --- Security & data quality ---
 PyJWT>=2.8.0                 # gateway bearer-token verification (src/shared/auth.py)
