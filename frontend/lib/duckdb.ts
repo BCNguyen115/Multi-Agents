@@ -1,6 +1,16 @@
 import * as duckdb from '@duckdb/duckdb-wasm';
 import { CSVMetadata } from './types';
 
+/** The DuckDB-WASM bundles, served by this app (public/duckdb, copied by scripts/copy-duckdb.mjs): no CDN, and absolute URLs
+ *  because the worker is started from a blob: URL, where a relative path would not resolve. */
+export function localBundles(origin: string): duckdb.DuckDBBundles {
+  const at = (file: string) => `${origin}/duckdb/${file}`;
+  return {
+    mvp: { mainModule: at('duckdb-mvp.wasm'), mainWorker: at('duckdb-browser-mvp.worker.js') },
+    eh: { mainModule: at('duckdb-eh.wasm'), mainWorker: at('duckdb-browser-eh.worker.js') },
+  };
+}
+
 let dbInstance: duckdb.AsyncDuckDB | null = null;
 let dbInitPromise: Promise<duckdb.AsyncDuckDB> | null = null;
 
@@ -9,8 +19,7 @@ export async function getDuckDB(): Promise<duckdb.AsyncDuckDB> {
   if (dbInitPromise) return dbInitPromise;
 
   dbInitPromise = (async () => {
-    const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
-    const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+    const bundle = await duckdb.selectBundle(localBundles(window.location.origin));
 
     const worker_url = URL.createObjectURL(
       new Blob([`importScripts("${bundle.mainWorker!}");`], { type: 'text/javascript' })

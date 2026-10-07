@@ -14,10 +14,10 @@
       "surface": { "role": "neutral", "displayName": "Panel Zinc", "canonical": "#18181b", "tonalRamp": ["#09090b", "#18181b", "#27272a", "#3f3f46", "#71717a", "#a1a1aa", "#d4d4d8", "#f4f4f5"] }
     },
     "typographyMeta": {
-      "body": { "displayName": "Body", "purpose": "Chat answers and prose, Inter 400 at 1rem / 1.6." },
+      "body": { "displayName": "Body", "purpose": "Chat answers and prose, IBM Plex Sans 400 at 1rem / 1.6." },
       "label": { "displayName": "Label", "purpose": "Toolbar buttons, chips, table and chart headers." },
       "micro": { "displayName": "Micro", "purpose": "Badges and metadata at 10px." },
-      "data": { "displayName": "Data", "purpose": "File sizes, counts, SQL and identifiers in JetBrains Mono with tabular figures." }
+      "data": { "displayName": "Data", "purpose": "File sizes, counts, SQL and identifiers in IBM Plex Mono with tabular figures." }
     },
     "shadows": [
       { "name": "hairline", "value": "0 1px 2px rgba(0, 0, 0, 0.3)", "purpose": "Toolbar buttons (0.05 alpha in light)." },
@@ -43,7 +43,7 @@
       "refersTo": "button-toolbar",
       "description": "Secondary action in dashboard and table headers (the btn-dash pattern).",
       "html": "<button class=\"ds-btn\">Export</button>",
-      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #27272a; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; font: 600 12px/1.5 Inter, system-ui, sans-serif; box-shadow: 0 1px 2px rgba(0,0,0,0.3); cursor: pointer; transition: background 150ms ease-out; } .ds-btn:hover { background: #3f3f46; } .ds-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(59,130,246,0.4); }"
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #27272a; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; font: 600 12px/1.5 'IBM Plex Sans', system-ui, sans-serif; box-shadow: 0 1px 2px rgba(0,0,0,0.3); cursor: pointer; transition: background 150ms ease-out; } .ds-btn:hover { background: #3f3f46; } .ds-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(59,130,246,0.4); }"
     },
     {
       "name": "Chat Field",
@@ -51,7 +51,7 @@
       "refersTo": "chat-input-collapsed",
       "description": "The one input of the product: a round pill that grows into a 20px-radius field when it holds text or a file.",
       "html": "<div class=\"ds-chat\"><span class=\"ds-chat-plus\">+</span><span class=\"ds-chat-ph\">Ask anything about your data or documents</span></div>",
-      "css": ".ds-chat { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 16px; background: #18181b; color: #f4f4f5; border: 1px solid #27272a; border-radius: 9999px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); font: 400 16px/1.6 Inter, system-ui, sans-serif; transition: border-color 200ms ease-out, box-shadow 200ms ease-out; } .ds-chat:focus-within, .ds-chat:hover { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.2); } .ds-chat-plus { color: #a1a1aa; } .ds-chat-ph { color: #71717a; }"
+      "css": ".ds-chat { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 16px; background: #18181b; color: #f4f4f5; border: 1px solid #27272a; border-radius: 9999px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); font: 400 16px/1.6 'IBM Plex Sans', system-ui, sans-serif; transition: border-color 200ms ease-out, box-shadow 200ms ease-out; } .ds-chat:focus-within, .ds-chat:hover { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.2); } .ds-chat-plus { color: #a1a1aa; } .ds-chat-ph { color: #71717a; }"
     },
     {
       "name": "File Chip",
@@ -59,7 +59,7 @@
       "refersTo": "chat-input-expanded",
       "description": "An attached CSV or document with its size in tabular mono.",
       "html": "<span class=\"ds-chip\">sales_2026.csv <span class=\"ds-chip-size\">(240KB)</span></span>",
-      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.15); border-radius: 8px; color: #f4f4f5; font: 500 12px/1.5 Inter, system-ui, sans-serif; } .ds-chip-size { color: #71717a; font: 400 12px 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }"
+      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.15); border-radius: 8px; color: #f4f4f5; font: 500 12px/1.5 'IBM Plex Sans', system-ui, sans-serif; } .ds-chip-size { color: #71717a; font: 400 12px 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }"
     },
     {
       "name": "Enterprise Card",
@@ -67,7 +67,7 @@
       "refersTo": "card-enterprise",
       "description": "The container for charts, tables and story blocks: flat, bordered, lifts only on hover.",
       "html": "<div class=\"ds-card\"><strong>Revenue by region</strong><p>Chart area</p></div>",
-      "css": ".ds-card { padding: 16px; background: #18181b; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; font: 400 14px/1.6 Inter, system-ui, sans-serif; transition: border-color 150ms ease-out, box-shadow 150ms ease-out; } .ds-card:hover { border-color: #3f3f46; box-shadow: 0 4px 12px rgba(0,0,0,0.4); } .ds-card p { margin: 8px 0 0; color: #a1a1aa; }"
+      "css": ".ds-card { padding: 16px; background: #18181b; color: #f4f4f5; border: 1px solid #27272a; border-radius: 12px; font: 400 14px/1.6 'IBM Plex Sans', system-ui, sans-serif; transition: border-color 150ms ease-out, box-shadow 150ms ease-out; } .ds-card:hover { border-color: #3f3f46; box-shadow: 0 4px 12px rgba(0,0,0,0.4); } .ds-card p { margin: 8px 0 0; color: #a1a1aa; }"
     },
     {
       "name": "KPI Card",
@@ -75,7 +75,7 @@
       "refersTo": "card-kpi",
       "description": "One headline number with a 3px blue accent bar on the left; the value uses tabular figures.",
       "html": "<div class=\"ds-kpi\"><span class=\"ds-kpi-label\">Total revenue</span><span class=\"ds-kpi-value\">1,250,000</span></div>",
-      "css": ".ds-kpi { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 4px; min-height: 112px; padding: 0 16px 0 16px; background: #18181b; border: 1px solid #27272a; border-radius: 12px; } .ds-kpi::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 2px; background: #3b82f6; } .ds-kpi-label { color: #a1a1aa; font: 600 12px/1.5 Inter, system-ui, sans-serif; } .ds-kpi-value { color: #f4f4f5; font: 700 28px/1.2 Inter, system-ui, sans-serif; font-variant-numeric: tabular-nums; }"
+      "css": ".ds-kpi { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 4px; min-height: 112px; padding: 0 16px 0 16px; background: #18181b; border: 1px solid #27272a; border-radius: 12px; } .ds-kpi::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 2px; background: #3b82f6; } .ds-kpi-label { color: #a1a1aa; font: 600 12px/1.5 'IBM Plex Sans', system-ui, sans-serif; } .ds-kpi-value { color: #f4f4f5; font: 700 28px/1.2 'IBM Plex Sans', system-ui, sans-serif; font-variant-numeric: tabular-nums; }"
     },
     {
       "name": "Risk Badge",
@@ -83,7 +83,7 @@
       "refersTo": "approval-card",
       "description": "Risk level on the approval card: critical red, high amber, otherwise blue (15% fill, 30% border).",
       "html": "<span class=\"ds-risk ds-risk-critical\">CRITICAL</span>",
-      "css": ".ds-risk { display: inline-block; padding: 2px 8px; border-radius: 6px; border: 1px solid; font: 600 10px/14px Inter, system-ui, sans-serif; letter-spacing: 0.04em; } .ds-risk-critical { background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.3); }"
+      "css": ".ds-risk { display: inline-block; padding: 2px 8px; border-radius: 6px; border: 1px solid; font: 600 10px/14px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: 0.04em; } .ds-risk-critical { background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.3); }"
     }
   ],
   "narrative": {

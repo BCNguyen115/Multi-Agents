@@ -294,7 +294,7 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
             <LayoutDashboard className="w-5 h-5" aria-hidden="true" />
           </div>
           <div className="min-w-0">
-            <h2 className="text-lg sm:text-xl font-extrabold text-foreground tracking-tight truncate" title={spec.title}>
+            <h2 className="text-lg sm:text-xl font-bold text-foreground tracking-tight truncate" title={spec.title}>
               {spec.title}
             </h2>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-foreground-secondary font-mono tabular-nums">

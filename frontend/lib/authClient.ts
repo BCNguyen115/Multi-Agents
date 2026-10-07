@@ -9,6 +9,10 @@ export interface Me {
   roles: string[];
   can_approve: boolean;
   can_manage_knowledge: boolean;
+  /** Sensitive actions need a SECOND person: the requester waits, approvers have an inbox. */
+  two_person_approval?: boolean;
+  /** A fresh sign-up: chat works, documents and database rows come after an administrator grants access. */
+  access_pending?: boolean;
 }
 
 export const LOGIN_PATH = '/login';

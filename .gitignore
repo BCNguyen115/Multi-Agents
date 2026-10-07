@@ -151,6 +151,7 @@ scratch/tmp*
 /temp_diagrams/
 /*.docx
 /frontend/public/*.pdf
+/frontend/public/duckdb/
 
 # ------------------------------------------------------------------------------
 # 7. AI coding tools: installed packs and generated state

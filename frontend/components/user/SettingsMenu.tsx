@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronLeft, ChevronRight, Globe, KeyRound, LogIn, LogOut, Monitor, Moon, Palette, Sun, UserPlus } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Globe, KeyRound, LogIn, LogOut, Monitor, Moon, Palette, ShieldCheck, Sun, UserPlus } from 'lucide-react';
 import { useAuth, type Theme } from '../../context/AuthContext';
 import { t, useLang, type Lang, type MessageKey } from '../../lib/i18n';
 
@@ -32,7 +32,7 @@ const ICON = 'w-[18px] h-[18px] shrink-0 text-foreground-secondary';
 
 export function SettingsMenu({ anchor, placement, onClose }: SettingsMenuProps) {
   const [lang] = useLang();
-  const { theme, setTheme, language, setLanguage, isGuest, isAuthenticated, config, openAuthModal, openChangePassword, logout } = useAuth();
+  const { theme, setTheme, language, setLanguage, isGuest, isAuthenticated, me, config, openAuthModal, openChangePassword, openApprovals, logout } = useAuth();
   const [view, setView] = useState<View>('root');
   const [position, setPosition] = useState<{ left: number; bottom: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -146,6 +146,12 @@ export function SettingsMenu({ anchor, placement, onClose }: SettingsMenuProps) 
                 {t(lang, 'user.register')}
               </button>
             </>
+          )}
+          {isAuthenticated && me?.two_person_approval && me.can_approve && (
+            <button type="button" role="menuitem" className={ITEM} onClick={() => { onClose(); openApprovals(); }}>
+              <ShieldCheck className={ICON} aria-hidden="true" />
+              {t(lang, 'approval.inbox.menu')}
+            </button>
           )}
           {isAuthenticated && config.registration_enabled && (
             <button type="button" role="menuitem" className={ITEM} onClick={() => { onClose(); openChangePassword(); }}>

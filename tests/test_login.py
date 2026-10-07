@@ -24,6 +24,7 @@ def users(monkeypatch):
     monkeypatch.setattr(settings, "SANDBOX_URL", "http://python-sandbox:8000")
     monkeypatch.setattr(settings, "SANDBOX_SECRET", "a-sandbox-secret-0123456789")
     monkeypatch.setattr(settings, "AUTH_USERS", entries)
+    monkeypatch.setattr(settings, "AUTH_ALLOW_REGISTRATION", False)  # a developer's .env may switch sign-up on
     return entries
 
 
@@ -127,3 +128,13 @@ def test_whoami_describes_the_caller(gateway):
     caller = gateway.Principal("amy", "acme", "legal", frozenset({"approver"}), authenticated=True)
     me = asyncio.run(gateway.whoami(caller))
     assert me["authenticated"] and me["user"] == "amy" and me["can_approve"] and not me["can_manage_knowledge"]
+
+
+def test_production_refuses_to_run_without_authentication(monkeypatch):
+    monkeypatch.setattr(settings, "AUTH_MODE", "off")
+    monkeypatch.setattr(settings, "APP_ENV", "development")
+    validate_auth_config()  # a local trial may run anonymously
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    with pytest.raises(RuntimeError, match="refuses AUTH_MODE=off"):
+        validate_auth_config()
+

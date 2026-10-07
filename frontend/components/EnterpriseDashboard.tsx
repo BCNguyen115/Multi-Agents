@@ -8,13 +8,12 @@ import { CSVMetadata } from '../lib/types';
 import { Filter, BarChart3, Table as TableIcon, Layers, Hash } from 'lucide-react';
 import { useIsDark } from '../lib/useIsDark';
 import { t, useLang } from '../lib/i18n';
+import { readTheme } from './dashboard/EChartComponent';
 
 interface EnterpriseDashboardProps {
   metadata: CSVMetadata;
   generatedCode?: string;
 }
-
-const CHART_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#f43f5e'];
 
 export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metadata }) => {
   const isDark = useIsDark();
@@ -94,25 +93,28 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
   }, [filteredData, primaryCatCol, primaryNumericCol]);
 
   // The same charting library as the dashboards of the data agent (ECharts), so the page ships one chart engine.
-  const textColor = isDark ? '#cbd5e1' : '#475569';
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- isDark is the re-read trigger for the CSS variables
+  const theme = useMemo(() => readTheme(isDark), [isDark]);
   const barOption = useMemo(
     () => ({
+      textStyle: { fontFamily: theme.font },
       grid: { left: 44, right: 12, top: 12, bottom: 32 },
       tooltip: { trigger: 'axis' },
-      xAxis: { type: 'category', data: chartData.map((d) => d.name), axisLabel: { fontSize: 11, color: textColor } },
-      yAxis: { type: 'value', axisLabel: { fontSize: 11, color: textColor }, splitLine: { lineStyle: { color: isDark ? '#334155' : '#e2e8f0', type: 'dashed' } } },
-      series: [{ type: 'bar', data: chartData.map((d) => d.value), itemStyle: { color: CHART_COLORS[0], borderRadius: [4, 4, 0, 0] } }],
+      xAxis: { type: 'category', data: chartData.map((d) => d.name), axisLabel: { fontSize: 11, color: theme.text } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 11, color: theme.text }, splitLine: { lineStyle: { color: theme.grid, type: 'dashed' } } },
+      series: [{ type: 'bar', data: chartData.map((d) => d.value), itemStyle: { color: theme.palette[0], borderRadius: [4, 4, 0, 0] } }],
     }),
-    [chartData, isDark, textColor],
+    [chartData, theme],
   );
   const pieOption = useMemo(
     () => ({
-      color: CHART_COLORS,
+      textStyle: { fontFamily: theme.font },
+      color: theme.palette,
       tooltip: { trigger: 'item' },
-      legend: { bottom: 0, textStyle: { fontSize: 11, color: textColor } },
+      legend: { bottom: 0, textStyle: { fontSize: 11, color: theme.text } },
       series: [{ type: 'pie', radius: ['35%', '62%'], center: ['50%', '45%'], padAngle: 2, label: { show: false }, data: chartData }],
     }),
-    [chartData, textColor],
+    [chartData, theme],
   );
 
   return (

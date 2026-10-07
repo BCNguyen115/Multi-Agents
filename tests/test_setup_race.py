@@ -35,7 +35,7 @@ def test_four_replicas_starting_on_an_empty_database_all_succeed():
         pg = PostgresClient(dsn=DSN, ensure_pgvector=False)
         await pg.connect(min_size=1, max_size=1)
         try:
-            await pg.execute("DROP TABLE IF EXISTS rag_chunks, conversations, alembic_version CASCADE")
+            await pg.execute("DROP TABLE IF EXISTS rag_passages, rag_feedback, rag_meta, rag_chunks, conversations, alembic_version CASCADE")
             await pg.execute("DROP EXTENSION IF EXISTS vector CASCADE")
         finally:
             await pg.disconnect()

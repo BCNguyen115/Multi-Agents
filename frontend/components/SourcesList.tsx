@@ -149,6 +149,12 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
                         &quot;{src.snippet}&quot;
                       </p>
                     )}
+                    {src.quote && (
+                      <p className="mt-1.5 text-xs leading-relaxed text-foreground" data-testid="source-quote">
+                        <span className="mr-1.5 font-semibold text-accent-verifier">{t(lang, 'sources.verifiedQuote')}</span>
+                        &quot;{src.quote}&quot;
+                      </p>
+                    )}
                   </div>
                 );
               })}
@@ -161,7 +167,7 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
           docKey={`${viewing.category}/${viewing.file}`}
           fileName={viewing.file}
           page={viewing.page as number}
-          snippet={viewing.snippet}
+          snippet={viewing.quote ?? viewing.snippet}
           onClose={() => setViewing(null)}
         />
       )}

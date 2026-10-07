@@ -1,0 +1,127 @@
+# Data Agent: its own checks, started only when something it depends on changes (the full suite still runs in ci.yml `backend`).
+#   tests:   the data agent's test files (ingest, profiler, insights, charts, story, verifier, Q&A sandbox, adversarial datasets)
+#            with a coverage floor on the package. Measured locally on Windows: 218 tests, 90 % (sandbox.py is lower there because
+#            the rlimit code only runs on Linux); the floor sits a little below, raise it when the tests grow.
+#   sandbox: builds Dockerfile.sandbox and checks what the compose service relies on: runs as a non-root user, answers /health,
+#            refuses an unsigned request (401) and refuses to start with a short secret.
+# Not yet run on GitHub: the pytest line and the sandbox commands were run locally (Windows venv / Docker Desktop).
+name: Data Agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/agents/data_agent/**"
+      - "src/orchestrator/**"
+      - "src/shared/dataset_reader.py"
+      - "src/shared/csv_sanitizer.py"
+      - "tests/test_*dataset*.py"
+      - "tests/test_agent_e2e.py"
+      - "tests/test_charts.py"
+      - "tests/test_ingest_and_profiler.py"
+      - "tests/test_insights.py"
+      - "tests/test_realworld_fixes.py"
+      - "tests/test_sandbox_*.py"
+      - "tests/test_story.py"
+      - "tests/test_verifier.py"
+      - "Dockerfile.sandbox"
+      - "requirements*"
+      - ".github/workflows/data-agent.yml"
+  pull_request:
+    paths:
+      - "src/agents/data_agent/**"
+      - "src/orchestrator/**"
+      - "src/shared/dataset_reader.py"
+      - "src/shared/csv_sanitizer.py"
+      - "tests/test_*dataset*.py"
+      - "tests/test_agent_e2e.py"
+      - "tests/test_charts.py"
+      - "tests/test_ingest_and_profiler.py"
+      - "tests/test_insights.py"
+      - "tests/test_realworld_fixes.py"
+      - "tests/test_sandbox_*.py"
+      - "tests/test_story.py"
+      - "tests/test_verifier.py"
+      - "Dockerfile.sandbox"
+      - "requirements*"
+      - ".github/workflows/data-agent.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: data-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LANGFUSE_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements.lock
+      - name: torch CPU build (as in the Dockerfile; PyPI's default wheel drags in ~5 GB of CUDA libraries nothing here uses)
+        run: pip install "torch==$(grep -E '^torch==' requirements.lock | cut -d= -f3)" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install (pinned versions from requirements.lock)
+        run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: Lint
+        run: ruff check src/agents/data_agent src/orchestrator src/shared/dataset_reader.py src/shared/csv_sanitizer.py tests
+      - name: Data agent tests with a coverage floor
+        run: >-
+          python -m pytest
+          tests/test_adversarial_datasets.py tests/test_agent_e2e.py tests/test_charts.py tests/test_dataset_limits.py
+          tests/test_ingest_and_profiler.py tests/test_insights.py tests/test_realworld_fixes.py tests/test_sandbox_remote.py
+          tests/test_sandbox_security.py tests/test_story.py tests/test_verifier.py
+          -q --cov=src.agents.data_agent --cov-report=term-missing:skip-covered --cov-fail-under=85
+
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sandbox
+          load: true
+          tags: agent-sandbox:ci
+          cache-from: type=gha,scope=sandbox
+          cache-to: type=gha,mode=max,scope=sandbox
+      - name: Starts, answers /health and runs as a non-root user
+        run: |
+          docker run -d --name sandbox -e SANDBOX_SECRET=ci-sandbox-secret-0123456789 agent-sandbox:ci
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' sandbox)" = healthy ] && break
+            sleep 2
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' sandbox)" = healthy || { docker logs sandbox; exit 1; }
+          test "$(docker exec sandbox id -u)" != 0
+      - name: Refuses unsigned and wrongly signed requests
+        run: |
+          docker exec -i sandbox python - <<'PY'
+          import urllib.error, urllib.request
+          for headers in ({}, {"X-Signature": "0" * 64}):
+              request = urllib.request.Request("http://127.0.0.1:8080/run", data=b"{}", headers=headers, method="POST")
+              try:
+                  urllib.request.urlopen(request, timeout=5)
+              except urllib.error.HTTPError as error:
+                  assert error.code == 401, (headers, error.code)
+              else:
+                  raise SystemExit(f"a request with headers {headers} was accepted")
+          PY
+      - name: Refuses to start with a short secret
+        run: |
+          if docker run --rm -e SANDBOX_SECRET=short agent-sandbox:ci; then
+            echo "the sandbox started with a weak secret"; exit 1
+          fi

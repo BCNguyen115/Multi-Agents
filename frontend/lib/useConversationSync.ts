@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   ConflictError,
-  clearLocalConversations,
   conflictCopy,
   deleteRemote,
   fingerprint,
@@ -15,12 +14,10 @@ import {
   planSync,
   putRemote,
   saveSyncState,
-  SYNC_OWNER_KEY,
   type RemoteConversation,
   type SyncedSession,
   type SyncState,
 } from './conversationSync';
-import { STORAGE_MESSAGES_KEY, STORAGE_SESSIONS_KEY } from './storage';
 import { toast } from './toast';
 import type { ChatMessage } from './types';
 import { getLang, t } from './i18n';
@@ -39,8 +36,6 @@ interface Options {
   messagesMap: Record<string, ChatMessage[]>;
   setSessions: Dispatch<SetStateAction<SyncedSession[]>>;
   setMessagesMap: Dispatch<SetStateAction<Record<string, ChatMessage[]>>>;
-  /** Another user signed in on this browser: the previous user's local chats were cleared, start from a blank state. */
-  onOwnerChanged: () => void;
 }
 
 const asSession = (c: RemoteConversation): SyncedSession => ({ id: c.id, title: c.title, isPinned: c.pinned, updatedAt: c.updated_at });
@@ -115,7 +110,8 @@ export function useConversationSync(options: Options): void {
 
     const alive = new Set([...sessions.map((s) => s.id), ...remote.map((r) => r.id)]);
     Object.keys(state.current).filter((id) => !alive.has(id)).forEach((id) => delete state.current[id]);
-    saveSyncState(state.current);
+    const { userId } = latest.current;
+    if (userId) saveSyncState(state.current, userId);
   }, [applyServer, resolveConflict]);
 
   const run = useCallback(async () => {
@@ -136,24 +132,11 @@ export function useConversationSync(options: Options): void {
     }
   }, [syncOnce]);
 
-  // Start (and, when another user signs in on this browser, start clean).
+  // Start for this account: what was agreed with the server is remembered per account, like the chats themselves.
   const { enabled, ready, userId } = options;
   useEffect(() => {
     if (!enabled || !ready || !userId) return;
-    let owner: string | null = null;
-    try {
-      owner = localStorage.getItem(SYNC_OWNER_KEY);
-      localStorage.setItem(SYNC_OWNER_KEY, userId);
-    } catch {
-      /* storage blocked: sync still works for this page view */
-    }
-    if (owner && owner !== userId) {
-      clearLocalConversations([STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY]);
-      state.current = {};
-      latest.current.onOwnerChanged(); // the reset re-renders and this effect's data effect below starts the first sync
-      return;
-    }
-    state.current = loadSyncState();
+    state.current = loadSyncState(userId);
     void run();
   }, [enabled, ready, userId, run]);
 

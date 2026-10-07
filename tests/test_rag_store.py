@@ -7,6 +7,10 @@ import pytest
 from src.agents.rag_agent.knowledge import KnowledgeStore, build_tsquery, detect_categories, fuse
 from src.config import settings
 
+# Every table the migrations build on top of rag_chunks (rag_passages has a foreign key to it), plus the revision marker:
+# leaving any behind makes the next test start from a half-migrated schema.
+WIPE = "DROP TABLE IF EXISTS rag_passages, rag_feedback, rag_meta, rag_chunks, alembic_version CASCADE"
+
 
 # ------------------------------------------------------------------ pure helpers
 def test_tsquery_is_an_or_of_distinct_words_and_cannot_be_injected():
@@ -116,7 +120,7 @@ def test_migration_search_filters_and_fallbacks_on_a_real_database(monkeypatch):
         pg = PostgresClient(dsn=DSN)
         await pg.connect(min_size=1, max_size=4)
         try:
-            await pg.execute("DROP TABLE IF EXISTS rag_chunks")
+            await pg.execute(WIPE)
             await pg.execute(CREATE_TABLE_SQL)  # the OLD schema: no doc_key/tsv, plus the redundant ivfflat index
             await pg.execute("CREATE INDEX idx_rag_chunks_embedding ON rag_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 1)")
             rows = [
@@ -137,6 +141,12 @@ def test_migration_search_filters_and_fallbacks_on_a_real_database(monkeypatch):
             assert {"doc_key", "doc_hash", "chunk_index", "page", "tenant_id", "tsv"} <= columns
             indexes = {r["indexname"] for r in await pg.fetch("SELECT indexname FROM pg_indexes WHERE tablename='rag_chunks'")}
             assert "idx_rag_chunks_embedding" not in indexes and {"idx_rag_chunks_hnsw", "idx_rag_chunks_tsv"} <= indexes
+
+            # ensure_schema builds the frozen baseline (English tsv); the gateway and run_ingestion then apply the Alembic
+            # revisions, and the search SQL (simple + unaccent) belongs to revision 0003: do the same here
+            from src.shared.migrations import upgrade_to_head
+
+            await asyncio.to_thread(upgrade_to_head, DSN)
 
             store = KnowledgeStore(pg, TopicLLM())
             hits = await store.search("termination notice period", top_k=5)
@@ -159,7 +169,7 @@ def test_migration_search_filters_and_fallbacks_on_a_real_database(monkeypatch):
             monkeypatch.setattr(settings, "RAG_TENANT_IDS", ["acme"])
             assert {h["filename"] for h in await store.search("termination", top_k=5)} == {"b.pdf"}
         finally:
-            await pg.execute("DROP TABLE IF EXISTS rag_chunks")
+            await pg.execute(WIPE)
             await pg.disconnect()
 
     asyncio.run(scenario())

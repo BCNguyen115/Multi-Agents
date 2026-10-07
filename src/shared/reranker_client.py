@@ -21,6 +21,7 @@ Usage:
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any, List, Optional
 import httpx
@@ -81,6 +82,35 @@ def truncate_text(text: str, max_chars: int = 1000) -> str:
     return text
 
 
+_WORD = re.compile(r"\w{3,}")
+
+
+def rerank_text(doc: dict[str, Any], query: str, max_chars: int, mode: str = "content") -> str:
+    """The text the cross-encoder reads for one candidate.
+
+    ``content`` (default): the stored text, ingestion prefix included, cut to ``max_chars``. ``titled_raw``: section title and the
+    raw text, so the characters go to the document, not to ``[Source: ...]``. ``window``: the ``max_chars`` window of the raw text
+    that shares most words with the query (a chunk of up to 6000 characters is otherwise judged by its first 1000).
+    """
+    raw: str = doc.get("raw_content") or doc.get("content", "")
+    if mode == "passage":  # the passage the search matched; a chunk without one (found by keywords only) falls back to its best window
+        if doc.get("best_passage"):
+            return truncate_text(doc["best_passage"], max_chars)
+        mode = "window"
+    if mode == "titled_raw" and doc.get("raw_content"):
+        return truncate_text(f"{doc.get('section_title') or ''}\n{raw}".strip(), max_chars)
+    if mode == "window" and len(raw) > max_chars:
+        terms = set(_WORD.findall(query.lower()))
+        best_start, best_hits = 0, -1
+        for start in range(0, len(raw) - max_chars + 250, 250):
+            window = raw[start:start + max_chars].lower()
+            hits = sum(1 for t in terms if t in window)
+            if hits > best_hits:
+                best_start, best_hits = start, hits
+        return raw[best_start:best_start + max_chars]
+    return truncate_text(doc.get("content", ""), max_chars=max_chars)
+
+
 async def _score(
     query: str,
     docs: List[dict[str, Any]],
@@ -96,7 +126,7 @@ async def _score(
     """
     payload: dict[str, Any] = {
         "query": truncate_text(query, max_chars=max_chars) if query else "",
-        "texts": [truncate_text(doc.get("content", ""), max_chars=max_chars) for doc in docs],
+        "texts": [rerank_text(doc, query, max_chars, getattr(settings, "RERANK_TEXT_MODE", "content")) for doc in docs],
         "truncate": True,
     }
 
@@ -150,6 +180,15 @@ async def _score(
     return scored
 
 
+def _confident(documents: List[dict[str, Any]]) -> bool:
+    """Does the first fused candidate lead so clearly that the cross-encoder would not change the top? Off unless configured."""
+    floor = getattr(settings, "RERANK_SKIP_MIN_SCORE", 0.0)
+    if not floor or len(documents) < 2:
+        return False
+    first, second = documents[0].get("vector_score") or 0.0, documents[1].get("vector_score") or 0.0
+    return first >= floor and first - second >= getattr(settings, "RERANK_SKIP_MARGIN", 0.0)
+
+
 async def rerank_documents(
     query: str,
     documents: List[dict[str, Any]],
@@ -174,6 +213,10 @@ async def rerank_documents(
         return []
 
     target_top_k: int = top_k if top_k is not None else settings.RERANK_TOP_K
+
+    if _confident(documents):
+        logger.info("Rerank skipped: the first candidate leads clearly (cosine %.2f)", documents[0].get("vector_score") or 0.0, extra={"session_id": session_id})
+        return documents[:target_top_k]
 
     # Circuit breaker early exit
     if _is_circuit_open():

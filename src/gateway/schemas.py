@@ -22,6 +22,7 @@ class SourceItem(BaseModel):
     cite: int | None = None      # the [n] the answer uses for this source
     page: int | None = None
     snippet: str | None = None
+    quote: str | None = None     # a verbatim quote of the source that was checked against it (RAG_QUOTE_MODE)
 
 
 class ChatRequest(BaseModel):

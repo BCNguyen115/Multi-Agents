@@ -91,6 +91,25 @@ class Settings(BaseSettings):
     RAG_MIN_VECTOR_SCORE: float = 0.30  # best cosine similarity below this = "nothing relevant"; eval: out-of-domain questions peak at 0.29, answerable ones start at 0.36 (a leaked out-of-domain question is still refused by the LLM)
     RAG_RRF_K: int = 60                 # reciprocal-rank-fusion constant
     RAG_HISTORY_MESSAGES: int = 4       # last messages used to turn a follow-up into a standalone question
+    EMBEDDING_MODEL: str = "openai/text-embedding-3-small"  # query side AND ingestion; changing it means re-embedding the corpus (the table is VECTOR(1536))
+    EMBEDDING_DIMENSIONS: int = 0           # 0 = the model's own size. The table is VECTOR(1536): text-embedding-3-large fits with 1536 here
+    RAG_CORPUS_LANG_SHARE: float = 0.15     # a language with at least this share of the chunks is one the search must speak (HyDE passages)
+    RAG_QUOTE_MODE: bool = False            # the model appends a verbatim quote for every cited source; each quote is checked against that source
+    RAG_REQUIRE_QUOTES: bool = False        # with RAG_QUOTE_MODE: a citation without a verified quote makes the Verifier send the answer back
+    RAG_INDEX_PASSAGES: bool = False        # ingestion also stores ~600 character passages with their own embedding (rag_passages, migration 0008)
+    RAG_PASSAGE_SEARCH: bool = False        # retrieval also searches the passages and maps each hit back to its chunk (small-to-big)
+    RAG_PARALLEL_EMBED: bool = True         # embed the raw question WHILE the planner runs (a question with no chat history is its own standalone question)
+    RERANK_SKIP_MIN_SCORE: float = 0.0      # skip the cross-encoder when the first candidate's cosine is at least this AND leads the second by RERANK_SKIP_MARGIN (0 = never skip; unmeasured)
+    RERANK_SKIP_MARGIN: float = 0.0
+    RAG_RETRIEVAL_CACHE_SECONDS: int = 60   # a verifier retry (or the same question again) reuses the retrieved chunks; 0 = off
+    RAG_NUMBERS_PER_SENTENCE: bool = False  # a sentence's numbers must come from the chunks cited IN that sentence (stricter; unmeasured)
+    # Retrieval experiments, all OFF by default (docs/RAG_REVIEW_AND_FIXES.md: a direction is kept only if scripts/run_rag_eval.py
+    # shows a gain). Measure one at a time:  python -m scripts.run_rag_eval --rerank --set RAG_FTS_SOURCE=passage
+    RAG_FTS_SOURCE: str = "question"        # question | passage | both: the text the keyword query is built from (the passage is in the corpus language)
+    RAG_FTS_STOPWORDS: bool = False         # drop English/Vietnamese function words from the keyword query
+    RERANK_TEXT_MODE: str = "content"       # content | titled_raw (section title + raw text, no ingestion prefix) | window (the best-matching window of raw text) | passage (the matching passage, see RAG_PASSAGE_SEARCH)
+    RAG_HNSW_EF_SEARCH: int = 0             # hnsw.ef_search for the vector queries (0 = server default 40)
+    RAG_HNSW_ITERATIVE: str = ""            # "" | relaxed_order | strict_order: pgvector >= 0.8 keeps scanning when a category/tenant filter starves the result
     RAG_TENANT_IDS: Optional[list[str]] = None  # ponytail: hook only, restrict chunks to these tenants (None = all) until the gateway has an identity
 
     # Extra endpoints probed when the primary one is unreachable (container vs. local dev)
@@ -98,6 +117,8 @@ class Settings(BaseSettings):
 
     # --- Data agent limits ---
     DATA_MAX_FILE_MB: int = 25          # upload size cap
+    DATA_MAX_UNCOMPRESSED_MB: int = 300  # an Excel workbook / Parquet file may not unpack to more than this (decompression bombs)
+    DATA_MAX_PARQUET_ROWS: int = 5_000_000  # a Parquet file with more rows is refused before it is read into memory
     DATA_MAX_ROWS: int = 100_000        # larger tables are randomly sampled (disclosed in the dashboard)
     DATA_TABLE_ROWS: int = 5_000        # rows shipped to the browser data grid / client-side cross-filter
     # Where LLM-written analysis code runs. Empty = a child process of the API (fine for development). With a URL it runs in
@@ -109,7 +130,14 @@ class Settings(BaseSettings):
     # ponytail: single static tenant until the gateway carries an authenticated identity
     RLS_TENANT_ID: str = "tenant_enterprise"
     RLS_DEPARTMENT_ID: str = "dept_general"
+    # Self-registered accounts start here: nothing is stored under this tenant, so they see no document and no database row
+    # until an administrator moves them (python -m scripts.grant_user)
+    REGISTRATION_TENANT_ID: str = "tenant_pending"
+    REGISTRATION_DEPARTMENT_ID: str = "dept_pending"
     HITL_APPROVAL_TTL_SECONDS: int = 900
+    # Two-person approval: a sensitive action must be approved by ANOTHER user with an approver role in the same tenant (the requester
+    # cannot approve their own). The approver sees the request in the approvals inbox but never the result: it goes back to the requester.
+    HITL_REQUIRE_OTHER_APPROVER: bool = False
 
     # --- Gateway authentication (see src/shared/auth.py) ---
     AUTH_MODE: str = "off"              # off = anonymous single user (local dev) | jwt = every /api call needs a Bearer token
@@ -125,13 +153,21 @@ class Settings(BaseSettings):
     # Make the hash with `python -m scripts.make_user`. With an identity provider (AUTH_JWKS_URL) leave this empty.
     AUTH_USERS: list[dict[str, Any]] = []
     AUTH_TOKEN_TTL_MINUTES: int = 480   # lifetime of a token issued by /api/auth/login
+    AUTH_SCRYPT_LOG2_N: int = 16        # password hash cost (N = 2**this, r=8, p=2: the OWASP minimum, 64 MiB per hash); older hashes are upgraded at sign-in
     # Self-service sign-up (POST /api/auth/register): OFF by default, an internal system normally gets its accounts from an
     # administrator. New accounts get NO roles (no approving, no knowledge upload) and the default tenant/department below.
     AUTH_ALLOW_REGISTRATION: bool = False
-    RATE_LIMIT_LOGIN_PER_MINUTE: int = 10     # sign-in attempts per IP per minute (brute force); 0 = unlimited
+    # Sign-in attempts per client IP per minute: only a flood guard (scrypt costs CPU). Behind the frontend every caller may share
+    # one IP unless a trusted proxy forwards X-Forwarded-For (see FORWARDED_ALLOW_IPS in docker-compose.yml), so the real brute-force
+    # defence is the per-ACCOUNT lock-out below. 0 = unlimited
+    RATE_LIMIT_LOGIN_PER_MINUTE: int = 60
+    AUTH_MAX_FAILURES: int = 8                # wrong passwords / recovery keys for ONE account within the window, then it waits; 0 = off
+    AUTH_FAILURE_WINDOW_MINUTES: int = 15     # how long failures count, and how long the account then waits
     RATE_LIMIT_REGISTER_PER_MINUTE: int = 5   # sign-up attempts per IP per minute; 0 = unlimited
     RATE_LIMIT_PASSWORD_PER_MINUTE: int = 5   # password change / reset attempts per IP (reset) or user (change) per minute; 0 = unlimited
     RATE_LIMIT_CHAT_PER_MINUTE: int = 30      # chat / stream / title calls per user (or IP) per minute; 0 = unlimited
+    RATE_LIMIT_FEEDBACK_PER_MINUTE: int = 60   # thumbs on answers per user (or IP) per minute; 0 = unlimited
+    RATE_LIMIT_CHAT_PER_DAY: int = 500        # the same calls per user (or IP) per day: every one costs several LLM calls; 0 = unlimited
     RATE_LIMIT_ANALYZE_PER_MINUTE: int = 10   # uploads / analyses per user (or IP) per minute; 0 = unlimited
     HITL_APPROVER_ROLES: list[str] = ["approver", "admin"]  # roles allowed to approve a sensitive action (authenticated mode)
 
@@ -141,6 +177,10 @@ class Settings(BaseSettings):
     KNOWLEDGE_UPLOAD_ROLES: list[str] = ["admin"]  # roles allowed to add/replace documents (authenticated mode; anonymous dev may)
     KNOWLEDGE_MAX_FILE_MB: int = 25
     KNOWLEDGE_MAX_CHUNKS: int = 2000    # one document may not produce more chunks than this (embedding cost)
+    KNOWLEDGE_MAX_UNCOMPRESSED_MB: int = 200   # a DOCX/PPTX may not unpack to more than this (decompression bombs)
+    KNOWLEDGE_PARSE_ISOLATED: bool = True      # open uploads in a child process (src/shared/isolated.py); off = in this process
+    KNOWLEDGE_PARSE_TIMEOUT_SECONDS: int = 120
+    KNOWLEDGE_PARSE_MEMORY_MB: int = 3072      # address-space limit of that child (Linux)
     KNOWLEDGE_DIR: str = "dataset"      # a copy of each upload is kept in <KNOWLEDGE_DIR>/<category>/ so run_ingestion --prune/--reset keep it
     # OCR of scanned PDFs (needs the tesseract program; see src/ingestion/ocr.py)
     OCR_ENABLED: bool = True
@@ -158,6 +198,13 @@ class Settings(BaseSettings):
 
     # --- Application ---
     LOG_LEVEL: str = "INFO"
+    # What the trace server (Langfuse) may see: personal data (VN phone, CCCD, email, card numbers) is masked in the traces this
+    # backend sends. LiteLLM sends the prompts and answers of each model call by itself: set LANGFUSE_LOG_LLM_MESSAGES=false when
+    # they may hold salary, HR or contract text you do not want stored there (the calls are still traced, without their content).
+    LANGFUSE_MASK_PII: bool = True
+    LANGFUSE_LOG_LLM_MESSAGES: bool = True
+    APP_ENV: str = "development"       # production: refuses AUTH_MODE=off and hides /docs, /redoc, /openapi.json
+    EXPOSE_API_DOCS: bool = False     # show the API docs even in production (behind your own proxy rules)
     # Browser origins allowed to call the gateway (set as JSON list in .env for other deployments)
     CORS_ALLOW_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
 

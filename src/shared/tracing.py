@@ -44,6 +44,19 @@ def alias_langchain_modules() -> None:
             sys.modules[old] = importlib.import_module(new)
 
 
+def mask_pii(data: Any) -> Any:
+    """Langfuse's ``mask`` hook: personal data in anything sent to the trace server is replaced by a marker."""
+    from src.shared.memory_manager import redact_pii
+
+    if isinstance(data, str):
+        return redact_pii(data)
+    if isinstance(data, dict):
+        return {key: mask_pii(value) for key, value in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [mask_pii(value) for value in data]
+    return data
+
+
 def connect(settings: Any, attempts: int = 3, delay: float = 2.0) -> Any | None:
     """Return a Langfuse client whose keys the server accepted (and route LiteLLM's callbacks to it), else None."""
     litellm.success_callback = []
@@ -62,6 +75,7 @@ def connect(settings: Any, attempts: int = 3, delay: float = 2.0) -> Any | None:
             secret_key=settings.LANGFUSE_SECRET_KEY,
             host=settings.LANGFUSE_HOST,
             timeout=5,
+            mask=mask_pii if getattr(settings, "LANGFUSE_MASK_PII", True) else None,  # masked unless explicitly switched off
         )
     except Exception as exc:
         logger.warning("Langfuse tracing OFF: client could not start (%s)", exc, extra={"session_id": "SYSTEM"})
@@ -92,6 +106,7 @@ def connect(settings: Any, attempts: int = 3, delay: float = 2.0) -> Any | None:
     os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_HOST
     litellm.success_callback = ["langfuse"]
     litellm.failure_callback = ["langfuse"]
+    litellm.turn_off_message_logging = not getattr(settings, "LANGFUSE_LOG_LLM_MESSAGES", True)
     logger.info("Langfuse tracing ENABLED, keys accepted by %s", settings.LANGFUSE_HOST, extra={"session_id": "SYSTEM"})
     return client
 

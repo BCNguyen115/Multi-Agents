@@ -819,7 +819,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
             }
 
     @staticmethod
-    def _rag_verdict(verification: dict[str, Any], retry_count: int) -> dict[str, Any]:
+    def _rag_verdict(verification: dict[str, Any], retry_count: int, require_quotes: bool = False) -> dict[str, Any]:
         """Verdict on a RAG answer from the agent's own checks: it must cite sources and use only numbers that
         appear in them. "Nothing found" is a valid answer; a retrieval error is worth one more try."""
         status = verification.get("status")
@@ -833,6 +833,8 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
                 problems.append("câu trả lời chưa trích dẫn nguồn dạng [n]")
             if verification.get("unsupported_numbers"):
                 problems.append("các con số " + ", ".join(map(str, verification["unsupported_numbers"])) + " không có trong nguồn")
+            if require_quotes and verification.get("unquoted_citations"):
+                problems.append("các trích dẫn " + ", ".join(f"[{n}]" for n in verification["unquoted_citations"]) + " chưa kèm đoạn trích nguyên văn đúng trong nguồn")
         if not problems:
             return {"is_verified": True, "verifier_feedback": ""}
         feedback = "; ".join(problems) + ". Chỉ dùng thông tin và con số có trong nguồn và luôn trích dẫn [n]."
@@ -940,7 +942,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
         if isinstance(parsed_res, dict) and parsed_res.get("type") == "error":
             return {"is_verified": True, "verifier_feedback": ""}  # a clear user-facing error is the correct answer
         if isinstance(parsed_res, dict) and isinstance(parsed_res.get("verification"), dict):
-            return self._rag_verdict(parsed_res["verification"], retry_count)  # deterministic: no LLM judge
+            return self._rag_verdict(parsed_res["verification"], retry_count, bool(getattr(self.settings, "RAG_REQUIRE_QUOTES", False)))  # deterministic: no LLM judge
         if isinstance(parsed_res, dict) and "sql" in parsed_res and isinstance(parsed_res.get("data"), list):  # db_agent
             db_verdict = self._db_verdict(parsed_res, retry_count)
             if not db_verdict["is_verified"]:  # invented figures: no point asking the judge, retry with the feedback

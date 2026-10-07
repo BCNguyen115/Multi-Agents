@@ -524,6 +524,14 @@ _INDIRECT_INJECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+def indirect_injection_threats(text: str) -> list[str]:
+    """Labels of the indirect-injection patterns found in ``text`` (same normalisation as ``audit_context_safety``)."""
+    if not text or not isinstance(text, str):
+        return []
+    scanned = _normalize_for_safety_check(text)
+    return [label for pattern, label in _INDIRECT_INJECTION_PATTERNS if pattern.search(scanned)]
+
+
 def audit_context_safety(
     context_chunks: list[str],
 ) -> tuple[bool, list[str], list[str]]:

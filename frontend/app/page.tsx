@@ -9,12 +9,14 @@ import { CommandPalette } from '../components/CommandPalette';
 import { ToastContainer } from '../components/ui/Toast';
 import { useAuth } from '../context/AuthContext';
 import { useConversationSync } from '../lib/useConversationSync';
+import { migrateLegacyLocalConversations } from '../lib/conversationSync';
 import { ChatMessage } from '../lib/types';
-import { safeSaveChatMessagesMap, STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY } from '../lib/storage';
+import { GUEST_OWNER, localKey, safeSaveChatMessagesMap, STORAGE_SESSIONS_KEY, STORAGE_MESSAGES_KEY } from '../lib/storage';
 import { exportDashboardToPDF, exportDashboardToPPTX } from '../lib/exportEngine';
 import { toast } from '../lib/toast';
 import { getLang, isDefaultChatTitle, t, useLang } from '../lib/i18n';
 import { apiFetch } from '../lib/apiFetch';
+import { findEmptyChat } from '../lib/newChat';
 
 export default function HomePage() {
   const [currentAgentMode, setCurrentAgentMode] = useState<string>('RAG Agent');
@@ -23,16 +25,28 @@ export default function HomePage() {
   const [messagesMap, setMessagesMap] = useState<Record<string, ChatMessage[]>>({});
   const [viewMode, setViewMode] = useState<'chat' | 'search'>('chat');
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
-  const [isMounted, setIsMounted] = useState(false);
-  const { me, setTheme } = useAuth(); // who is signed in, and the theme (AuthProvider, app/layout.tsx)
+  // Whose chats are on screen: the browser keeps one copy per account, so switching account never shows or overwrites another's
+  const { me, loading: authLoading, setTheme } = useAuth(); // who is signed in, and the theme (AuthProvider, app/layout.tsx)
+  const owner = me?.authenticated ? me.user : GUEST_OWNER;
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const isMounted = loadedFor !== null;
   const [lang] = useLang();
+  // "New chat" on a conversation nobody has written in: its row in the sidebar flashes (n makes a repeat click flash again)
+  const [flash, setFlash] = useState<{ id: string; n: number } | null>(null);
 
-  // Initialize sessions & messages from localStorage
+  // A fresh sign-up has no data access yet: say so once, instead of leaving the empty answers unexplained
+  const accessPending = Boolean(me?.access_pending);
   useEffect(() => {
-    setIsMounted(true);
+    if (accessPending) toast.warning(t(getLang(), 'auth.pending.body'), { title: t(getLang(), 'auth.pending.title'), duration: 12000 });
+  }, [accessPending]);
+
+  // Load this account's sessions & messages from localStorage (again when the account changes, e.g. the session expired)
+  useEffect(() => {
+    if (authLoading) return; // who is asking is not known yet
+    migrateLegacyLocalConversations(owner);
     try {
-      const storedSessions = localStorage.getItem(STORAGE_SESSIONS_KEY);
-      const storedMap = localStorage.getItem(STORAGE_MESSAGES_KEY);
+      const storedSessions = localStorage.getItem(localKey(STORAGE_SESSIONS_KEY, owner));
+      const storedMap = localStorage.getItem(localKey(STORAGE_MESSAGES_KEY, owner));
 
       let parsedSessions: ChatSession[] = storedSessions ? JSON.parse(storedSessions) : [];
       let parsedMap: Record<string, ChatMessage[]> = storedMap ? JSON.parse(storedMap) : {};
@@ -59,25 +73,18 @@ export default function HomePage() {
       setActiveSessionId(defaultId);
       setMessagesMap({ [defaultId]: [] });
     }
-  }, []);
+    setLoadedFor(owner);
+  }, [authLoading, owner]);
 
   // Chats follow a signed-in user across browsers: the server keeps them, this page syncs with it (see lib/conversationSync.ts)
-  const startFreshChat = () => {
-    const freshId = `session-${Date.now()}`;
-    setSessions([{ id: freshId, title: t(getLang(), 'chat.newTitle'), isPinned: false, updatedAt: new Date().toISOString() }]);
-    setMessagesMap({ [freshId]: [] });
-    setActiveSessionId(freshId);
-  };
-
   useConversationSync({
     enabled: Boolean(me?.authenticated),
     userId: me?.user ?? null,
-    ready: isMounted && sessions.length > 0,
+    ready: loadedFor === owner && sessions.length > 0,
     sessions,
     messagesMap,
     setSessions,
     setMessagesMap,
-    onOwnerChanged: startFreshChat,
   });
 
   // A conversation deleted on another device may be the open one: move to another (or a new) conversation.
@@ -88,21 +95,33 @@ export default function HomePage() {
   }, [sessions, activeSessionId]);
 
   // Save sessions & messagesMap to localStorage whenever they update
+  // (always under the key of the account whose data is in state: `loadedFor`, not the one that is about to be loaded)
   useEffect(() => {
-    if (sessions.length > 0) {
+    if (loadedFor !== null && sessions.length > 0) {
       try {
-        localStorage.setItem(STORAGE_SESSIONS_KEY, JSON.stringify(sessions));
+        localStorage.setItem(localKey(STORAGE_SESSIONS_KEY, loadedFor), JSON.stringify(sessions));
       } catch (e) {
         console.warn('Failed to save sessions to localStorage', e);
       }
     }
-  }, [sessions]);
+  }, [sessions, loadedFor]);
 
+  // While an answer streams, messagesMap changes once per frame: serialising the whole history that often would
+  // freeze the page, so the write waits for 400 ms of quiet (and happens at once when the page is hidden or closed)
   useEffect(() => {
-    if (Object.keys(messagesMap).length > 0) {
-      safeSaveChatMessagesMap(messagesMap);
-    }
-  }, [messagesMap]);
+    if (loadedFor === null || Object.keys(messagesMap).length === 0) return undefined;
+    const key = localKey(STORAGE_MESSAGES_KEY, loadedFor);
+    const timer = setTimeout(() => safeSaveChatMessagesMap(messagesMap, key), 400);
+    const flush = () => {
+      clearTimeout(timer);
+      safeSaveChatMessagesMap(messagesMap, key);
+    };
+    window.addEventListener('pagehide', flush);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, [messagesMap, loadedFor]);
 
   // Global Keyboard Shortcuts (Cmd+K, Cmd+Shift+D)
   useEffect(() => {
@@ -142,6 +161,14 @@ export default function HomePage() {
   };
 
   const handleNewChat = () => {
+    // Only a conversation with a user prompt earns another one: otherwise go back to the empty one that already exists
+    const reuse = findEmptyChat(sessions, messagesMap, activeSessionId);
+    if (reuse) {
+      setActiveSessionId(reuse);
+      setViewMode('chat');
+      setFlash((prev) => ({ id: reuse, n: (prev?.n ?? 0) + 1 }));
+      return;
+    }
     const newId = `session-${Date.now()}`;
     const newSession: ChatSession = {
       id: newId,
@@ -345,6 +372,7 @@ export default function HomePage() {
         activeSessionId={activeSessionId}
         onSelectSession={handleSelectSession}
         onNewChat={handleNewChat}
+        flash={flash}
         onDeleteSession={handleDeleteSession}
         onTogglePin={handleTogglePin}
         onRenameSession={handleRenameSession}
@@ -355,7 +383,6 @@ export default function HomePage() {
       <main id="main-content" tabIndex={-1} className="flex-1 flex flex-col h-full min-h-0 min-w-0 w-full max-w-full overflow-x-hidden relative bg-background overflow-y-hidden focus:outline-none">
         <Header
           currentAgent={currentAgentMode}
-          onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
         />
 
         <ChatInterface

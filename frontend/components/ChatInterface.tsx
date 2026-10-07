@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { UploadCloud, StopCircle, FileSpreadsheet, FileText, Globe, AlertCircle, X, BarChart3 } from 'lucide-react';
 import { ChatMessage as ChatMessageType, CSVMetadata, PEVTraceState } from '../lib/types';
 import { ChatMessage } from './ChatMessage';
@@ -39,15 +39,29 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onUpdateLastMessage,
 }) => {
   const [lang] = useLang();
-  const [isSending, setIsSending] = useState(false);
+  // Which conversation has a request in flight: a stream started in A must not look "busy" when the user opens B
+  const [sendingSession, setSendingSession] = useState<string | null>(null);
+  const isSending = sendingSession === sessionId;
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [activeCSV, setActiveCSV] = useState<{ file: File; metadata: CSVMetadata; tableName: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [heroAlert, setHeroAlert] = useState<string | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const controllers = useRef(new Map<string, AbortController>()); // one stream per conversation, each can be stopped
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isInitialState = messages.length === 0;
+
+  // Leaving the page ends the streams that are still open (their callbacks would keep updating state for nobody)
+  useEffect(() => {
+    const open = controllers.current;
+    return () => open.forEach((controller) => controller.abort());
+  }, []);
+
+  // The question each reply answers: the last user message at or before it, computed in one pass
+  const userQueries = useMemo(() => {
+    let last: string | undefined;
+    return messages.map((m) => (m.role === 'user' ? (last = m.content) : last));
+  }, [messages]);
 
   // Auto-scroll
   useEffect(() => {
@@ -165,6 +179,219 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     void handleSendMessageFromInput(t(getLang(), labelKey), null, agent);
   };
 
+  /** Marks the last reply as failed (the analyze and the stream paths share this). */
+  const markFailed = (effectiveMode: string, contentKey: MessageKey, descriptionKey: MessageKey, error: string) =>
+    onUpdateLastMessage((prev) => {
+      const prevState = prev.pevTraceState || createInitialPevTraceState(effectiveMode);
+      return {
+        ...prev,
+        content: t(getLang(), contentKey, { error }),
+        pevTraceState: {
+          ...prevState,
+          currentStep: 'completed',
+          verifier: { ...prevState.verifier, status: 'failed', description: t(getLang(), descriptionKey, { error }) },
+        },
+        status: 'error',
+      };
+    });
+
+  /** Adds a PDF/DOCX to the knowledge base. Resolves `true` when it was stored and the user also asked a question. */
+  const uploadToKnowledgeBase = async (file: File, categoryHint: string | null, hasQuestion: boolean, effectiveMode: string): Promise<boolean> => {
+    onUpdateLastMessage((prev) => ({
+      ...prev,
+      content: t(getLang(), 'upload.processing', { name: file.name }),
+      pevEvents: undefined,
+      pevTraceState: undefined,
+      status: 'complete',
+    }));
+    let uploaded = false;
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('session_id', sessionId);
+      if (categoryHint) formData.append('category', categoryHint);
+      const res = await apiFetch('/api/knowledge/upload', { method: 'POST', body: formData });
+      const data = await res.json().catch(() => ({}));
+      if (isUnauthorized(res)) throw new Error(t(getLang(), 'session.expired'));
+      if (!res.ok) {
+        throw new Error(typeof data.detail === 'string' ? data.detail : data.error || `HTTP error ${res.status}`);
+      }
+      uploaded = true;
+      onUpdateLastMessage((prev) => ({ ...prev, content: data.message || t(getLang(), 'chat.kbUpdated'), status: 'complete' }));
+      if (data.status !== 'unchanged') {
+        toast.success(t(getLang(), 'upload.saved', { chunks: data.chunks, category: data.category }), { title: 'Knowledge base' });
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      onUpdateLastMessage((prev) => ({ ...prev, content: t(getLang(), 'upload.failed', { error: errorMessage }), status: 'error' }));
+    }
+    if (!uploaded || !hasQuestion) return false;
+    // the user also asked something: answer it from the (now updated) knowledge base in a new reply
+    onSendMessage({
+      id: `assistant-${Date.now()}-answer`,
+      role: 'assistant',
+      content: '',
+      agentMode: effectiveMode,
+      pevEvents: {},
+      pevTraceState: createInitialPevTraceState(effectiveMode),
+      status: 'loading',
+    });
+    return true;
+  };
+
+  /** CSV -> dashboard through /api/analyze. */
+  const analyzeCsv = async (queryContent: string, actualFile: File | undefined, effectiveMode: string) => {
+    try {
+      const formData = new FormData();
+      formData.append('query', queryContent);
+      formData.append('session_id', sessionId);
+      if (actualFile) formData.append('file', actualFile);
+
+      const res = await apiFetch('/api/analyze', { method: 'POST', body: formData });
+      const data = await res.json().catch(() => ({}));
+      if (isUnauthorized(res)) throw new Error(t(getLang(), 'session.expired'));
+      if (!res.ok) {
+        // The backend explains 4xx errors (unreadable file, too large, blocked prompt) in `detail`
+        throw new Error(typeof data.detail === 'string' ? data.detail : data.error || `HTTP error ${res.status}`);
+      }
+      const dashboardSpec = data.dashboard_spec ? { ...data.dashboard_spec, sessionId } : undefined;
+
+      const traceFromAnalyze: PEVTraceState = {
+        currentStep: 'completed',
+        planner: {
+          status: 'completed',
+          title: 'Planner Node',
+          targetAgent: 'data_agent',
+          plan: t(getLang(), 'chat.analyzePlan'),
+          description: t(getLang(), 'chat.analyzePlanDone'),
+        },
+        executor: {
+          status: 'completed',
+          title: 'Executor Node',
+          agentName: 'data_agent',
+          subTasks: [t(getLang(), 'chat.analyzeSubTask')],
+          outputSummary: t(getLang(), 'chat.analyzeOutput'),
+        },
+        verifier: {
+          status: 'completed',
+          title: 'Verifier Node',
+          isVerified: true,
+          auditPassed: true,
+          feedback: t(getLang(), 'chat.analyzeFeedback'),
+        },
+      };
+
+      onUpdateLastMessage((prev) => ({
+        ...prev,
+        content: data.explanation || t(getLang(), 'chat.analyzed'),
+        generatedCode: data.generated_code || '',
+        dashboardSpec,
+        metadata: data.metadata || undefined,
+        pevTrace: data.pev_trace || undefined,
+        pevTraceState: traceFromAnalyze,
+        status: 'complete',
+      }));
+    } catch (err: unknown) {
+      markFailed(effectiveMode, 'chat.analyzeError', 'chat.errorDescription', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  /** Chat turn over SSE. The answer preview arrives token by token: it is applied at most once per animation frame. */
+  const streamChat = async (queryContent: string, modeKey: string | null, targetAgentId: string | null, effectiveMode: string) => {
+    const origin = sessionId;
+    const controller = new AbortController();
+    controllers.current.set(origin, controller);
+
+    let pending = '';
+    let frame: number | null = null;
+    const dropFrame = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+    };
+    const flush = () => {
+      dropFrame();
+      if (!pending) return;
+      const text = pending;
+      pending = '';
+      onUpdateLastMessage((prev) => ({ ...prev, content: `${prev.content}${text}`, isPreview: true }));
+    };
+    controller.signal.addEventListener('abort', flush); // what arrived before "Stop" is kept
+
+    try {
+      await fetchSSEStream(
+        queryContent,
+        origin,
+        modeKey,
+        {
+          onPevStep: (stepData) => {
+            onUpdateLastMessage((prev) => ({
+              ...prev,
+              pevStep: stepData,
+              pevTraceState: applyPevStep(prev.pevTraceState || createInitialPevTraceState(effectiveMode), stepData),
+            }));
+          },
+          onPlan: (planData) => {
+            onUpdateLastMessage((prev) => ({
+              ...prev,
+              pevEvents: { ...prev.pevEvents, plan: planData },
+              pevTraceState: applyPlan(prev.pevTraceState || createInitialPevTraceState(effectiveMode), planData),
+            }));
+          },
+          onExecuting: (execData) => {
+            onUpdateLastMessage((prev) => ({
+              ...prev,
+              pevEvents: { ...prev.pevEvents, executing: execData as any },
+              pevTraceState: applyExecuting(prev.pevTraceState || createInitialPevTraceState(effectiveMode), execData),
+            }));
+          },
+          onVerifying: (verifyingData) => {
+            onUpdateLastMessage((prev) => ({
+              ...prev,
+              pevEvents: { ...prev.pevEvents, verifying: verifyingData },
+              pevTraceState: applyVerifying(prev.pevTraceState || createInitialPevTraceState(effectiveMode), verifyingData),
+            }));
+          },
+          onHumanApprovalRequired: (approvalData) => {
+            onUpdateLastMessage((prev) => ({ ...prev, approvalRequest: approvalData }));
+          },
+          onAnswerDelta: (text) => {
+            pending += text;
+            if (frame === null) frame = requestAnimationFrame(flush);
+          },
+          onAnswerReset: () => {
+            dropFrame();
+            pending = '';
+            onUpdateLastMessage((prev) => ({ ...prev, content: '', isPreview: false }));
+          },
+          onFinalResponse: (finalData) => {
+            dropFrame();
+            pending = ''; // the verified answer replaces whatever preview was still waiting
+            onUpdateLastMessage((prev) => ({
+              ...prev,
+              content: finalData.response,
+              pevEvents: { ...prev.pevEvents, final_response: finalData },
+              pevStep: { step: 'completed', status: 'verified' },
+              pevTrace: finalData.pev_trace || prev.pevTrace,
+              pevTraceState: applyFinal(prev.pevTraceState || createInitialPevTraceState(effectiveMode), finalData),
+              status: 'complete',
+              isPreview: false,
+            }));
+          },
+          onError: (err) => {
+            dropFrame();
+            pending = '';
+            markFailed(effectiveMode, 'chat.streamError', 'chat.failedDescription', String(err));
+          },
+        },
+        controller.signal,
+        targetAgentId
+      );
+    } finally {
+      flush();
+      if (controllers.current.get(origin) === controller) controllers.current.delete(origin);
+    }
+  };
+
   const handleSendMessageFromInput = async (
     queryText: string,
     file: File | null,
@@ -181,7 +408,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     const effectiveMode = overrideMode || currentAgentMode;
     const targetAgentId = getTargetAgentId(effectiveMode);
 
-    let fileToUse = file || attachedFile;
+    const fileToUse = file || attachedFile;
     let csvToSend = activeCSV;
 
     if (fileToUse && (!activeCSV || activeCSV.file !== fileToUse)) {
@@ -211,31 +438,25 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       ? t(getLang(), 'chat.addDocument', { name: fileToUse?.name ?? '' }) + (categoryHint ? t(getLang(), 'chat.addDocumentCategory', { category: categoryHint }) : '')
       : t(getLang(), 'chat.buildDashboard', { name: fileToUse?.name || 'dataset' }));
 
-    const userMessage: ChatMessageType = {
+    onSendMessage({
       id: `user-${Date.now()}`,
       role: 'user',
       content: isKnowledgeUpload && questionText ? `${questionText}\n\n${t(getLang(), 'chat.attachedNote', { name: fileToUse?.name ?? '' })}` : queryContent,
       agentMode: effectiveMode,
-    };
-
-    onSendMessage(userMessage);
-
-    const assistantId = `assistant-${Date.now()}`;
-    const initialTraceState = createInitialPevTraceState(effectiveMode);
-
-    const initialAssistantMsg: ChatMessageType = {
-      id: assistantId,
+    });
+    onSendMessage({
+      id: `assistant-${Date.now()}`,
       role: 'assistant',
       content: '',
       agentMode: effectiveMode,
       pevEvents: {},
-      pevTraceState: initialTraceState,
+      pevTraceState: createInitialPevTraceState(effectiveMode),
       status: 'loading',
-    };
-
-    onSendMessage(initialAssistantMsg);
+    });
     setAttachedFile(null);
-    setIsSending(true);
+
+    const origin = sessionId;
+    setSendingSession(origin);
 
     // CRITICAL: Strictly isolate Data Agent routing.
     // If user explicitly selected RAG Agent, Search Agent, DB Agent, etc.,
@@ -243,226 +464,40 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     const isExplicitNonData = targetAgentId !== null && targetAgentId !== 'data_agent';
     const isExplicitData = targetAgentId === 'data_agent';
     const isNewCsvUpload = Boolean(fileToUse && isTabularFile(fileToUse.name));
-
     const shouldAnalyze = !isKnowledgeUpload && !isExplicitNonData && (isExplicitData ? Boolean(fileToUse || csvToSend || activeCSV) : isNewCsvUpload);
 
-    if (isKnowledgeUpload && fileToUse) {
-      const uploadedName = fileToUse.name;
-      onUpdateLastMessage((prev) => ({
-        ...prev,
-        content: t(getLang(), 'upload.processing', { name: uploadedName }),
-        pevEvents: undefined,
-        pevTraceState: undefined,
-        status: 'complete',
-      }));
-      let uploaded = false;
-      try {
-        const formData = new FormData();
-        formData.append('file', fileToUse);
-        formData.append('session_id', sessionId);
-        if (categoryHint) formData.append('category', categoryHint);
-        const res = await apiFetch('/api/knowledge/upload', { method: 'POST', body: formData });
-        const data = await res.json().catch(() => ({}));
-        if (isUnauthorized(res)) throw new Error(t(getLang(), 'session.expired'));
-        if (!res.ok) {
-          throw new Error(typeof data.detail === 'string' ? data.detail : data.error || `HTTP error ${res.status}`);
-        }
-        uploaded = true;
-        onUpdateLastMessage((prev) => ({ ...prev, content: data.message || t(getLang(), 'chat.kbUpdated'), status: 'complete' }));
-        if (data.status !== 'unchanged') {
-          toast.success(t(getLang(), 'upload.saved', { chunks: data.chunks, category: data.category }), { title: 'Knowledge base' });
-        }
-      } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        onUpdateLastMessage((prev) => ({ ...prev, content: t(getLang(), 'upload.failed', { error: errorMessage }), status: 'error' }));
+    try {
+      if (isKnowledgeUpload && fileToUse) {
+        const goOn = await uploadToKnowledgeBase(fileToUse, categoryHint, Boolean(questionText), effectiveMode);
+        if (!goOn) return;
       }
-      if (!uploaded || !questionText) {
-        setIsSending(false);
-        return;
+      if (shouldAnalyze) {
+        await analyzeCsv(queryContent, csvToSend ? csvToSend.file : (fileToUse || activeCSV?.file), effectiveMode);
+      } else {
+        await streamChat(queryContent, isKnowledgeUpload ? 'rag_agent' : targetAgentId, targetAgentId, effectiveMode);
       }
-      // the user also asked something: answer it from the (now updated) knowledge base in a new reply
-      onSendMessage({
-        id: `assistant-${Date.now()}-answer`,
-        role: 'assistant',
-        content: '',
-        agentMode: effectiveMode,
-        pevEvents: {},
-        pevTraceState: createInitialPevTraceState(effectiveMode),
-        status: 'loading',
-      });
+    } finally {
+      // whatever happened (final answer, error, a stream that just ended), this conversation is no longer busy
+      setSendingSession((current) => (current === origin ? null : current));
     }
+  };
 
-    if (shouldAnalyze) {
-      try {
-        const formData = new FormData();
-        formData.append('query', queryContent);
-        formData.append('session_id', sessionId);
-        const actualFile = csvToSend ? csvToSend.file : (fileToUse || activeCSV?.file);
-        if (actualFile) {
-          formData.append('file', actualFile);
-        }
+  // The same function for every message: ChatMessage is memoised and must not see a new callback on each render
+  const generateDashboardRef = useRef<((prompt?: string) => void) | undefined>(undefined);
+  generateDashboardRef.current = (customPrompt) => {
+    void handleSendMessageFromInput(customPrompt || t(lang, 'chat.dashboardPrompt'), activeCSV?.file || attachedFile);
+  };
+  const generateDashboard = useCallback((customPrompt?: string) => generateDashboardRef.current?.(customPrompt), []);
 
-        const res = await apiFetch('/api/analyze', {
-          method: 'POST',
-          body: formData,
-        });
-
-        const data = await res.json().catch(() => ({}));
-        if (isUnauthorized(res)) throw new Error(t(getLang(), 'session.expired'));
-        if (!res.ok) {
-          // The backend explains 4xx errors (unreadable file, too large, blocked prompt) in `detail`
-          throw new Error(typeof data.detail === 'string' ? data.detail : data.error || `HTTP error ${res.status}`);
-        }
-        const dashboardSpec = data.dashboard_spec ? { ...data.dashboard_spec, sessionId } : undefined;
-
-        const traceFromAnalyze: PEVTraceState = {
-          currentStep: 'completed',
-          planner: {
-            status: 'completed',
-            title: 'Planner Node',
-            targetAgent: 'data_agent',
-            plan: t(getLang(), 'chat.analyzePlan'),
-            description: t(getLang(), 'chat.analyzePlanDone'),
-          },
-          executor: {
-            status: 'completed',
-            title: 'Executor Node',
-            agentName: 'data_agent',
-            subTasks: [
-              t(getLang(), 'chat.analyzeSubTask'),
-            ],
-            outputSummary: t(getLang(), 'chat.analyzeOutput'),
-          },
-          verifier: {
-            status: 'completed',
-            title: 'Verifier Node',
-            isVerified: true,
-            auditPassed: true,
-            feedback: t(getLang(), 'chat.analyzeFeedback'),
-          },
-        };
-
-        onUpdateLastMessage((prev) => ({
-          ...prev,
-          content: data.explanation || t(getLang(), 'chat.analyzed'),
-          generatedCode: data.generated_code || '',
-          dashboardSpec,
-          metadata: data.metadata || undefined,
-          pevTrace: data.pev_trace || undefined,
-          pevTraceState: traceFromAnalyze,
-          status: 'complete',
-        }));
-      } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        onUpdateLastMessage((prev) => {
-          const prevState = prev.pevTraceState || createInitialPevTraceState(effectiveMode);
-          return {
-            ...prev,
-            content: t(getLang(), 'chat.analyzeError', { error: errorMessage }),
-            pevTraceState: {
-              ...prevState,
-              currentStep: 'completed',
-              verifier: {
-                ...prevState.verifier,
-                status: 'failed',
-                description: t(getLang(), 'chat.errorDescription', { error: errorMessage }),
-              },
-            },
-            status: 'error',
-          };
-        });
-      } finally {
-        setIsSending(false);
-      }
-    } else {
-      const modeKey = isKnowledgeUpload ? 'rag_agent' : targetAgentId;
-
-      // Create abort controller for this stream
-      const abortController = new AbortController();
-      abortControllerRef.current = abortController;
-
-      await fetchSSEStream(
-        queryContent,
-        sessionId,
-        modeKey,
-        {
-          onPevStep: (stepData) => {
-            onUpdateLastMessage((prev) => ({
-              ...prev,
-              pevStep: stepData,
-              pevTraceState: applyPevStep(prev.pevTraceState || createInitialPevTraceState(effectiveMode), stepData),
-            }));
-          },
-        onPlan: (planData) => {
-          onUpdateLastMessage((prev) => ({
-            ...prev,
-            pevEvents: { ...prev.pevEvents, plan: planData },
-            pevTraceState: applyPlan(prev.pevTraceState || createInitialPevTraceState(effectiveMode), planData),
-          }));
-        },
-        onExecuting: (execData) => {
-          onUpdateLastMessage((prev) => ({
-            ...prev,
-            pevEvents: { ...prev.pevEvents, executing: execData as any },
-            pevTraceState: applyExecuting(prev.pevTraceState || createInitialPevTraceState(effectiveMode), execData),
-          }));
-        },
-        onVerifying: (verifyingData) => {
-          onUpdateLastMessage((prev) => ({
-            ...prev,
-            pevEvents: { ...prev.pevEvents, verifying: verifyingData },
-            pevTraceState: applyVerifying(prev.pevTraceState || createInitialPevTraceState(effectiveMode), verifyingData),
-          }));
-        },
-        onHumanApprovalRequired: (approvalData) => {
-          onUpdateLastMessage((prev) => ({
-            ...prev,
-            approvalRequest: approvalData,
-          }));
-        },
-        onAnswerDelta: (text) => {
-          onUpdateLastMessage((prev) => ({ ...prev, content: `${prev.content}${text}`, isPreview: true }));
-        },
-        onAnswerReset: () => {
-          onUpdateLastMessage((prev) => ({ ...prev, content: '', isPreview: false }));
-        },
-        onFinalResponse: (finalData) => {
-          onUpdateLastMessage((prev) => ({
-            ...prev,
-            content: finalData.response,
-            pevEvents: { ...prev.pevEvents, final_response: finalData },
-            pevStep: { step: 'completed', status: 'verified' },
-            pevTrace: finalData.pev_trace || prev.pevTrace,
-            pevTraceState: applyFinal(prev.pevTraceState || createInitialPevTraceState(effectiveMode), finalData),
-            status: 'complete',
-            isPreview: false,
-          }));
-          setIsSending(false);
-        },
-        onError: (err) => {
-          onUpdateLastMessage((prev) => {
-            const prevState = prev.pevTraceState || createInitialPevTraceState(effectiveMode);
-            return {
-              ...prev,
-              content: t(getLang(), 'chat.streamError', { error: String(err) }),
-              pevTraceState: {
-                ...prevState,
-                currentStep: 'completed',
-                verifier: {
-                  ...prevState.verifier,
-                  status: 'failed',
-                  description: t(getLang(), 'chat.failedDescription', { error: String(err) }),
-                },
-              },
-              status: 'error',
-            };
-          });
-          setIsSending(false);
-        },
-      }, abortController.signal, targetAgentId);
-
-      abortControllerRef.current = null;
-    }
+  const stopSending = () => {
+    controllers.current.get(sessionId)?.abort();
+    controllers.current.delete(sessionId);
+    setSendingSession((current) => (current === sessionId ? null : current));
+    onUpdateLastMessage((prev) => ({
+      ...prev,
+      content: prev.content || t(getLang(), 'chat.stopped'),
+      status: 'complete' as const,
+    }));
   };
 
   return (
@@ -553,30 +588,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <div className="flex-1 flex flex-col justify-between h-full overflow-hidden transition-all duration-300 ease-in-out">
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-6 scroll-smooth">
             <div className="max-w-5xl mx-auto space-y-6 pb-6">
-              {messages.map((msg, index) => {
-                const prevUserMsg = messages
-                  .slice(0, index + 1)
-                  .reverse()
-                  .find((m) => m.role === 'user');
-                const userQuery = prevUserMsg?.content;
-
-                return (
-                  <ChatMessage
-                    key={msg.id}
-                    message={msg}
-                    userQuery={userQuery}
-                    isSending={isSending}
-                    isLastMessage={index === messages.length - 1}
-                    activeCSV={activeCSV}
-                    onGenerateDashboard={(customPrompt) =>
-                      handleSendMessageFromInput(
-                        customPrompt || t(lang, 'chat.dashboardPrompt'),
-                        activeCSV?.file || attachedFile
-                      )
-                    }
-                  />
-                );
-              })}
+              {messages.map((msg, index) => (
+                <ChatMessage
+                  key={msg.id}
+                  message={msg}
+                  userQuery={userQueries[index]}
+                  isSending={isSending}
+                  isLastMessage={index === messages.length - 1}
+                  activeCSV={activeCSV}
+                  onGenerateDashboard={generateDashboard}
+                />
+              ))}
               <div ref={messagesEndRef} />
             </div>
           </div>
@@ -587,18 +609,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               <div className="flex justify-center mb-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    if (abortControllerRef.current) {
-                      abortControllerRef.current.abort();
-                      abortControllerRef.current = null;
-                    }
-                    setIsSending(false);
-                    onUpdateLastMessage((prev) => ({
-                      ...prev,
-                      content: prev.content || t(getLang(), 'chat.stopped'),
-                      status: 'complete' as const,
-                    }));
-                  }}
+                  onClick={stopSending}
                   className="flex items-center gap-2 px-4 py-2 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-sm font-medium text-foreground-secondary hover:text-foreground transition-all duration-200 cursor-pointer group"
                 >
                   <StopCircle className="w-4 h-4 text-accent-error group-hover:scale-110 transition-transform" />

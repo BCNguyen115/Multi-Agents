@@ -160,6 +160,10 @@ def test_the_approve_route_checks_the_role_and_uses_the_users_own_session(monkey
     fake.handle_approval_decision = AsyncMock(return_value={"status": "success", "response": "done"})
     monkeypatch.setattr(main, "orchestrator", fake)
     request = main.ApprovalDecisionRequest(session_id="s1", action_id="act_1", decision="approve")
+    from src.shared import audit
+
+    audit.configure(MagicMock(execute=AsyncMock()))  # an approval needs its decision row first (see tests/test_audit.py)
+    monkeypatch.setattr(audit, "_pg", audit._pg)  # restored by monkeypatch after the test
 
     analyst = Principal("alice", "acme", "legal", frozenset({"analyst"}), authenticated=True)
     with pytest.raises(HTTPException) as refused:
