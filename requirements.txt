@@ -17,7 +17,7 @@ redis[hiredis]>=5.0.0
 pydantic-settings>=2.3.0     # also reads .env (brings python-dotenv)
 
 # --- AI / LLM ---
-openai>=1.35.0
+openai>=3.24.0
 litellm>=1.40.0
 langfuse[langchain]>=2.36.0,<3.0.0  # LiteLLM requires the V2 SDK
 langgraph>=0.1.5             # StateGraph / PEV loop
