@@ -12,7 +12,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch: # starts the `rag-eval` retrieval-quality gate and the live routing eval by hand (Actions tab -> CI -> Run workflow)
+  workflow_dispatch: # starts the whole workflow, plus the live routing eval, by hand (Actions tab -> CI -> Run workflow)
   schedule:
     - cron: "0 2 * * 1" # Mondays 02:00 UTC: the live routing eval (`orchestration-eval-live`), because a model update can change routing with no code change
 
@@ -105,12 +105,17 @@ jobs:
       - run: npm run build
 
   rag-eval:
-    # Retrieval-quality gate (hit@5 / MRR of the planner mode on the real corpus and the hand-written questions). Manual
-    # only: it ingests dataset/ with the embedding model, starts the TEI reranker and calls OpenRouter (secret
-    # OPENROUTER_API_KEY), so it is slow and costs a few cents. The thresholds sit a little below the numbers measured
-    # locally (hit@5 0.587, MRR 0.443: docs/RAG_REVIEW_AND_FIXES.md); raise them when retrieval improves.
+    # Retrieval-quality gate (hit@5 / MRR of the planner mode on the real corpus and the hand-written questions). It runs on
+    # every push, pull request and manual run: it ingests dataset/ with the embedding model, starts the TEI reranker and
+    # calls OpenRouter (secret OPENROUTER_API_KEY), so it is slow and costs a few cents per run. The thresholds sit a little
+    # below the numbers measured locally (hit@5 0.587, MRR 0.443: docs/RAG_REVIEW_AND_FIXES.md); raise them when retrieval
+    # improves. It cannot run where the secret is not available (pull requests from forks, and Dependabot's, which GitHub
+    # gives no repository secrets): only those are left out, anything else with the secret missing FAILS in the first step.
     # Not yet run on GitHub: only its commands were run locally.
-    if: github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name != 'schedule'
+      && github.actor != 'dependabot[bot]'
+      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     services:
@@ -130,6 +135,12 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       LANGFUSE_ENABLED: "false"
     steps:
+      - name: The retrieval gate needs OPENROUTER_API_KEY (Settings > Secrets and variables > Actions)
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::OPENROUTER_API_KEY is not set: the retrieval gate cannot embed or plan without it. Add it as a repository secret."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -196,9 +207,10 @@ jobs:
           if-no-files-found: ignore
 
   images:
-    # Slow (dependency layers): only on main, and without Chromium so the crawler-less image builds quickly.
-    if: github.event_name == 'push'
-    needs: [backend, frontend]
+    # Slow (dependency layers), so Chromium is left out (INSTALL_BROWSER=false). It runs on every push and pull request and does
+    # not wait for `backend` / `frontend`: a Dockerfile that does not build is a finding of its own, and with `needs:` a red
+    # test job turned this one into "Skipped".
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
