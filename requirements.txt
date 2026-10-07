@@ -7,7 +7,7 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 sse-starlette>=2.0.0
 python-multipart>=0.0.9      # FastAPI UploadFile + Form
-httpx>=0.27.0                # async HTTP (MCP client, reranker)
+httpx>=0.28.1                # async HTTP (MCP client, reranker)
 
 # --- Data stores ---
 asyncpg>=0.29.0              # PostgreSQL async driver (pgvector used through SQL)
