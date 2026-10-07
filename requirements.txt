@@ -33,7 +33,7 @@ tavily-python>=0.3.0
 crawl4ai>=0.4.0              # web crawl (needs Chromium: see Dockerfile INSTALL_BROWSER)
 
 # --- Security & data quality ---
-PyJWT>=2.8.0                 # gateway bearer-token verification (src/shared/auth.py)
+PyJWT>=2.15.1                 # gateway bearer-token verification (src/shared/auth.py)
 cryptography>=42.0.0         # RS256/ES256 keys from an identity provider's JWKS
 sqlglot>=25.0.0              # AST-based SQL validation
 chardet>=5.0.0               # CSV encoding detection
