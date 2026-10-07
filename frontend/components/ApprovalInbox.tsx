@@ -24,7 +24,7 @@ interface PendingItem {
 const REFRESH_MS = 10_000;
 const BUTTON =
   'inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold cursor-pointer transition-colors ' +
-  'disabled:opacity-60 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40';
+  'disabled:opacity-60 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary';
 
 /**
  * Two-person approval: the sensitive actions OTHER people asked for, in this approver's tenant. Deciding here runs the action in the
@@ -95,7 +95,7 @@ export function ApprovalInbox() {
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-background/60 backdrop-blur-sm" data-testid="approval-inbox">
+    <div className="fixed inset-0 z-modal flex items-center justify-center p-4 bg-background/60 backdrop-blur-sm" data-testid="approval-inbox">
       <div
         ref={dialogRef}
         role="dialog"
@@ -108,7 +108,7 @@ export function ApprovalInbox() {
           onClick={closeApprovals}
           disabled={busy !== null}
           aria-label={t(lang, 'auth.close')}
-          className="absolute right-3 top-3 w-9 h-9 rounded-full flex items-center justify-center text-foreground-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+          className="absolute right-3 top-3 w-9 h-9 rounded-full flex items-center justify-center text-foreground-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
         >
           <X className="w-[18px] h-[18px]" aria-hidden="true" />
         </button>
@@ -152,7 +152,7 @@ export function ApprovalInbox() {
                   <button type="button" className={`${BUTTON} border border-border-strong text-foreground hover:bg-surface-raised`} disabled={busy !== null} onClick={() => decide(item, 'reject')}>
                     {t(lang, 'approval.reject')}
                   </button>
-                  <button type="button" className={`${BUTTON} bg-accent-primary text-white hover:bg-accent-primary-hover`} disabled={busy !== null} onClick={() => decide(item, 'approve')}>
+                  <button type="button" className={`${BUTTON} bg-accent-fill text-white hover:bg-accent-fill-hover`} disabled={busy !== null} onClick={() => decide(item, 'approve')}>
                     {working && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
                     {confirming === item.action_id ? t(lang, 'approval.confirmApprove') : t(lang, 'approval.approve')}
                   </button>

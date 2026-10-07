@@ -51,7 +51,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="bg-background min-h-screen font-sans antialiased text-foreground max-w-full overflow-x-hidden">
+      <body className="bg-background min-h-screen font-sans antialiased text-foreground max-w-full overflow-x-clip">
         <SkipLink />
         <AuthProvider>
           {children}

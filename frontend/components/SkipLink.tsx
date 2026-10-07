@@ -9,7 +9,7 @@ export const SkipLink: React.FC = () => {
   return (
     <a
       href="#main-content"
-      className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:px-3 focus:py-2 focus:rounded-lg focus:bg-accent-primary focus:text-white focus:text-sm focus:font-medium"
+      className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-skip focus:px-3 focus:py-2 focus:rounded-lg focus:bg-accent-fill focus:text-white focus:text-sm focus:font-medium"
     >
       {t(lang, 'app.skip')}
     </a>

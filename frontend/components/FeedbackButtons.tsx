@@ -16,7 +16,7 @@ interface FeedbackButtonsProps {
 const BUTTON =
   'inline-flex h-9 w-9 items-center justify-center rounded-full text-foreground-muted transition-colors cursor-pointer ' +
   'hover:bg-surface-raised hover:text-foreground disabled:opacity-60 disabled:cursor-default ' +
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40';
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary';
 
 /**
  * Thumbs up / down under an answer that cites documents. The backend keeps them with what the answer cited (`rag_feedback`):

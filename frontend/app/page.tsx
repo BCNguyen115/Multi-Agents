@@ -1,10 +1,9 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Sidebar, ChatSession } from '../components/Sidebar';
 import { Header } from '../components/Header';
 import { ChatInterface } from '../components/ChatInterface';
-import { SearchView } from '../components/SearchView';
 import { CommandPalette } from '../components/CommandPalette';
 import { ToastContainer } from '../components/ui/Toast';
 import { useAuth } from '../context/AuthContext';
@@ -16,14 +15,18 @@ import { exportDashboardToPDF, exportDashboardToPPTX } from '../lib/exportEngine
 import { toast } from '../lib/toast';
 import { getLang, isDefaultChatTitle, t, useLang } from '../lib/i18n';
 import { apiFetch } from '../lib/apiFetch';
-import { findEmptyChat } from '../lib/newChat';
+import { emptyFirst, findEmptyChat, isUnwritten } from '../lib/newChat';
+
+/** How long a deleted conversation stays recoverable before it is really removed (and the removal synced). */
+const UNDO_DELETE_MS = 6000;
 
 export default function HomePage() {
   const [currentAgentMode, setCurrentAgentMode] = useState<string>('RAG Agent');
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>('');
   const [messagesMap, setMessagesMap] = useState<Record<string, ChatMessage[]>>({});
-  const [viewMode, setViewMode] = useState<'chat' | 'search'>('chat');
+  // Deleted a moment ago and still undoable: hidden everywhere, removed from `sessions` when the undo window closes
+  const [pendingDelete, setPendingDelete] = useState<ReadonlySet<string>>(new Set());
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   // Whose chats are on screen: the browser keeps one copy per account, so switching account never shows or overwrites another's
   const { me, loading: authLoading, setTheme } = useAuth(); // who is signed in, and the theme (AuthProvider, app/layout.tsx)
@@ -145,27 +148,39 @@ export default function HomePage() {
 
   const activeMessages = messagesMap[activeSessionId] || [];
 
+  // Sidebar order: conversations nobody wrote in first. Recomputed when the set of those changes, not on every streamed frame.
+  const unwrittenIds = sessions.filter((s) => isUnwritten(messagesMap[s.id])).map((s) => s.id).join('|');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const orderedSessions = useMemo(() => emptyFirst(sessions, messagesMap), [sessions, unwrittenIds]);
+  const shownSessions = useMemo(
+    () => (pendingDelete.size ? orderedSessions.filter((s) => !pendingDelete.has(s.id)) : orderedSessions),
+    [orderedSessions, pendingDelete]
+  );
+
   // Extract latest dashboard spec for export actions
   const latestDashboardMessage = [...activeMessages].reverse().find((m) => m.dashboardSpec);
   const activeDashboardSpec = latestDashboardMessage?.dashboardSpec || null;
 
   const handleToggleTheme = () => {
     const isDark = document.documentElement.classList.contains('dark') || document.documentElement.getAttribute('data-theme') === 'dark';
+    // Silent: the whole page changing colour is the confirmation
     setTheme(isDark ? 'light' : 'dark');
-    toast.info(t(getLang(), isDark ? 'nav.themeLightOn' : 'nav.themeDarkOn'));
   };
 
   const handleSelectSession = (id: string) => {
+    // Leaving a conversation nobody wrote in (e.g. the one made at sign-in) for another one discards it
+    if (id !== activeSessionId && sessions.some((s) => s.id === activeSessionId) && isUnwritten(messagesMap[activeSessionId])) {
+      setSessions((prev) => prev.filter((s) => s.id !== activeSessionId));
+      setMessagesMap(({ [activeSessionId]: _discarded, ...rest }) => rest);
+    }
     setActiveSessionId(id);
-    setViewMode('chat');
   };
 
   const handleNewChat = () => {
     // Only a conversation with a user prompt earns another one: otherwise go back to the empty one that already exists
-    const reuse = findEmptyChat(sessions, messagesMap, activeSessionId);
+    const reuse = findEmptyChat(shownSessions, messagesMap, activeSessionId);
     if (reuse) {
       setActiveSessionId(reuse);
-      setViewMode('chat');
       setFlash((prev) => ({ id: reuse, n: (prev?.n ?? 0) + 1 }));
       return;
     }
@@ -180,42 +195,48 @@ export default function HomePage() {
     setSessions((prev) => [newSession, ...prev]);
     setMessagesMap((prev) => ({ ...prev, [newId]: [] }));
     setActiveSessionId(newId);
-    setViewMode('chat');
-    toast.success(t(getLang(), 'chat.created'));
   };
 
-  const handleDeleteSession = (id: string) => {
-    setSessions((prev) => {
-      const nextSessions = prev.filter((s) => s.id !== id);
-      if (nextSessions.length === 0) {
-        const fallbackId = `session-${Date.now()}`;
-        const fallbackSession: ChatSession = {
-          id: fallbackId,
-          title: t(getLang(), 'chat.newTitle'),
-          isPinned: false,
-          updatedAt: new Date().toISOString(),
-        };
-        setActiveSessionId(fallbackId);
-        setMessagesMap((m) => {
-          const newMap = { ...m };
-          delete newMap[id];
-          newMap[fallbackId] = [];
-          return newMap;
-        });
-        return [fallbackSession];
-      }
-      if (activeSessionId === id) {
-        setActiveSessionId(nextSessions[0].id);
-      }
-      return nextSessions;
-    });
-
-    setMessagesMap((prev) => {
-      const next = { ...prev };
-      delete next[id];
+  const forgetPendingDelete = (id: string) =>
+    setPendingDelete((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
       return next;
     });
-    toast.info(t(getLang(), 'chat.deleted'));
+
+  // Optimistic delete with Undo: the conversation disappears at once, but it is only removed from state (and so from the
+  // server, see useConversationSync) when the undo window closes. Closing the tab inside the window keeps it.
+  const handleDeleteSession = (id: string) => {
+    let nextActive = shownSessions.find((s) => s.id !== id)?.id;
+    if (!nextActive) {
+      // The last visible conversation: a fresh empty one takes its place
+      nextActive = `session-${Date.now()}`;
+      const fallback: ChatSession = { id: nextActive, title: t(getLang(), 'chat.newTitle'), isPinned: false, updatedAt: new Date().toISOString() };
+      const fallbackId = fallback.id;
+      setSessions((prev) => [fallback, ...prev]);
+      setMessagesMap((prev) => ({ ...prev, [fallbackId]: [] }));
+    }
+    const wasActive = activeSessionId === id;
+    if (wasActive) setActiveSessionId(nextActive);
+    setPendingDelete((prev) => new Set(prev).add(id));
+
+    const timer = setTimeout(() => {
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      setMessagesMap(({ [id]: _removed, ...rest }) => rest);
+      forgetPendingDelete(id);
+    }, UNDO_DELETE_MS);
+
+    toast.info(t(getLang(), 'chat.deleted'), {
+      duration: UNDO_DELETE_MS,
+      action: {
+        label: t(getLang(), 'chat.undo'),
+        onClick: () => {
+          clearTimeout(timer);
+          forgetPendingDelete(id);
+          if (wasActive) setActiveSessionId(id);
+        },
+      },
+    });
   };
 
   const handleTogglePin = (id: string) => {
@@ -314,12 +335,11 @@ export default function HomePage() {
     } else {
       setCurrentAgentMode(agentId.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{2B50}\u{2B55}\u{231A}\u{231B}\u{23E9}-\u{23EC}\u{23F0}\u{23F3}]/gu, '').trim());
     }
-    toast.info(t(getLang(), 'nav.agentSwitched', { agent: agentId }));
   };
 
   if (!isMounted) {
     return (
-      <div className="flex h-screen w-screen bg-background items-center justify-center">
+      <div className="flex h-dvh w-full bg-background items-center justify-center">
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-2 border-accent-primary border-t-transparent rounded-full animate-spin" />
           <span className="text-foreground-muted text-sm font-medium font-mono">{t(lang, 'nav.loading')}</span>
@@ -329,7 +349,7 @@ export default function HomePage() {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background">
+    <div className="flex h-dvh w-full overflow-hidden bg-background">
       {/* Toast Notification Container (Bottom-Right, Enterprise Sonner style) */}
       <ToastContainer />
 
@@ -337,7 +357,7 @@ export default function HomePage() {
       <CommandPalette
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
-        sessions={sessions}
+        sessions={shownSessions}
         onSelectSession={handleSelectSession}
         onNewChat={handleNewChat}
         onSelectAgent={handleAgentSelect}
@@ -368,7 +388,7 @@ export default function HomePage() {
 
       {/* Left Navigation Sidebar */}
       <Sidebar
-        sessions={sessions}
+        sessions={shownSessions}
         activeSessionId={activeSessionId}
         onSelectSession={handleSelectSession}
         onNewChat={handleNewChat}
@@ -393,14 +413,6 @@ export default function HomePage() {
           onSendMessage={handleSendMessage}
           onUpdateLastMessage={handleUpdateLastMessage}
         />
-
-        {viewMode === 'search' && (
-          <SearchView
-            sessions={sessions}
-            onSelectSession={handleSelectSession}
-            onClose={() => setViewMode('chat')}
-          />
-        )}
       </main>
     </div>
   );

@@ -123,7 +123,7 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
         <div className="p-3 bg-accent-primary/5 border border-accent-primary/15 rounded-xl flex items-center space-x-3">
-          <div className="p-2 bg-accent-primary text-white rounded-lg shrink-0 shadow-xs">
+          <div className="p-2 bg-accent-fill text-white rounded-lg shrink-0 shadow-xs">
             <Database className="w-4 h-4" />
           </div>
           <div>
@@ -135,7 +135,7 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
         </div>
 
         <div className="p-3 bg-accent-executor/5 border border-accent-executor/15 rounded-xl flex items-center space-x-3">
-          <div className="p-2 bg-accent-executor text-white rounded-lg shrink-0 shadow-xs">
+          <div className="p-2 bg-accent-executor text-accent-on rounded-lg shrink-0 shadow-xs">
             <LayoutGrid className="w-4 h-4" />
           </div>
           <div>
@@ -147,7 +147,7 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
         </div>
 
         <div className="p-3 bg-accent-verifier/5 border border-accent-verifier/15 rounded-xl flex items-center space-x-3">
-          <div className="p-2 bg-accent-verifier text-white rounded-lg shrink-0 shadow-xs">
+          <div className="p-2 bg-accent-verifier text-accent-on rounded-lg shrink-0 shadow-xs">
             <Sparkles className="w-4 h-4" />
           </div>
           <div>
@@ -174,7 +174,7 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
               <button
                 type="button"
                 onClick={() => setShowAllCols(!showAllCols)}
-                className="text-xs font-semibold text-accent-primary hover:text-accent-primary-hover flex items-center gap-1 hover:underline cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 rounded px-1"
+                className="text-xs font-semibold text-accent-primary hover:text-accent-primary-hover flex items-center gap-1 hover:underline cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary rounded px-1"
               >
                 {showAllCols ? (
                   <>{t(lang, 'summary.collapse')} <ChevronUp className="w-3.5 h-3.5" /></>
@@ -260,7 +260,7 @@ export const DataSummaryView: React.FC<DataSummaryProps> = ({
           <button
             type="button"
             onClick={onGenerateDashboard}
-            className="flex items-center justify-center gap-2.5 w-full sm:w-auto px-5 py-2.5 bg-accent-primary hover:bg-accent-primary-hover text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer group active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+            className="flex items-center justify-center gap-2.5 w-full sm:w-auto px-5 py-2.5 bg-accent-fill hover:bg-accent-fill-hover text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer group active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
           >
             <BarChart2 className="w-4 h-4 group-hover:scale-110 transition-transform" />
             <span>{t(lang, 'summary.buildDashboard')}</span>

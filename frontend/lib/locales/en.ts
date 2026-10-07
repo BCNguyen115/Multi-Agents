@@ -76,6 +76,7 @@ export const en: Record<MessageKey, string> = {
 
   // ---- sign-in
   'login.title': 'Sign in',
+  'login.tagline': 'Multi-Agent Enterprise System',
   'login.username': 'Username',
   'login.password': 'Password',
   'login.submit': 'Sign in',
@@ -222,11 +223,9 @@ export const en: Record<MessageKey, string> = {
 
   // ---- navigation
   'chat.newTitle': 'New chat',
-  'chat.created': 'New chat created.',
   'chat.deleted': 'Chat deleted.',
-  'nav.themeDarkOn': 'Switched to dark mode.',
-  'nav.themeLightOn': 'Switched to light mode.',
-  'nav.agentSwitched': 'Switched to [{agent}].',
+  'chat.undo': 'Undo',
+  'ent.multiSelectHint': 'Hold Ctrl/Cmd for multi-select',
   'nav.loading': 'Loading the Multi-Agent system...',
   'nav.uploadHint': 'Click the (+) button in the input box below to attach a CSV file.',
   'nav.uploadTitle': 'Upload a CSV file',
@@ -337,6 +336,8 @@ export const en: Record<MessageKey, string> = {
   'verify.detail.rag': 'The answer cites its sources [n] and every number in it appears in those sources.',
   'verify.detail.data': 'Every chart and KPI was recomputed from the file you uploaded; every number in the story exists in the fact table.',
   'verify.detail.db': 'Every number in the description comes from the query result, and an independent check compared the query with your request.',
+  'verify.detail.web': 'The answer links the pages that were found, no link is invented, and every number in it appears in those pages.',
+  'verify.detail.api': 'The API address comes from your request or the default endpoints; a call that changes data only runs after approval; the result is the API response as received.',
   'verify.detail.other': 'An independent check judged the answer against your request.',
   'approval.confirmApprove': 'Confirm execution',
   'approval.criticalHint': 'Critical risk: press again to confirm execution.',

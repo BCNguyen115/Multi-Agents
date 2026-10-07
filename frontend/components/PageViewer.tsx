@@ -59,7 +59,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({ docKey, fileName, page, 
   const title = t(lang, 'source.pageTitle', { file: fileName, page });
   return (
     <div
-      className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-viewer flex items-center justify-center bg-black/60 p-4"
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <div role="dialog" aria-modal="true" aria-label={title} className="flex max-h-full w-full max-w-3xl flex-col rounded-2xl border border-border bg-surface shadow-enterprise">
@@ -78,7 +78,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({ docKey, fileName, page, 
             onClick={onClose}
             aria-label={t(lang, 'source.close')}
             title={t(lang, 'source.close')}
-            className="rounded-lg p-1.5 text-foreground-muted hover:bg-surface-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+            className="rounded-lg p-1.5 text-foreground-muted hover:bg-surface-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
           >
             <X className="h-4 w-4" />
           </button>

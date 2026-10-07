@@ -23,7 +23,7 @@ export const Header: React.FC<HeaderProps> = () => {
       <button
         type="button"
         onClick={() => openAuthModal('signin')}
-        className="rounded-full bg-accent-primary/10 px-5 py-2 text-sm font-medium text-accent-primary hover:bg-accent-primary/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+        className="rounded-full bg-accent-primary/10 px-5 py-2 text-sm font-medium text-accent-primary hover:bg-accent-primary/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
       >
         {t(lang, 'user.signIn')}
       </button>

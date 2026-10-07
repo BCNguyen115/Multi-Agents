@@ -1,15 +1,11 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AgGridReact } from 'ag-grid-react';
-import type { ColDef } from 'ag-grid-community';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Calendar,
   ChevronDown,
-  ChevronUp,
   Database,
-  Download,
   FileDown,
   Filter,
   Hash,
@@ -20,16 +16,14 @@ import {
   Minimize2,
   Minus,
   Presentation,
-  Printer,
   RotateCcw,
-  Search,
   ShieldCheck,
-  Table as TableIcon,
   TrendingDown,
   TrendingUp,
   X,
 } from 'lucide-react';
 import { EChartComponent } from './EChartComponent';
+import { DashboardTable } from './DashboardTable';
 import type { ChartItem, DashboardSpec, FilteredDashboard, KPIItem } from '../../lib/types';
 import { useIsDark } from '../../lib/useIsDark';
 import { ui } from '../../lib/uiText';
@@ -142,8 +136,8 @@ function SlicerRow({
             type="button"
             aria-pressed={on}
             onClick={() => onToggle(slicer.field, value)}
-            className={`px-2.5 py-1 rounded-full text-xs border transition-colors cursor-pointer max-w-[12rem] truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 ${
-              on ? 'bg-accent-primary text-white border-accent-primary' : 'bg-surface-raised text-foreground-secondary border-border hover:border-border-strong'
+            className={`px-2.5 py-1 rounded-full text-xs border transition-colors cursor-pointer max-w-[12rem] truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary ${
+              on ? 'bg-accent-fill text-white border-accent-primary' : 'bg-surface-raised text-foreground-secondary border-border hover:border-border-strong'
             }`}
             title={value}
           >
@@ -156,7 +150,7 @@ function SlicerRow({
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="px-2.5 py-1 rounded-full text-xs font-semibold text-accent-primary cursor-pointer hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+          className="px-2.5 py-1 rounded-full text-xs font-semibold text-accent-primary cursor-pointer hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
         >
           {t('showMore', { n: hidden })}
         </button>
@@ -165,7 +159,7 @@ function SlicerRow({
         <button
           type="button"
           onClick={() => setExpanded(false)}
-          className="px-2.5 py-1 rounded-full text-xs font-semibold text-foreground-secondary cursor-pointer hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+          className="px-2.5 py-1 rounded-full text-xs font-semibold text-foreground-secondary cursor-pointer hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
         >
           {t('showLess')}
         </button>
@@ -184,9 +178,6 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0); // bumped by "try again" so the same filters are sent once more
   const [fullscreen, setFullscreen] = useState(false);
-  const [tableOpen, setTableOpen] = useState(true);
-  const [quickFilter, setQuickFilter] = useState('');
-  const gridRef = useRef<AgGridReact>(null);
 
   // A new dashboard starts unfiltered
   useEffect(() => {
@@ -230,29 +221,6 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
   const charts: (ChartItem | null)[] = useMemo(() => (view ? view.charts : spec.charts), [view, spec.charts]);
   const noRows = Boolean(view && view.rows_used === 0);
 
-  const rows = useMemo(() => {
-    const entries = Object.entries(filters);
-    if (!entries.length) return spec.table.rows;
-    return spec.table.rows.filter((row) => entries.every(([field, values]) => values.includes(String(row[field] ?? ''))));
-  }, [filters, spec.table.rows]);
-
-  const columnDefs = useMemo<ColDef[]>(
-    () =>
-      spec.table.columns.map((column) => ({
-        field: column.field,
-        headerName: column.headerName,
-        sortable: true,
-        resizable: true,
-        filter: column.type === 'number' ? 'agNumberColumnFilter' : 'agTextColumnFilter',
-        type: column.type === 'number' ? 'numericColumn' : undefined,
-        valueFormatter:
-          column.type === 'number'
-            ? (p: { value: unknown }) => (typeof p.value === 'number' ? p.value.toLocaleString('en-US', { maximumFractionDigits: 4 }) : '')
-            : undefined,
-      })),
-    [spec.table.columns]
-  );
-
   const selectFromChart = useCallback((chart: ChartItem, name: string) => {
     const field = chart.spec.dimension;
     if (!field || OTHER_LABELS.has(name)) return;
@@ -290,7 +258,7 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
       {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-border pb-4">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="p-2.5 bg-accent-primary text-white rounded-xl shrink-0">
+          <div className="p-2.5 bg-accent-fill text-white rounded-xl shrink-0">
             <LayoutDashboard className="w-5 h-5" aria-hidden="true" />
           </div>
           <div className="min-w-0">
@@ -334,7 +302,7 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
                     e.currentTarget.closest('details')?.removeAttribute('open');
                     runExport(kind);
                   }}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold text-foreground hover:bg-surface-raised cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold text-foreground hover:bg-surface-raised cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
                 >
                   {kind === 'pdf' ? <FileDown className="w-3.5 h-3.5 text-accent-primary" aria-hidden="true" /> : <Presentation className="w-3.5 h-3.5 text-accent-primary" aria-hidden="true" />}
                   {kind === 'pdf' ? t('exportPdf') : t('exportPptx')}
@@ -369,14 +337,14 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
           {active && <p className="text-xs text-foreground-muted italic">{t('filteredNote')}</p>}
           {hasStoryDetails && (
             <details className="group">
-              <summary className="inline-flex items-center gap-1 cursor-pointer rounded text-xs font-semibold text-accent-primary hover:underline list-none [&::-webkit-details-marker]:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40">
+              <summary className="inline-flex items-center gap-1 cursor-pointer rounded text-xs font-semibold text-accent-primary hover:underline list-none [&::-webkit-details-marker]:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary">
                 {t('details')} <ChevronDown className="w-3.5 h-3.5 transition-transform group-open:rotate-180" aria-hidden="true" />
               </summary>
               <div className="mt-3 space-y-3">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {story.sections.map((section) => (
                     <div key={section.key} className="bg-surface-raised/50 rounded-xl border border-border p-3">
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-foreground-secondary mb-1.5">{section.title}</h4>
+                      <h4 className="text-sm font-semibold text-foreground mb-1.5">{section.title}</h4>
                       <ul className="space-y-1.5 text-xs leading-relaxed text-foreground-secondary list-disc pl-4">
                         {section.items.map((item) => (
                           <li key={item.id}>{item.text}</li>
@@ -389,7 +357,7 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {story.actions.length > 0 && (
                       <div className="rounded-xl border border-accent-primary/30 bg-accent-primary/5 p-3">
-                        <h4 className="text-xs font-bold uppercase tracking-wider text-accent-primary mb-1.5">{t('actions')}</h4>
+                        <h4 className="text-sm font-semibold text-accent-primary mb-1.5">{t('actions')}</h4>
                         <ul className="space-y-1.5 text-xs leading-relaxed text-foreground-secondary list-disc pl-4">
                           {story.actions.map((action, i) => (
                             <li key={i}>{action.text}</li>
@@ -400,7 +368,7 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
                     )}
                     {story.caveats.length > 0 && (
                       <div className="rounded-xl border border-border-strong bg-surface-raised/50 p-3">
-                        <h4 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-foreground mb-1.5">
+                        <h4 className="flex items-center gap-1.5 text-sm font-semibold text-foreground mb-1.5">
                           <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" /> {t('watch')}
                         </h4>
                         <ul className="space-y-1.5 text-xs leading-relaxed text-foreground-secondary list-disc pl-4">
@@ -414,7 +382,7 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
                 )}
                 {story.next_questions.length > 0 && (
                   <div className="text-xs text-foreground-secondary">
-                    <span className="font-bold uppercase tracking-wider text-xs text-foreground-muted">{t('questions')}: </span>
+                    <span className="font-semibold text-foreground-secondary">{t('questions')}: </span>
                     {story.next_questions.join(' · ')}
                   </div>
                 )}
@@ -428,12 +396,12 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
       {!single && spec.slicers.length > 0 && (
         <section className="bg-surface border border-border rounded-xl p-4 space-y-3" data-testid="slicers">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-xs font-bold text-foreground uppercase tracking-wider">
+            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <Filter className="w-4 h-4 text-accent-primary" aria-hidden="true" /> {t('filters')}
               {busy && <span role="status" className="text-xs font-normal normal-case text-foreground-muted">{t('filtering')}</span>}
             </div>
             {active && (
-              <button type="button" onClick={() => setFilters({})} className="text-xs font-semibold text-foreground inline-flex items-center gap-1 cursor-pointer rounded hover:text-accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40">
+              <button type="button" onClick={() => setFilters({})} className="text-xs font-semibold text-foreground inline-flex items-center gap-1 cursor-pointer rounded hover:text-accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary">
                 <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" /> {t('clear')}
               </button>
             )}
@@ -448,7 +416,7 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
               <span>
                 {t('filterError')}: {error}
               </span>
-              <button type="button" onClick={() => setAttempt((n) => n + 1)} className="font-semibold underline cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40">
+              <button type="button" onClick={() => setAttempt((n) => n + 1)} className="font-semibold underline cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary">
                 {t('retry')}
               </button>
             </p>
@@ -492,57 +460,8 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
         </div>
       )}
 
-      {/* Data table */}
-      <section className="bg-surface rounded-xl border border-border overflow-hidden">
-        <div className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border bg-surface-raised/40">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <TableIcon className="w-4 h-4 text-accent-primary shrink-0" aria-hidden="true" />
-            <span className="font-bold text-foreground text-sm truncate">{spec.table.title}</span>
-            <span className="px-2 py-0.5 bg-accent-primary/10 text-accent-primary border border-accent-primary/20 rounded-full text-xs font-semibold font-mono tabular-nums shrink-0">
-              {rows.length.toLocaleString('en-US')} / {spec.table.totalRows.toLocaleString('en-US')}
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-foreground-muted absolute left-2.5 top-2.5" aria-hidden="true" />
-              <input
-                type="text"
-                placeholder={t('quickSearch')}
-                aria-label={t('quickSearch')}
-                value={quickFilter}
-                onChange={(e) => setQuickFilter(e.target.value)}
-                className="pl-8 pr-3 py-1.5 bg-surface border border-border rounded-lg text-xs text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-2 focus:ring-accent-primary w-36 sm:w-44"
-              />
-            </div>
-            <button type="button" className="btn-dash" onClick={() => gridRef.current?.api.exportDataAsCsv({ fileName: `${spec.fileName.replace(/\.[^/.]+$/, '')}.csv` })}>
-              <Download className="w-3.5 h-3.5 text-accent-primary" aria-hidden="true" /> {t('exportCsv')}
-            </button>
-            <button type="button" className="btn-dash" onClick={() => window.print()}>
-              <Printer className="w-3.5 h-3.5 text-foreground-muted" aria-hidden="true" /> {t('print')}
-            </button>
-            <button type="button" className="btn-dash" onClick={() => setTableOpen((v) => !v)} aria-expanded={tableOpen}>
-              {tableOpen ? <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />}
-              <span>{tableOpen ? t('collapse') : t('expand')}</span>
-            </button>
-          </div>
-        </div>
-        {tableOpen && (
-          <div className="p-3">
-            {spec.table.truncated && <p className="text-xs text-foreground-muted mb-2">{t('tableNote', { n: spec.table.rows.length.toLocaleString('en-US') })}</p>}
-            <div className={`${isDark ? 'ag-theme-quartz-dark' : 'ag-theme-quartz'} w-full h-[320px] rounded-xl border border-border overflow-hidden`}>
-              <AgGridReact
-                ref={gridRef}
-                rowData={rows}
-                columnDefs={columnDefs}
-                pagination
-                paginationPageSize={20}
-                paginationPageSizeSelector={[10, 20, 50, 100]}
-                quickFilterText={quickFilter}
-              />
-            </div>
-          </div>
-        )}
-      </section>
+      {/* Data table: every row of the upload, paged from the server */}
+      <DashboardTable spec={spec} filters={filters} isDark={isDark} t={t} />
     </div>
   );
 };

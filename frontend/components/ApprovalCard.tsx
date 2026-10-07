@@ -143,7 +143,7 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
     }
   };
 
-  const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40';
+  const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary';
 
   return (
     <div
@@ -322,8 +322,8 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
               type="button"
               disabled={isSubmitting}
               onClick={() => handleDecision('approve')}
-              className={`inline-flex items-center justify-center gap-1.5 min-h-9 px-4 py-2 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 cursor-pointer ${focusRing} ${
-                confirmingApprove ? 'bg-accent-error hover:opacity-90' : 'bg-accent-primary hover:bg-accent-primary-hover'
+              className={`inline-flex items-center justify-center gap-1.5 min-h-9 px-4 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 cursor-pointer ${focusRing} ${
+                confirmingApprove ? 'bg-accent-error text-accent-on hover:opacity-90' : 'bg-accent-fill text-white hover:bg-accent-fill-hover'
               }`}
             >
               {isSubmitting && !showReasonInput ? (

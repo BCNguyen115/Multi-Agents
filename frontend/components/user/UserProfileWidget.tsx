@@ -40,7 +40,7 @@ export function UserProfileWidget({ isCollapsed = false }: UserProfileWidgetProp
     <div
       aria-hidden="true"
       className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-sm font-semibold select-none ${
-        isGuest ? 'bg-surface-overlay text-foreground-secondary' : 'bg-accent-primary text-white'
+        isGuest ? 'bg-surface-overlay text-foreground-secondary' : 'bg-accent-fill text-white'
       }`}
     >
       {initial}
@@ -56,7 +56,7 @@ export function UserProfileWidget({ isCollapsed = false }: UserProfileWidgetProp
       aria-expanded={open}
       aria-label={t(lang, 'user.settings')}
       title={t(lang, 'user.settings')}
-      className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-foreground-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+      className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-foreground-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
     >
       <Settings className="w-[18px] h-[18px]" aria-hidden="true" />
     </button>
@@ -73,7 +73,7 @@ export function UserProfileWidget({ isCollapsed = false }: UserProfileWidgetProp
               onClick={() => openAuthModal('signin')}
               aria-label={t(lang, 'user.signIn')}
               title={t(lang, 'user.signIn')}
-              className="w-9 h-9 rounded-full flex items-center justify-center bg-surface-raised text-foreground hover:bg-surface-overlay transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+              className="w-9 h-9 rounded-full flex items-center justify-center bg-surface-raised text-foreground hover:bg-surface-overlay transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
             >
               <LogIn className="w-[18px] h-[18px]" aria-hidden="true" />
             </button>
@@ -83,7 +83,7 @@ export function UserProfileWidget({ isCollapsed = false }: UserProfileWidgetProp
             <button
               type="button"
               onClick={() => openAuthModal('signin')}
-              className="rounded-full bg-surface-raised px-5 py-2 text-sm font-medium text-foreground hover:bg-surface-overlay transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+              className="rounded-full bg-surface-raised px-5 py-2 text-sm font-medium text-foreground hover:bg-surface-overlay transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
             >
               {t(lang, 'user.signIn')}
             </button>

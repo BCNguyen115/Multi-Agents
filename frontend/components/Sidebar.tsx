@@ -62,6 +62,8 @@ function groupSessionsByDate(sessions: ChatSession[]): { label: MessageKey; sess
 }
 
 const SIDEBAR_STATE_KEY = 'sidebar_collapsed';
+/** Below Tailwind's `md`: the sidebar is a rail, and opens over the page instead of pushing it. */
+const MOBILE_QUERY = '(max-width: 767px)';
 
 export function Sidebar({
   sessions = [],
@@ -76,24 +78,43 @@ export function Sidebar({
 }: SidebarProps) {
   const [lang] = useLang();
   const { isGuest, config, openAuthModal } = useAuth();
-  const [isOpen, setIsOpen] = useState(true);
+  // Narrow screens start with the rail; wide ones restore the saved choice. (The page mounts this component on the client
+  // only, after its own loading screen, so reading window here cannot cause a hydration mismatch.)
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia(MOBILE_QUERY).matches);
+  const [isOpen, setIsOpen] = useState(() => {
+    if (typeof window === 'undefined' || window.matchMedia(MOBILE_QUERY).matches) return typeof window === 'undefined';
+    try {
+      return localStorage.getItem(SIDEBAR_STATE_KEY) !== 'true';
+    } catch {
+      return true;
+    }
+  });
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
 
-  // Persist sidebar state in localStorage
+  // Crossing the breakpoint: the expanded sidebar of a wide screen would cover a phone, so fold it into the rail
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(SIDEBAR_STATE_KEY);
-      if (saved === 'true') setIsOpen(false);
-    } catch {}
+    const query = window.matchMedia(MOBILE_QUERY);
+    const onChange = () => {
+      setIsMobile(query.matches);
+      if (query.matches) setIsOpen(false);
+    };
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
   }, []);
 
+  // After choosing something on a phone, the overlay has done its job
+  const afterNav = () => {
+    if (isMobile) setIsOpen(false);
+  };
+
   // Publish current width as a CSS var so fixed/fullscreen overlays (e.g. DynamicDashboard)
-  // can offset themselves instead of rendering underneath the sidebar.
+  // can offset themselves instead of rendering underneath the sidebar. On a phone the open sidebar floats over the page,
+  // so the space it takes from the page is the rail's.
   useEffect(() => {
-    document.documentElement.style.setProperty('--sidebar-width', isOpen ? '16rem' : '4rem');
-  }, [isOpen]);
+    document.documentElement.style.setProperty('--sidebar-width', isOpen && !isMobile ? '16rem' : '4rem');
+  }, [isOpen, isMobile]);
 
   // Global Cmd+B / Ctrl+B to toggle sidebar
   useEffect(() => {
@@ -115,6 +136,7 @@ export function Sidebar({
 
   const toggleSidebar = (open: boolean) => {
     setIsOpen(open);
+    if (isMobile) return; // the phone's open/closed state is not the desktop preference
     try {
       localStorage.setItem(SIDEBAR_STATE_KEY, open ? 'false' : 'true');
     } catch {}
@@ -142,13 +164,17 @@ export function Sidebar({
   };
 
   return (
+    <>
+    {/* Phone, sidebar open: it floats over the page, so a spacer keeps the rail's place and a scrim closes it */}
+    {isOpen && <div className="md:hidden w-16 shrink-0" aria-hidden="true" />}
+    {isOpen && <div className="md:hidden fixed inset-0 z-50 bg-black/50" onClick={() => setIsOpen(false)} aria-hidden="true" />}
     <aside
       className={`
-        h-screen bg-background-secondary
+        h-dvh bg-background-secondary
         border-r border-border
-        transition-all duration-300 ease-in-out transform-gpu will-change-[width]
-        flex flex-col shrink-0 overflow-hidden select-none relative z-[60]
-        ${isOpen ? 'w-64' : 'w-16'}
+        transition-[width] duration-300 ease-in-out
+        flex flex-col shrink-0 overflow-hidden select-none relative z-sidebar
+        ${isOpen ? 'w-64 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:shadow-lg' : 'w-16'}
       `}
     >
       {/* 1. SIDEBAR HEADER */}
@@ -163,7 +189,7 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => toggleSidebar(true)}
-              className="absolute inset-0 m-auto w-8 h-8 flex items-center justify-center rounded-lg bg-surface-raised hover:bg-surface-overlay text-accent-primary opacity-0 group-hover:opacity-100 transition-opacity duration-200 ease-out cursor-pointer"
+              className="absolute inset-0 m-auto w-8 h-8 flex items-center justify-center rounded-lg bg-surface-raised hover:bg-surface-overlay text-accent-primary opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity duration-200 ease-out cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
               title={t(lang, 'sidebar.expand')}
               aria-label={t(lang, 'sidebar.expand')}
             >
@@ -173,14 +199,14 @@ export function Sidebar({
         </div>
 
         {/* Brand Text & Toggle (Expanded) */}
-        <div className={`flex items-center justify-between flex-1 overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none invisible'}`}>
+        <div className={`flex items-center justify-between flex-1 overflow-hidden whitespace-nowrap transition-[opacity,visibility] duration-300 ease-in-out ${isOpen ? 'opacity-100 ml-1' : 'opacity-0 pointer-events-none invisible'}`}>
           <span className="font-bold text-foreground whitespace-nowrap text-base">
             FPT<span className="text-accent-primary">AgentHub</span>
           </span>
           <button
             type="button"
             onClick={() => toggleSidebar(false)}
-            className="p-1.5 rounded-lg hover:bg-surface-raised text-foreground-muted hover:text-foreground transition-colors duration-200 ease-out cursor-pointer shrink-0"
+            className="p-1.5 rounded-lg hover:bg-surface-raised text-foreground-muted hover:text-foreground transition-colors duration-200 ease-out cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
             title={t(lang, 'sidebar.collapse')}
             aria-label={t(lang, 'sidebar.collapse')}
           >
@@ -193,28 +219,28 @@ export function Sidebar({
       <div className="py-2.5 space-y-1 border-b border-border px-2 shrink-0 overflow-hidden whitespace-nowrap">
         <button
           type="button"
-          onClick={onNewChat}
-          className="flex items-center h-10 px-0 rounded-xl hover:bg-surface-raised w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap"
+          onClick={() => { onNewChat(); afterNav(); }}
+          className="flex items-center h-10 px-0 rounded-xl hover:bg-surface-raised w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
           title={t(lang, 'sidebar.newChat')}
         >
           <div className="w-12 h-10 flex items-center justify-center shrink-0">
             <PenSquare className="w-5 h-5 text-foreground-secondary" />
           </div>
-          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden invisible'}`}>
+          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-[opacity,visibility] duration-300 ease-in-out ${isOpen ? 'opacity-100 ml-1' : 'opacity-0 pointer-events-none invisible'}`}>
             {t(lang, 'sidebar.newChat')}
           </span>
         </button>
 
         <button
           type="button"
-          onClick={onOpenSearch}
-          className="flex items-center h-10 px-0 rounded-xl hover:bg-surface-raised w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap"
+          onClick={() => { onOpenSearch?.(); afterNav(); }}
+          className="flex items-center h-10 px-0 rounded-xl hover:bg-surface-raised w-full transition-colors duration-200 ease-out group cursor-pointer overflow-hidden whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
           title={t(lang, 'sidebar.searchChats')}
         >
           <div className="w-12 h-10 flex items-center justify-center shrink-0">
             <Search className="w-5 h-5 text-foreground-secondary" />
           </div>
-          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto ml-1' : 'opacity-0 w-0 pointer-events-none overflow-hidden invisible'}`}>
+          <span className={`text-sm font-medium text-foreground-secondary whitespace-nowrap transition-[opacity,visibility] duration-300 ease-in-out ${isOpen ? 'opacity-100 ml-1' : 'opacity-0 pointer-events-none invisible'}`}>
             {t(lang, 'sidebar.searchChats')}
           </span>
         </button>
@@ -228,7 +254,7 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => openAuthModal('signin')}
-              className="underline text-foreground cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+              className="underline text-foreground cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
             >
               {t(lang, 'user.signIn')}
             </button>{' '}
@@ -242,7 +268,7 @@ export function Sidebar({
         {/* Pinned Section */}
         {pinnedSessions.length > 0 && (
           <div>
-            <div className={`px-3 text-2xs font-mono font-semibold text-foreground-muted uppercase tracking-wider mb-1 flex items-center justify-between select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden invisible'}`}>
+            <div className={`px-3 text-xs font-mono font-semibold text-foreground-muted uppercase tracking-wider mb-1 flex items-center justify-between select-none whitespace-nowrap transition-[opacity,visibility] duration-300 ease-in-out ${isOpen ? 'opacity-100' : 'opacity-0 invisible'}`}>
               <span>{t(lang, 'sidebar.pinned')}</span>
               <Pin className="w-3 h-3 text-foreground-muted" />
             </div>
@@ -253,7 +279,7 @@ export function Sidebar({
                 isOpen={isOpen}
                 isActive={session.id === activeSessionId}
                 flashKey={flash?.id === session.id ? flash.n : 0}
-                onSelect={() => onSelectSession(session.id)}
+                onSelect={() => { onSelectSession(session.id); afterNav(); }}
                 onDelete={() => onDeleteSession(session.id)}
                 onTogglePin={() => onTogglePin(session.id)}
                 onRename={() => handleStartRename(session)}
@@ -273,7 +299,7 @@ export function Sidebar({
         {groupedRecents.length > 0 ? (
           groupedRecents.map((group) => (
             <div key={group.label}>
-              <div className={`px-3 text-2xs font-mono font-semibold text-foreground-muted uppercase tracking-wider mb-1 select-none whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden invisible'}`}>
+              <div className={`px-3 text-xs font-mono font-semibold text-foreground-muted uppercase tracking-wider mb-1 select-none whitespace-nowrap transition-[opacity,visibility] duration-300 ease-in-out ${isOpen ? 'opacity-100' : 'opacity-0 invisible'}`}>
                 {t(lang, group.label)}
               </div>
               {group.sessions.map((session: ChatSession) => (
@@ -283,7 +309,7 @@ export function Sidebar({
                   isOpen={isOpen}
                   isActive={session.id === activeSessionId}
                 flashKey={flash?.id === session.id ? flash.n : 0}
-                  onSelect={() => onSelectSession(session.id)}
+                  onSelect={() => { onSelectSession(session.id); afterNav(); }}
                   onDelete={() => onDeleteSession(session.id)}
                   onTogglePin={() => onTogglePin(session.id)}
                   onRename={() => handleStartRename(session)}
@@ -316,6 +342,7 @@ export function Sidebar({
         <UserProfileWidget isCollapsed={!isOpen} />
       </div>
     </aside>
+    </>
   );
 }
 
@@ -422,9 +449,9 @@ function ChatItem({
       ref={itemRef}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className={`group relative flex items-center h-10 px-0 my-0.5 rounded-xl text-sm transition-all duration-150 ease-out cursor-pointer overflow-hidden whitespace-nowrap ${flashing ? 'animate-flash-link ' : ''}${
+      className={`group relative flex items-center h-10 px-0 my-0.5 rounded-xl text-sm transition-[color,background-color,border-color,opacity,transform] duration-150 ease-out cursor-pointer overflow-hidden whitespace-nowrap ${flashing ? 'animate-flash-link ' : ''}${
         isActive
-          ? 'bg-surface-raised font-semibold text-foreground shadow-xs before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:rounded-r-full before:bg-accent-primary'
+          ? 'bg-surface-raised font-semibold text-foreground shadow-xs'
           : 'hover:bg-surface-raised/60 text-foreground-secondary hover:text-foreground'
       }`}
       title={isOpen ? shownTitle : undefined}
@@ -435,7 +462,7 @@ function ChatItem({
       </div>
 
       {/* Text Slot & Actions */}
-      <div className={`flex items-center justify-between flex-1 overflow-hidden pr-2 whitespace-nowrap transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 w-auto' : 'opacity-0 w-0 pointer-events-none invisible'}`}>
+      <div className={`flex items-center justify-between flex-1 overflow-hidden pr-2 whitespace-nowrap transition-[opacity,visibility] duration-300 ease-in-out ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none invisible'}`}>
         {isEditing ? (
           <input
             type="text"
@@ -456,8 +483,17 @@ function ChatItem({
         ) : (
           <span
             onClick={onSelect}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelect();
+              }
+            }}
+            role="button"
+            tabIndex={isOpen ? 0 : -1}
+            aria-current={isActive ? 'true' : undefined}
             title={shownTitle}
-            className={`truncate block max-w-full text-left text-xs flex-1 pr-1 transition-colors ${
+            className={`truncate block max-w-full text-left text-xs flex-1 pr-1 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary ${
               isActive ? 'text-foreground font-semibold' : 'text-foreground-secondary group-hover:text-foreground'
             }`}
           >
@@ -471,7 +507,7 @@ function ChatItem({
             ref={buttonRef}
             type="button"
             onClick={handleToggleMenu}
-            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 hover:bg-surface-overlay rounded-lg transition-opacity duration-200 ease-out cursor-pointer"
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 p-1 hover:bg-surface-overlay rounded-lg transition-opacity duration-200 ease-out cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
             title={t(lang, 'sidebar.options')}
             aria-label={t(lang, 'sidebar.options')}
             aria-haspopup="menu"
@@ -490,9 +526,8 @@ function ChatItem({
             position: 'fixed',
             top: `${menuPos.top}px`,
             right: `${menuPos.right}px`,
-            zIndex: 9999,
           }}
-          className="bg-surface border border-border-strong rounded-xl shadow-enterprise p-1.5 w-48 text-xs space-y-1 whitespace-nowrap animate-fade-in-scale"
+          className="z-menu bg-surface border border-border-strong rounded-xl shadow-enterprise p-1.5 w-48 text-xs space-y-1 whitespace-nowrap animate-fade-in-scale"
         >
           <button
             type="button"
@@ -533,12 +568,11 @@ function ChatItem({
             position: 'fixed',
             top: `${tooltipPos.top}px`,
             left: `${tooltipPos.left}px`,
-            zIndex: 9999,
           }}
-          className="bg-surface border border-border-strong rounded-xl shadow-lg p-2.5 w-60 pointer-events-none select-none animate-fade-in-scale"
+          className="z-menu bg-surface border border-border-strong rounded-xl shadow-lg p-2.5 w-60 pointer-events-none select-none animate-fade-in-scale"
         >
           <p className="text-xs font-semibold text-foreground truncate">{shownTitle}</p>
-          <div className="flex items-center justify-between text-2xs text-foreground-muted mt-1.5 font-mono">
+          <div className="flex items-center justify-between text-xs text-foreground-muted mt-1.5 font-mono">
             <span>{new Date(session.updatedAt).toLocaleDateString(lang === 'vi' ? 'vi-VN' : 'en-GB')}</span>
             {session.isPinned && <span className="text-accent-planner font-semibold">{t(lang, 'sidebar.pinned')}</span>}
           </div>

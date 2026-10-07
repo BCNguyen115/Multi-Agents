@@ -16,15 +16,17 @@ interface EChartComponentProps {
   onSelect?: (name: string) => void;
 }
 
-const DARK_PALETTE = ['#6366f1', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#06b6d4'];
-const LIGHT_PALETTE = ['#4F46E5', '#F37021', '#10B981', '#06B6D4', '#8B5CF6', '#EC4899', '#F59E0B'];
+// The series colours are the --chart-1..7 tokens in globals.css (one set per theme). These values only stand in where there
+// is no stylesheet to read (server render, unit tests).
+const CHART_TOKENS = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5', '--chart-6', '--chart-7'];
+const FALLBACK_PALETTE = ['#6366f1', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#06b6d4'];
 
 /** Theme colours come from the global CSS design tokens (re-read whenever the theme flips). */
 export function readTheme(isDark: boolean): ChartTheme {
   const token = (name: string, fallback: string) =>
     (typeof document === 'undefined' ? '' : getComputedStyle(document.documentElement).getPropertyValue(name).trim()) || fallback;
   return {
-    palette: isDark ? DARK_PALETTE : LIGHT_PALETTE,
+    palette: CHART_TOKENS.map((name, i) => token(name, FALLBACK_PALETTE[i])),
     text: token('--foreground-secondary', '#64748b'),
     muted: token('--foreground-muted', '#94a3b8'),
     grid: token('--border', '#e2e8f0'),

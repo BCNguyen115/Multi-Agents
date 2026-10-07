@@ -272,7 +272,7 @@ export function CommandPalette({
       role="dialog"
       aria-modal="true"
       aria-label={t(lang, 'cmd.dialog')}
-      className="fixed inset-0 z-[9990] flex items-start justify-center pt-20 px-4 select-none animate-fade-in"
+      className="fixed inset-0 z-palette flex items-start justify-center pt-20 px-4 select-none animate-fade-in"
     >
       {/* Backdrop: Dark scrim with blur completely separates the foreground from the page behind */}
       <div
@@ -311,7 +311,7 @@ export function CommandPalette({
               <X className="w-4 h-4" />
             </button>
           ) : (
-            <kbd className="px-1.5 py-0.5 text-2xs font-mono text-foreground-secondary bg-surface-raised border border-border rounded-md">
+            <kbd className="px-1.5 py-0.5 text-xs font-mono text-foreground-secondary bg-surface-raised border border-border rounded-md">
               ESC
             </kbd>
           )}
@@ -351,7 +351,7 @@ export function CommandPalette({
                         onMouseEnter={() => setSelectedIndex(thisIdx)}
                         className={`group flex items-center justify-between px-3 py-2.5 rounded-xl text-xs transition-colors cursor-pointer ${
                           isSelected
-                            ? 'bg-accent-primary text-white shadow-xs'
+                            ? 'bg-accent-fill text-white shadow-xs'
                             : 'text-foreground hover:bg-surface-raised'
                         }`}
                       >
@@ -392,7 +392,7 @@ export function CommandPalette({
                         <div className="flex items-center gap-2 shrink-0">
                           {cmd.shortcut && (
                             <kbd
-                              className={`px-1.5 py-0.5 text-2xs font-mono rounded-md ${
+                              className={`px-1.5 py-0.5 text-xs font-mono rounded-md ${
                                 isSelected
                                   ? 'bg-white/20 text-white border border-white/30'
                                   : 'bg-surface-raised border border-border text-foreground-secondary'
@@ -413,7 +413,7 @@ export function CommandPalette({
         </div>
 
         {/* Footer Hotkey Legend */}
-        <div className="px-4 py-2.5 bg-surface-raised/80 border-t border-border flex items-center justify-between text-2xs font-mono text-foreground-muted">
+        <div className="px-4 py-2.5 bg-surface-raised/80 border-t border-border flex items-center justify-between text-xs font-mono text-foreground-muted">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
               <kbd className="px-1 py-0.5 rounded bg-surface border border-border text-foreground-secondary">↑</kbd>

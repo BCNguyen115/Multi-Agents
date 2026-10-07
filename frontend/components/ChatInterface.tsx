@@ -510,7 +510,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     >
       {/* Drag Overlay */}
       {dragActive && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-accent-primary/5 backdrop-blur-md border-2 border-dashed border-accent-primary rounded-2xl transition-all duration-200 pointer-events-none">
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-accent-primary/5 backdrop-blur-md border-2 border-dashed border-accent-primary rounded-2xl transition-[color,background-color,border-color,opacity,transform] duration-200 pointer-events-none">
           <div className="p-3 bg-accent-primary/10 text-accent-primary rounded-full mb-2 animate-pulse-subtle">
             <UploadCloud className="w-8 h-8" />
           </div>
@@ -525,7 +525,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       {isInitialState ? (
         /* ── HERO CENTERED LAYOUT (New Chat) ── */
-        <div className="relative isolate flex-1 flex flex-col items-center justify-center w-full max-w-3xl mx-auto px-4 transition-all duration-300 ease-in-out">
+        <div className="relative isolate flex-1 flex flex-col items-center justify-center w-full max-w-3xl mx-auto px-4 transition-[color,background-color,border-color,opacity,transform] duration-300 ease-in-out">
           {/* Ambient bloom: a soft light behind the prompt, fading to nothing at the edges (transparent in the light theme) */}
           <div
             aria-hidden="true"
@@ -546,7 +546,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               <button
                 type="button"
                 onClick={() => setHeroAlert(null)}
-                className="hover:opacity-80 p-0.5 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-error/50"
+                className="hover:opacity-80 p-0.5 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-error"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -571,7 +571,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <button
                   type="button"
                   onClick={() => runStarter(id, labelKey)}
-                  className="group w-full flex items-center gap-3.5 px-4 py-2.5 rounded-full border border-transparent hover:bg-surface-raised hover:border-border transition-colors duration-150 text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                  className="group w-full flex items-center gap-3.5 px-4 py-2.5 rounded-full border border-transparent hover:bg-surface-raised hover:border-border transition-colors duration-150 text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
                 >
                   <span className={`p-1.5 rounded-full bg-surface-raised text-foreground-muted transition-colors ${tone}`}>
                     <Icon className="w-4 h-4" aria-hidden="true" />
@@ -585,7 +585,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       ) : (
         /* ── ACTIVE CHAT WINDOW ── */
-        <div className="flex-1 flex flex-col justify-between h-full overflow-hidden transition-all duration-300 ease-in-out">
+        <div className="flex-1 flex flex-col justify-between h-full overflow-hidden transition-[color,background-color,border-color,opacity,transform] duration-300 ease-in-out">
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-6 scroll-smooth">
             <div className="max-w-5xl mx-auto space-y-6 pb-6">
               {messages.map((msg, index) => (
@@ -610,7 +610,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <button
                   type="button"
                   onClick={stopSending}
-                  className="flex items-center gap-2 px-4 py-2 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-sm font-medium text-foreground-secondary hover:text-foreground transition-all duration-200 cursor-pointer group"
+                  className="flex items-center gap-2 px-4 py-2 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-sm font-medium text-foreground-secondary hover:text-foreground transition-[color,background-color,border-color,opacity,transform] duration-200 cursor-pointer group"
                 >
                   <StopCircle className="w-4 h-4 text-accent-error group-hover:scale-110 transition-transform" />
                   <span>{t(lang, 'chat.stop')}</span>

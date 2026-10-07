@@ -97,10 +97,10 @@ export function ChatInput({
 
       {/* CHAT INPUT CONTAINER */}
       <div
-        className={`bg-surface border border-border shadow-md text-foreground transition-all duration-200 ease-out focus-within:border-accent-primary focus-within:ring-2 focus-within:ring-accent-primary/20 ${
+        className={`bg-surface border border-border shadow-md text-foreground transition-[color,background-color,border-color,opacity,transform] duration-200 ease-out focus-within:border-accent-primary focus-within:ring-2 focus-within:ring-accent-primary/20 ${
           isExpanded
             ? 'rounded-2xl p-4 flex flex-col gap-3'
-            : 'rounded-full px-4 py-2 flex items-center gap-2 min-h-14'
+            : 'rounded-full max-sm:rounded-2xl px-4 py-2 flex items-center gap-2 min-h-14'
         }`}
       >
         {/* File Preview Chip */}
@@ -112,7 +112,7 @@ export function ChatInput({
             <button
               type="button"
               onClick={() => onFileSelect?.(null)}
-              className="hover:text-accent-error ml-1 cursor-pointer transition-colors p-0.5 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary/40"
+              className="hover:text-accent-error ml-1 cursor-pointer transition-colors p-0.5 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary"
               title={t(lang, 'input.removeFile')}
               aria-label={t(lang, 'input.removeFile')}
             >
@@ -122,14 +122,14 @@ export function ChatInput({
         )}
 
         {/* Main Row: Textarea + Actions */}
-        <div className={`w-full flex ${isExpanded ? 'flex-col gap-2' : 'items-center justify-between gap-2'}`}>
+        <div className={`w-full flex ${isExpanded ? 'flex-col gap-2' : 'items-center justify-between gap-2 max-sm:flex-wrap'}`}>
 
           {/* Plus Button (collapsed mode) */}
           {!isExpanded && (
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="p-1.5 hover:bg-surface-raised rounded-full text-foreground-muted hover:text-accent-primary transition-colors shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+              className="p-1.5 hover:bg-surface-raised rounded-full text-foreground-muted hover:text-accent-primary transition-colors shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
               title={t(lang, 'input.attachFileTypes', { types: '.csv, .xlsx, .pdf, .docx, .pptx, .txt, .md' })}
               aria-label={t(lang, 'input.attachFile')}
             >
@@ -138,7 +138,7 @@ export function ChatInput({
           )}
 
           {/* TEXTAREA */}
-          <div className="flex-1 w-full flex items-center">
+          <div className={`flex-1 w-full min-w-0 flex items-center ${isExpanded ? '' : 'max-sm:order-first max-sm:basis-full'}`}>
             <textarea
               ref={textareaRef}
               rows={1}
@@ -182,7 +182,7 @@ export function ChatInput({
                 data-testid="send-button"
                 disabled={isSending || (!text.trim() && !attachedFile)}
                 onClick={handleSend}
-                className="w-9 h-9 flex items-center justify-center bg-accent-primary hover:bg-accent-primary-hover text-white rounded-full shadow-xs transition-all duration-150 shrink-0 active:scale-95 disabled:opacity-40 disabled:hover:bg-accent-primary disabled:active:scale-100 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                className="w-9 h-9 flex items-center justify-center bg-accent-fill hover:bg-accent-fill-hover text-white rounded-full shadow-xs transition-[color,background-color,border-color,opacity,transform] duration-150 shrink-0 active:scale-95 disabled:opacity-40 disabled:hover:bg-accent-fill disabled:active:scale-100 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
                 title={text.trim() || attachedFile ? t(lang, 'input.sendTitle') : t(lang, 'input.sendEmpty')}
                 aria-label={t(lang, 'input.sendTitle')}
               >
@@ -199,7 +199,7 @@ export function ChatInput({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="p-1.5 hover:bg-surface-raised rounded-full text-foreground-muted hover:text-accent-primary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                className="p-1.5 hover:bg-surface-raised rounded-full text-foreground-muted hover:text-accent-primary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
                 title={t(lang, 'input.attachFile')}
                 aria-label={t(lang, 'input.attachFile')}
               >
@@ -227,7 +227,7 @@ export function ChatInput({
                 data-testid="send-button"
                 disabled={isSending || (!text.trim() && !attachedFile)}
                 onClick={handleSend}
-                className="w-9 h-9 flex items-center justify-center bg-accent-primary hover:bg-accent-primary-hover text-white rounded-full shadow-xs transition-all duration-150 shrink-0 active:scale-95 disabled:opacity-40 disabled:hover:bg-accent-primary disabled:active:scale-100 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                className="w-9 h-9 flex items-center justify-center bg-accent-fill hover:bg-accent-fill-hover text-white rounded-full shadow-xs transition-[color,background-color,border-color,opacity,transform] duration-150 shrink-0 active:scale-95 disabled:opacity-40 disabled:hover:bg-accent-fill disabled:active:scale-100 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
                 title={text.trim() || attachedFile ? t(lang, 'input.sendTitle') : t(lang, 'input.sendEmpty')}
                 aria-label={t(lang, 'input.sendTitle')}
               >
@@ -283,12 +283,14 @@ function AgentDropdown({ currentAgent, agents, selectedAgent, onSelect, isOpen, 
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 px-3 py-1 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-xs font-semibold text-foreground-secondary transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+        className="flex items-center gap-1.5 px-3 py-1 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-xs font-semibold text-foreground-secondary transition-[color,background-color,border-color,opacity,transform] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
         aria-haspopup="listbox"
         aria-expanded={isOpen}
+        aria-label={currentAgent.name}
+        title={currentAgent.name}
       >
         <CurrentIcon className="w-3.5 h-3.5 text-accent-primary" />
-        <span>{currentAgent.name}</span>
+        <span className="hidden sm:inline whitespace-nowrap">{currentAgent.name}</span>
         <ChevronDown className={`w-3.5 h-3.5 text-foreground-muted transition-transform duration-150 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
@@ -311,7 +313,7 @@ function AgentDropdown({ currentAgent, agents, selectedAgent, onSelect, isOpen, 
                     onSelect(agent.id);
                     setIsOpen(false);
                   }}
-                  className={`flex items-start gap-2.5 w-full p-2.5 rounded-lg transition-all text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 ${
+                  className={`flex items-start gap-2.5 w-full p-2.5 rounded-lg transition-[color,background-color,border-color,opacity,transform] text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary ${
                     isSelected ? 'bg-accent-primary/10 text-accent-primary font-semibold' : 'hover:bg-surface-raised text-foreground-secondary'
                   }`}
                 >

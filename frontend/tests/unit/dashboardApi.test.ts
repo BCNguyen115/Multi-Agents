@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { filterDashboard, toggleFilter } from '../../lib/dashboardApi';
+import { TableError, downloadTableCsv, fetchTableRows, filterDashboard, tableRequestBody, toggleFilter } from '../../lib/dashboardApi';
 import type { DashboardSpec } from '../../lib/types';
 
 const spec = {
@@ -42,5 +42,50 @@ describe('filterDashboard', () => {
 
   it('refuses to call the server without a session', async () => {
     await expect(filterDashboard({ ...spec, sessionId: undefined } as DashboardSpec, {})).rejects.toThrow('missing session');
+  });
+});
+
+describe('the grid asks the server for its rows (every row of the upload, not a preview)', () => {
+  const query = { search: 'abc', slicers: { region: ['North'] }, sort: [{ field: 'revenue', dir: 'desc' as const }], columnFilters: { region: { filterType: 'text', type: 'equals', filter: 'x' } } };
+
+  it('sends the session, search, slicers, sort and AG Grid filter model with the page range', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ rows: [{ a: 1 }], total: 40, total_all: 8807 }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const page = await fetchTableRows(spec, query, 100, 50);
+    expect(page).toEqual({ rows: [{ a: 1 }], total: 40, total_all: 8807 });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/analyze/rows');
+    expect(JSON.parse(init.body)).toEqual({
+      session_id: 's1', search: 'abc', sort: [{ field: 'revenue', dir: 'desc' }], slicers: { region: ['North'] },
+      column_filters: { region: { filterType: 'text', type: 'equals', filter: 'x' } }, start: 100, limit: 50,
+    });
+  });
+
+  it('defaults an empty query to "everything, in file order"', () => {
+    expect(tableRequestBody(spec, {})).toEqual({ session_id: 's1', search: '', sort: [], slicers: {}, column_filters: {} });
+  });
+
+  it('tells "the file is gone" (404) from "bad filter" (422) by status, with the backend explanation', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({ detail: 'Không có dữ liệu' }) }));
+    await expect(fetchTableRows(spec, {}, 0, 100)).rejects.toMatchObject({ status: 404, message: 'Không có dữ liệu' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 422, json: async () => ({}) }));
+    const error = await fetchTableRows(spec, {}, 0, 100).catch((e) => e);
+    expect(error).toBeInstanceOf(TableError);
+    expect(error).toMatchObject({ status: 422, message: 'HTTP 422' });
+  });
+
+  it('downloads every matching row as one CSV file', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(['a,b\n1,2\n']) });
+    vi.stubGlobal('fetch', fetchMock);
+    const blob = await downloadTableCsv(spec, query);
+    expect(await blob.text()).toBe('a,b\n1,2\n');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/analyze/export');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).not.toHaveProperty('start'); // the whole result, not a page
+  });
+
+  it('refuses to call the server without a session', async () => {
+    const without = { ...spec, sessionId: undefined } as DashboardSpec;
+    await expect(fetchTableRows(without, {}, 0, 10)).rejects.toMatchObject({ status: 404 });
+    await expect(downloadTableCsv(without, {})).rejects.toMatchObject({ status: 404 });
   });
 });

@@ -165,17 +165,17 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
 
         <div className="flex items-center space-x-2 shrink-0">
           {isStreaming ? (
-            <span className="flex items-center space-x-1 bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2.5 py-0.5 rounded-full font-bold text-2xs animate-pulse">
+            <span className="flex items-center space-x-1 bg-accent-planner/10 text-accent-planner border border-accent-planner/20 px-2.5 py-0.5 rounded-full font-bold text-xs animate-pulse">
               <Loader2 className="w-3 h-3 animate-spin" />
               <span>{t(lang, 'pev.badge.active')}</span>
             </span>
           ) : isVerified ? (
-            <span className="flex items-center space-x-1 bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 px-2.5 py-0.5 rounded-full font-bold text-2xs">
+            <span className="flex items-center space-x-1 bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 px-2.5 py-0.5 rounded-full font-bold text-xs">
               <CheckCircle2 className="w-3 h-3" />
               <span>{t(lang, 'pev.badge.verified')}</span>
             </span>
           ) : (
-            <span className="flex items-center space-x-1 bg-accent-error/10 text-accent-error border border-accent-error/20 px-2.5 py-0.5 rounded-full font-bold text-2xs">
+            <span className="flex items-center space-x-1 bg-accent-error/10 text-accent-error border border-accent-error/20 px-2.5 py-0.5 rounded-full font-bold text-xs">
               <AlertCircle className="w-3 h-3" />
               <span>{t(lang, 'pev.badge.unverified')}</span>
             </span>
@@ -190,9 +190,9 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
       <div className="px-5 py-3.5 bg-surface flex items-center justify-between gap-3">
         {/* Step 1: Planner Node */}
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-200 ${
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-[color,background-color,border-color,opacity,transform] duration-200 ${
             isPlannerDone
-              ? 'bg-accent-planner text-white shadow-xs'
+              ? 'bg-accent-planner text-accent-on shadow-xs'
               : isPlannerActive
               ? 'bg-accent-planner/10 text-accent-planner ring-2 ring-accent-planner/30 animate-pulse-subtle'
               : 'bg-surface-raised text-foreground-muted border border-border'
@@ -212,9 +212,9 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
 
         {/* Step 2: Executor Node */}
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-200 ${
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-[color,background-color,border-color,opacity,transform] duration-200 ${
             isExecutorDone
-              ? 'bg-accent-executor text-white shadow-xs'
+              ? 'bg-accent-executor text-accent-on shadow-xs'
               : isExecutorActive
               ? 'bg-accent-executor/10 text-accent-executor ring-2 ring-accent-executor/30 animate-pulse-subtle'
               : 'bg-surface-raised text-foreground-muted border border-border'
@@ -234,13 +234,13 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
 
         {/* Step 3: Verifier Node */}
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-200 ${
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-[color,background-color,border-color,opacity,transform] duration-200 ${
             isVerifierActive
               ? 'bg-accent-verifier/10 text-accent-verifier ring-2 ring-accent-verifier/30 animate-pulse-subtle'
               : isVerifierDone
               ? isVerified
-                ? 'bg-accent-verifier text-white shadow-xs'
-                : 'bg-accent-error text-white shadow-xs'
+                ? 'bg-accent-verifier text-accent-on shadow-xs'
+                : 'bg-accent-error text-accent-on shadow-xs'
               : 'bg-surface-raised text-foreground-muted border border-border'
           }`}>
             {isVerifierActive ? <Loader2 className="w-4 h-4 animate-spin" /> : isVerifierDone ? (isVerified ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />) : <ShieldCheck className="w-4 h-4" />}
@@ -255,7 +255,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
 
         {/* Retry indicator */}
         {isRetry && (
-          <div className="flex items-center gap-1 px-2 py-0.5 bg-accent-error/10 text-accent-error rounded-full text-2xs font-bold shrink-0">
+          <div className="flex items-center gap-1 px-2 py-0.5 bg-accent-error/10 text-accent-error rounded-full text-xs font-bold shrink-0">
             <RotateCcw className="w-3 h-3" />
             <span>{t(lang, 'pev.retry', { count: retryCount })}</span>
           </div>
@@ -274,7 +274,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
                   <span>{t(lang, 'pev.section.planner')}</span>
                 </div>
                 {plannerStatus === 'completed' && targetAgent && (
-                  <span className="px-2 py-0.5 rounded text-2xs font-semibold bg-accent-planner/10 text-accent-planner border border-accent-planner/20">
+                  <span className="px-2 py-0.5 rounded text-xs font-semibold bg-accent-planner/10 text-accent-planner border border-accent-planner/20">
                     {t(lang, 'pev.target', { agent: targetAgent })}
                   </span>
                 )}
@@ -312,7 +312,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
                   <span>{t(lang, 'pev.section.executor')}</span>
                 </div>
                 {executorStatus !== 'idle' && targetAgent && (
-                  <span className="px-2 py-0.5 rounded text-2xs font-semibold bg-accent-executor/10 text-accent-executor border border-accent-executor/20">
+                  <span className="px-2 py-0.5 rounded text-xs font-semibold bg-accent-executor/10 text-accent-executor border border-accent-executor/20">
                     {t(lang, 'pev.agentLabel', { agent: targetAgent })}
                   </span>
                 )}
@@ -320,7 +320,7 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
 
               {/* Pipeline subtasks */}
               {(executorStatus === 'active' || executorStatus === 'completed') && (
-                <div className="flex items-center gap-1.5 flex-wrap py-1 text-2xs font-mono">
+                <div className="flex items-center gap-1.5 flex-wrap py-1 text-xs font-mono">
                   {pipelineSteps.map((step, idx) => (
                     <React.Fragment key={step}>
                       <span className={`px-2 py-0.5 rounded border transition-colors ${
@@ -376,12 +376,12 @@ export const PEVStepper: React.FC<PEVStepperProps> = ({
                 </div>
                 {verifierStatus === 'completed' && (
                   isAuditPassed ? (
-                    <span className="px-2 py-0.5 rounded text-2xs font-semibold bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 flex items-center gap-1">
+                    <span className="px-2 py-0.5 rounded text-xs font-semibold bg-accent-verifier/10 text-accent-verifier border border-accent-verifier/20 flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3" />
                       <span>{t(lang, 'pev.verifier.passed')}</span>
                     </span>
                   ) : (
-                    <span className="px-2 py-0.5 rounded text-2xs font-semibold bg-accent-error/10 text-accent-error border border-accent-error/20 flex items-center gap-1">
+                    <span className="px-2 py-0.5 rounded text-xs font-semibold bg-accent-error/10 text-accent-error border border-accent-error/20 flex items-center gap-1">
                       <RotateCcw className="w-3 h-3" />
                       <span>{t(lang, 'pev.verifier.retryLoop', { count: retryCount || 1 })}</span>
                     </span>

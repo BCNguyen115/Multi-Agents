@@ -27,7 +27,7 @@ const LANGUAGES: { id: Lang; label: MessageKey }[] = [
 ];
 
 const ITEM =
-  'flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm text-foreground text-left transition-colors cursor-pointer hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised focus-visible:ring-2 focus-visible:ring-accent-primary/40';
+  'flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm text-foreground text-left transition-colors cursor-pointer hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised focus-visible:ring-2 focus-visible:ring-accent-primary';
 const ICON = 'w-[18px] h-[18px] shrink-0 text-foreground-secondary';
 
 export function SettingsMenu({ anchor, placement, onClose }: SettingsMenuProps) {
@@ -113,7 +113,7 @@ export function SettingsMenu({ anchor, placement, onClose }: SettingsMenuProps) 
       aria-label={t(lang, 'user.settings')}
       onKeyDown={onMenuKeyDown}
       style={{ position: 'fixed', left: position.left, bottom: position.bottom }}
-      className="z-[70] w-64 max-w-[calc(100vw-1rem)] rounded-2xl border border-border-strong bg-surface p-1.5 shadow-lg animate-fade-in-scale"
+      className="z-menu w-64 max-w-[calc(100vw-1rem)] rounded-2xl border border-border-strong bg-surface p-1.5 shadow-lg animate-fade-in-scale"
     >
       {view === 'root' && (
         <>

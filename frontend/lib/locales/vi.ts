@@ -74,6 +74,7 @@ export const vi = {
 
   // ---- sign-in
   'login.title': 'Đăng nhập',
+  'login.tagline': 'Hệ thống đa tác tử cho doanh nghiệp',
   'login.username': 'Tên đăng nhập',
   'login.password': 'Mật khẩu',
   'login.submit': 'Đăng nhập',
@@ -220,11 +221,9 @@ export const vi = {
 
   // ---- navigation
   'chat.newTitle': 'Cuộc trò chuyện mới',
-  'chat.created': 'Đã tạo cuộc trò chuyện mới.',
   'chat.deleted': 'Đã xóa cuộc trò chuyện.',
-  'nav.themeDarkOn': 'Đã chuyển sang chế độ tối.',
-  'nav.themeLightOn': 'Đã chuyển sang chế độ sáng.',
-  'nav.agentSwitched': 'Đã chuyển sang [{agent}].',
+  'chat.undo': 'Hoàn tác',
+  'ent.multiSelectHint': 'Giữ Ctrl/Cmd để chọn nhiều',
   'nav.loading': 'Đang nạp hệ thống Multi-Agent...',
   'nav.uploadHint': 'Nhấp vào nút (+) ở ô nhập liệu bên dưới để đính kèm tệp CSV.',
   'nav.uploadTitle': 'Tải tệp CSV',
@@ -335,6 +334,8 @@ export const vi = {
   'verify.detail.rag': 'Câu trả lời có trích dẫn nguồn [n] và mọi con số đều có trong các nguồn đó.',
   'verify.detail.data': 'Mọi biểu đồ và chỉ số được tính lại từ tệp bạn tải lên; mọi con số trong phần diễn giải đều có trong bảng sự kiện.',
   'verify.detail.db': 'Mọi con số trong phần mô tả đều có trong kết quả truy vấn, và một bước kiểm tra độc lập đã đối chiếu truy vấn với yêu cầu của bạn.',
+  'verify.detail.web': 'Câu trả lời dẫn liên kết tới các trang đã tìm thấy, không có liên kết nào bị bịa ra, và mọi con số đều có trong các trang đó.',
+  'verify.detail.api': 'Địa chỉ API lấy từ yêu cầu của bạn hoặc danh sách endpoint mặc định; thao tác thay đổi dữ liệu chỉ chạy sau khi được phê duyệt; kết quả là phản hồi nguyên văn của API.',
   'verify.detail.other': 'Một bước kiểm tra độc lập đã đánh giá câu trả lời so với yêu cầu của bạn.',
   'approval.confirmApprove': 'Xác nhận thực thi',
   'approval.criticalHint': 'Mức nghiêm trọng: bấm lần nữa để xác nhận thực thi.',
