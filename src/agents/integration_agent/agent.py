@@ -12,6 +12,7 @@ import re
 from typing import Any, Optional
 
 from src.agents.base_agent import BaseAgent
+from src.agents.integration_agent.verification import MUTATING_METHODS, check_call
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
 from src.shared.mcp_client import MCPClient
@@ -24,6 +25,7 @@ _INTEGRATION_SYSTEM_PROMPT: str = (
     "Nhiệm vụ: Phân tích yêu cầu gọi API và sinh ra thông tin HTTP request tương ứng.\n\n"
     "CÁC ENDPOINT MẶC ĐỊNH KHẢ DỤNG:\n"
     "1. `http://localhost:8000/health` (GET) — Health check endpoint của Gateway API\n\n"
+    "CHỈ dùng URL có trong yêu cầu của người dùng hoặc trong danh sách trên. KHÔNG tự bịa URL.\n\n"
     "Trả về định dạng JSON duy nhất:\n"
     "```json\n"
     "{\n"
@@ -34,6 +36,12 @@ _INTEGRATION_SYSTEM_PROMPT: str = (
     "}\n"
     "```\n"
 )
+
+
+_PROBLEM_TEXT: dict[str, str] = {
+    "url_not_in_request": "địa chỉ {url} không có trong yêu cầu của bạn và không thuộc danh sách endpoint mặc định",
+    "mutation_needs_approval": "{method} thay đổi dữ liệu nên phải được người có thẩm quyền phê duyệt trước, không thể tự thực thi",
+}
 
 
 class IntegrationAgent(BaseAgent):
@@ -97,6 +105,20 @@ class IntegrationAgent(BaseAgent):
                 ensure_ascii=False,
             )
 
+        problems = check_call(clean_query, url, method)
+        if problems:  # nothing is called: the verifier sees `executed: false` and the retry parses the request again (the approval gate will catch a mutation)
+            logger.warning("IntegrationAgent refused %s %s: %s", method, url, problems, extra={"session_id": session_id})
+            return json.dumps(
+                {
+                    "answer": f"**Không thực hiện cuộc gọi API ({method} {url}):** " + "; ".join(_PROBLEM_TEXT[p].format(url=url, method=method) for p in problems) + ".",
+                    "status": "error",
+                    "url": url,
+                    "method": method,
+                    "verification": {"kind": "api", "ok": False, "executed": False, "problems": problems},
+                },
+                ensure_ascii=False,
+            )
+
         # Execute HTTP call via MCPClient
         mcp_res_raw: str = await self.mcp_client.execute_rest_request(
             url=url,
@@ -136,6 +158,7 @@ class IntegrationAgent(BaseAgent):
                 "method": method,
                 "status_code": status_code,
                 "data": data,
+                "verification": {"kind": "api", "ok": True, "executed": True, "problems": []},  # the summary above is the response as received, not prose
             },
             ensure_ascii=False,
         )
@@ -159,7 +182,7 @@ class IntegrationAgent(BaseAgent):
 
     def is_mutation_request(self, method: str) -> bool:
         """Check if HTTP method mutates server state (requires HITL approval)."""
-        return method.upper() in ("POST", "PUT", "DELETE", "PATCH")
+        return method.upper() in MUTATING_METHODS
 
     # ------------------------------------------------------------------
     # Private helpers

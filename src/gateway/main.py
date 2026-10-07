@@ -43,7 +43,7 @@ warnings.filterwarnings(
 
 import openai
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, Path
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -66,6 +66,8 @@ from src.gateway.schemas import (  # noqa: F401  (re-exported: tests and callers
     ChatRequest,
     ChatResponse,
     FilterRequest,
+    TableQuery,
+    TableRowsRequest,
     KnowledgeUploadResponse,
     LoginRequest,
     ChangePasswordRequest,
@@ -262,6 +264,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry.register(integration_agent)
     registry.register(search_agent)
 
+    # Run checkpoints (debugging: scripts/replay_run.py). A debugging aid must never stop the chat, so a failure only turns it off.
+    checkpointer, checkpoint_pool, purge_task = None, None, None
+    if settings.CHECKPOINT_ENABLED:
+        try:
+            from src.orchestrator.checkpointing import open_checkpointer, purge_forever
+
+            checkpointer, checkpoint_pool = await open_checkpointer(settings.POSTGRES_URL, settings.CHECKPOINT_MAX_FIELD_CHARS)
+            purge_task = asyncio.create_task(purge_forever(checkpointer, checkpoint_pool, settings.CHECKPOINT_RETENTION_DAYS))
+            logger.info("Run checkpoints on (kept %d days)", settings.CHECKPOINT_RETENTION_DAYS, extra={"session_id": "SYSTEM"})
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Run checkpoints are OFF, could not start them: %s", exc or type(exc).__name__, extra={"session_id": "SYSTEM"})
+
     # Build Orchestrator with LangGraph, MemoryManager & LLMClient
     orchestrator = Orchestrator(
         registry=registry,
@@ -269,6 +283,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         llm_client=llm_client,
         memory_manager=memory_manager,
         redis_client=redis_client,  # pending HITL approvals survive a restart and work across replicas
+        checkpointer=checkpointer,
     )
 
     logger.info("Startup complete — system ready (4-Layer Framework active)", extra={"session_id": "SYSTEM"})
@@ -277,6 +292,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # ---- SHUTDOWN ----
     logger.info("Shutting down — disconnecting resources…", extra={"session_id": "SYSTEM"})
+    if purge_task is not None:
+        purge_task.cancel()
+    if checkpoint_pool is not None:
+        await checkpoint_pool.close()
     await mcp_client.close()
     llm_client.shutdown()
     await pg_client.disconnect()
@@ -1157,6 +1176,39 @@ async def filter_dashboard(request: FilterRequest, principal: Principal = Depend
         raise HTTPException(status_code=404, detail=msg("analyze.no_active")) from None
     except (ValueError, TypeError) as exc:  # invalid filter column / malformed chart spec
         raise HTTPException(status_code=422, detail=msg("filter.invalid", reason=exc)) from exc
+
+
+def _data_agent(method: str):
+    agent = orchestrator.registry.lookup("data_agent") if orchestrator is not None else None
+    if agent is None or not hasattr(agent, method):
+        raise HTTPException(status_code=503, detail=msg("service.starting"))
+    return agent
+
+
+@app.post("/api/analyze/rows", summary="One page of the dashboard grid: every row of the upload, searched, filtered and sorted")
+async def table_rows(request: TableRowsRequest, principal: Principal = Depends(authenticate)) -> dict[str, Any]:
+    """The grid's rows never travel whole: the page it shows is asked for here, with the search/filters/sort applied to ALL rows."""
+    agent = _data_agent("table_page")
+    try:
+        return await agent.table_page(
+            principal.session(request.session_id), request.start, request.limit, request.model_dump(exclude={"session_id", "start", "limit"})
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail=msg("analyze.no_active")) from None
+    except (ValueError, TypeError) as exc:  # unknown column / unsupported filter
+        raise HTTPException(status_code=422, detail=msg("filter.invalid", reason=exc)) from exc
+
+
+@app.post("/api/analyze/export", summary="Every row matching the grid's search, filters and sort, as CSV")
+async def table_export(request: TableQuery, principal: Principal = Depends(authenticate)) -> Response:
+    agent = _data_agent("table_csv")
+    try:
+        csv_text = await agent.table_csv(principal.session(request.session_id), request.model_dump(exclude={"session_id"}))
+    except LookupError:
+        raise HTTPException(status_code=404, detail=msg("analyze.no_active")) from None
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=msg("filter.invalid", reason=exc)) from exc
+    return Response(content=csv_text.encode("utf-8"), media_type="text/csv; charset=utf-8")
 
 
 @app.get("/health", summary="Health check")

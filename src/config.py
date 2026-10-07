@@ -120,7 +120,10 @@ class Settings(BaseSettings):
     DATA_MAX_UNCOMPRESSED_MB: int = 300  # an Excel workbook / Parquet file may not unpack to more than this (decompression bombs)
     DATA_MAX_PARQUET_ROWS: int = 5_000_000  # a Parquet file with more rows is refused before it is read into memory
     DATA_MAX_ROWS: int = 100_000        # larger tables are randomly sampled (disclosed in the dashboard)
-    DATA_TABLE_ROWS: int = 5_000        # rows shipped to the browser data grid / client-side cross-filter
+    # Rows of the table that travel inside the dashboard spec: a preview, and what the grid shows if the server cannot page it.
+    # The grid itself pages through EVERY analysed row on the server (POST /api/analyze/rows: search, filters, sort, CSV export).
+    # Measured: 8.8k text-heavy rows = 3.6 MB of JSON, 50k = 20 MB, so the whole table is never shipped.
+    DATA_TABLE_ROWS: int = 2_000
     # Where LLM-written analysis code runs. Empty = a child process of the API (fine for development). With a URL it runs in
     # the network-less sandbox container (docker-compose service python-sandbox) and fails closed when that is unreachable.
     SANDBOX_URL: str = ""
@@ -138,6 +141,12 @@ class Settings(BaseSettings):
     # Two-person approval: a sensitive action must be approved by ANOTHER user with an approver role in the same tenant (the requester
     # cannot approve their own). The approver sees the request in the approvals inbox but never the result: it goes back to the requester.
     HITL_REQUIRE_OTHER_APPROVER: bool = False
+
+    # --- Run checkpoints (src/orchestrator/checkpointing.py): every graph step of a request is saved so a run can be inspected,
+    # resumed or replayed from any step (python -m scripts.replay_run). OFF by default: it stores queries and answers in PostgreSQL.
+    CHECKPOINT_ENABLED: bool = False
+    CHECKPOINT_RETENTION_DAYS: int = 7        # runs older than this are deleted (checked at start and every 6 hours)
+    CHECKPOINT_MAX_FIELD_CHARS: int = 100_000  # a longer answer is cut in the saved copy (the uploaded file is never saved)
 
     # --- Gateway authentication (see src/shared/auth.py) ---
     AUTH_MODE: str = "off"              # off = anonymous single user (local dev) | jwt = every /api call needs a Bearer token

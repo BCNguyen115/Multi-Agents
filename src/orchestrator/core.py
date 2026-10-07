@@ -27,8 +27,10 @@ Workflow Architecture:
     └── NO  (Retry < 2)   ──► Return to Executor with Verifier Feedback
 ```
 
-No checkpointer: every request builds its whole state from scratch and nothing reads a saved one back, while ``MemorySaver``
-kept every checkpoint (CSV contents included) of every session in RAM forever. Conversation context lives in Redis history.
+Checkpointer: none by default (every request builds its whole state from scratch and nothing reads a saved one back, while
+``MemorySaver`` kept every checkpoint, CSV contents included, of every session in RAM forever). With ``CHECKPOINT_ENABLED`` the
+gateway passes a PostgreSQL saver (checkpointing.py) that keeps each run for debugging: ``run_history`` / ``replay_run``.
+Conversation context lives in Redis history either way.
 """
 
 import asyncio
@@ -50,7 +52,7 @@ from src.orchestrator.prompt_templates import (
     build_verifier_prompt,
 )
 from src.orchestrator.approvals import ApprovalMixin
-from src.orchestrator.common import _DEFAULT_MAX_RETRIES, _build_pev_trace, _initial_state  # noqa: F401  (re-exported: tests and callers import them from here)
+from src.orchestrator.common import _DEFAULT_MAX_RETRIES, _build_pev_trace, _initial_state, _run_config  # noqa: F401  (re-exported: tests and callers import them from here)
 from src.orchestrator.state import AgentState
 from src.orchestrator.streaming import StreamingMixin
 from src.registry.manager import AgentRegistry
@@ -109,6 +111,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
         llm_client: Optional[LLMClient] = None,
         memory_manager: Optional[MemoryManager] = None,
         redis_client: Optional[Any] = None,
+        checkpointer: Optional[Any] = None,
     ) -> None:
         """Initialise the LangGraph Orchestrator.
 
@@ -119,6 +122,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
             memory_manager: Long-term memory manager (optional).
             redis_client: When given, pending Human-in-the-Loop approvals are also kept in Redis, so they survive a
                 restart and can be approved on any replica (the in-process dict stays as the fast path / fallback).
+            checkpointer: A LangGraph saver (see checkpointing.py) that keeps every step of every run for debugging.
         """
         self.registry: AgentRegistry = registry
         self.settings: Settings = settings
@@ -158,7 +162,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
             },
         )
 
-        self.graph: Any = workflow.compile()
+        self.graph: Any = workflow.compile(checkpointer=checkpointer)
 
         logger.info(
             "LangGraph Orchestrator (PEV Loop) initialised (model=%s, agents=%d)",
@@ -214,11 +218,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
             tags=["pev_loop", agent_mode or "auto"],
             metadata={"request_id": request_id, "query": query[:120]},
         )
-        config: dict[str, Any] = {
-            "configurable": {"thread_id": session_id}
-        }
-        if langfuse_handler:
-            config["callbacks"] = [langfuse_handler]
+        config: dict[str, Any] = _run_config(session_id, request_id, langfuse_handler)
 
         try:
             final_state: AgentState = await self.graph.ainvoke(
@@ -247,7 +247,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
                 )
                 response_text = self._annotate_unverified(response_text, retry_count)
 
-            pev_trace = _build_pev_trace(target_agent, plan, is_verified, verifier_fb)
+            pev_trace = _build_pev_trace(target_agent, plan, is_verified, verifier_fb, request_id if self.graph.checkpointer else None)
 
             # Embed pev_trace into JSON payload
             try:
@@ -283,6 +283,53 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
         finally:
             if self.llm_client:
                 await self.llm_client.flush_async()
+
+    # ------------------------------------------------------------------
+    # Saved runs (CHECKPOINT_ENABLED): look at them, resume them, replay them from any step
+    # ------------------------------------------------------------------
+
+    def _require_checkpointer(self) -> Any:
+        if self.graph.checkpointer is None:
+            raise RuntimeError("Run checkpoints are off: set CHECKPOINT_ENABLED=true")
+        return self.graph.checkpointer
+
+    async def recent_runs(self, session_id: Optional[str] = None, limit: int = 20) -> list[dict[str, Any]]:
+        """Newest runs first, one row each: ``run_id``, when, the question, the agent, the verdict."""
+        saver = self._require_checkpointer()
+        runs: dict[str, dict[str, Any]] = {}
+        async for saved in saver.alist(None, filter={"session_id": session_id} if session_id else None, limit=limit * 10):
+            run_id = saved.config["configurable"]["thread_id"]
+            if run_id not in runs:  # the newest checkpoint of a run comes first
+                values = saved.checkpoint["channel_values"]
+                runs[run_id] = {
+                    "run_id": run_id, "at": saved.checkpoint["ts"], "session_id": saved.metadata.get("session_id"),
+                    "query": unwrap_user_input(values.get("query") or "")[0][:80], "agent": values.get("target_agent"),
+                    "verified": values.get("is_verified"),
+                }
+            if len(runs) >= limit:
+                break
+        return list(runs.values())
+
+    async def run_history(self, run_id: str) -> list[dict[str, Any]]:
+        """Every saved step of a run, oldest first: ``checkpoint_id``, ``step``, the nodes that run ``next`` and the state."""
+        self._require_checkpointer()
+        snapshots = [s async for s in self.graph.aget_state_history({"configurable": {"thread_id": run_id}})]
+        return [
+            {"checkpoint_id": s.config["configurable"]["checkpoint_id"], "step": s.metadata.get("step"), "next": list(s.next), "values": s.values}
+            for s in reversed(snapshots)
+        ]
+
+    async def replay_run(self, run_id: str, checkpoint_id: Optional[str] = None) -> AgentState:
+        """Run the graph again from a saved step (``checkpoint_id``), or continue a run that stopped halfway (no id: its latest step).
+
+        The nodes after that step really execute again: LLM calls are paid, tools are called, a mutating call stops at the
+        approval gate as usual. It runs without a signed-in user, so database rows come from the default scope.
+        """
+        self._require_checkpointer()
+        configurable: dict[str, Any] = {"thread_id": run_id}
+        if checkpoint_id:
+            configurable["checkpoint_id"] = checkpoint_id
+        return await self.graph.ainvoke(None, config={"configurable": configurable})
 
     async def _memory_call(self, fn: Any, *args: Any, timeout: float, **kwargs: Any) -> Any:
         """Run a ``MemoryManager`` call in a worker thread. mem0 is synchronous (each call makes LLM/embedding requests
@@ -841,6 +888,37 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
         return {"is_verified": False, "verifier_feedback": feedback, "retry_count": retry_count + 1}
 
     @staticmethod
+    def _web_verdict(verification: dict[str, Any], retry_count: int) -> dict[str, Any]:
+        """Verdict on a search_agent answer from the agent's own checks (search_agent/verification.py): it must link a page it was
+        given, link nothing else, and state only numbers the pages (or the question) contain."""
+        problems: list[str] = []
+        if verification.get("unknown_urls"):
+            problems.append("các liên kết " + ", ".join(map(str, verification["unknown_urls"])) + " không nằm trong các trang đã tìm thấy")
+        elif not verification.get("cited"):
+            problems.append("câu trả lời chưa trích dẫn trang nguồn nào bằng liên kết Markdown")
+        if verification.get("unsupported_numbers"):
+            problems.append("các con số " + ", ".join(map(str, verification["unsupported_numbers"])) + " không có trong các trang nguồn")
+        if not problems:
+            return {"is_verified": True, "verifier_feedback": ""}
+        feedback = "; ".join(problems) + ". Chỉ dùng thông tin và con số có trong các trang đã cung cấp và trích dẫn bằng [Tên bài viết](URL) của chính các trang đó."
+        return {"is_verified": False, "verifier_feedback": feedback, "retry_count": retry_count + 1}
+
+    @staticmethod
+    def _api_verdict(verification: dict[str, Any], retry_count: int) -> dict[str, Any]:
+        """Verdict on an integration_agent result. A call that was REFUSED before it was made (invented URL, unapproved mutation) is
+        worth another try: nothing happened, and the retry goes through the approval gate again. A call that WAS made is never
+        retried: it may not be idempotent, and what the agent reports is the response as received."""
+        if verification.get("ok") or verification.get("executed"):
+            return {"is_verified": True, "verifier_feedback": ""}
+        problems = verification.get("problems") or []
+        parts = []
+        if "url_not_in_request" in problems:
+            parts.append("địa chỉ API không có trong yêu cầu của người dùng; chỉ dùng URL người dùng đã nêu hoặc endpoint mặc định")
+        if "mutation_needs_approval" in problems:
+            parts.append("thao tác thay đổi dữ liệu phải qua bước phê duyệt, không tự thực thi")
+        return {"is_verified": False, "verifier_feedback": "; ".join(parts) or "cuộc gọi API không được thực hiện", "retry_count": retry_count + 1}
+
+    @staticmethod
     def _db_verdict(parsed: dict[str, Any], retry_count: int) -> dict[str, Any]:
         """Deterministic check on a db_agent answer: every number in its prose must come from the rows it returned,
         the row count or the SQL itself (``LIMIT 5``, ``2024``). The LLM judge still runs after it (does the SQL
@@ -941,8 +1019,13 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
             parsed_res = None
         if isinstance(parsed_res, dict) and parsed_res.get("type") == "error":
             return {"is_verified": True, "verifier_feedback": ""}  # a clear user-facing error is the correct answer
-        if isinstance(parsed_res, dict) and isinstance(parsed_res.get("verification"), dict):
-            return self._rag_verdict(parsed_res["verification"], retry_count, bool(getattr(self.settings, "RAG_REQUIRE_QUOTES", False)))  # deterministic: no LLM judge
+        if isinstance(parsed_res, dict) and isinstance(parsed_res.get("verification"), dict):  # deterministic: no LLM judge
+            verification = parsed_res["verification"]
+            if verification.get("kind") == "web":
+                return self._web_verdict(verification, retry_count)
+            if verification.get("kind") == "api":
+                return self._api_verdict(verification, retry_count)
+            return self._rag_verdict(verification, retry_count, bool(getattr(self.settings, "RAG_REQUIRE_QUOTES", False)))
         if isinstance(parsed_res, dict) and "sql" in parsed_res and isinstance(parsed_res.get("data"), list):  # db_agent
             db_verdict = self._db_verdict(parsed_res, retry_count)
             if not db_verdict["is_verified"]:  # invented figures: no point asking the judge, retry with the feedback

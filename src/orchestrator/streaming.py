@@ -12,7 +12,7 @@ import logging
 import uuid
 from typing import Any, AsyncGenerator
 
-from src.orchestrator.common import _DEFAULT_MAX_RETRIES, _build_pev_trace, _initial_state
+from src.orchestrator.common import _DEFAULT_MAX_RETRIES, _build_pev_trace, _initial_state, _run_config
 from src.orchestrator.prompt_templates import GRACEFUL_DECLINE_MESSAGE
 from src.shared import answer_stream
 from src.shared.logger import get_logger
@@ -87,11 +87,7 @@ class StreamingMixin:
             tags=["pev_loop_stream", agent_mode or "auto"],
             metadata={"request_id": request_id, "query": query[:120]},
         )
-        config: dict[str, Any] = {
-            "configurable": {"thread_id": session_id}
-        }
-        if langfuse_handler:
-            config["callbacks"] = [langfuse_handler]
+        config: dict[str, Any] = _run_config(session_id, request_id, langfuse_handler)
 
         try:
             # Yield initial active state for Planner Node
@@ -280,7 +276,7 @@ class StreamingMixin:
             plan_str = final_values.get("plan", "")
             verifier_fb = final_values.get("verifier_feedback", "")
 
-            pev_trace = _build_pev_trace(target_agent, plan_str, is_v, verifier_fb)
+            pev_trace = _build_pev_trace(target_agent, plan_str, is_v, verifier_fb, request_id if self.graph.checkpointer else None)
 
             yield {
                 "event": "final_response",

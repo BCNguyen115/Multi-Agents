@@ -90,6 +90,23 @@ class FilterRequest(BaseModel):
     focus: str | None = Field(default=None, description="The dashboard's lead measure, so KPI cards keep their layout")
 
 
+class TableQuery(BaseModel):
+    """What the dashboard grid asks for: the rows of the upload matching a search, slicers and column filters, in an order."""
+
+    session_id: str = Field(..., min_length=1)
+    search: str = Field(default="", max_length=200, description="Every word must appear somewhere in the row")
+    sort: list[dict[str, str]] = Field(default_factory=list, max_length=3, description="[{field, dir: asc|desc}]")
+    slicers: dict[str, list[str]] = Field(default_factory=dict, max_length=40, description="{dimension id: [selected values]}")
+    column_filters: dict[str, Any] = Field(default_factory=dict, max_length=40, description="{column id: AG Grid filter model}")
+
+
+class TableRowsRequest(TableQuery):
+    """Payload schema for ``POST /api/analyze/rows``: one page of the grid."""
+
+    start: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
 class TitleRequest(BaseModel):
     """Payload schema for ``POST /api/chat/title``."""
 

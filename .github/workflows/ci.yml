@@ -12,7 +12,9 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch: # starts the `rag-eval` retrieval-quality gate by hand (Actions tab -> CI -> Run workflow)
+  workflow_dispatch: # starts the `rag-eval` retrieval-quality gate and the live routing eval by hand (Actions tab -> CI -> Run workflow)
+  schedule:
+    - cron: "0 2 * * 1" # Mondays 02:00 UTC: the live routing eval (`orchestration-eval-live`), because a model update can change routing with no code change
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -20,6 +22,7 @@ concurrency:
 
 jobs:
   backend:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -73,8 +76,16 @@ jobs:
         with:
           name: backend-coverage
           path: coverage.xml
+      - name: Orchestration eval (routing decided by code must be 100 %, every tool trajectory must match; see dataset/routing_eval.json and trajectory_eval.json)
+        run: python -m scripts.run_orchestration_eval --report reports/orchestration_eval
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: orchestration-eval-report
+          path: reports/orchestration_eval.*
 
   frontend:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -148,6 +159,41 @@ jobs:
         with:
           name: rag-eval-report
           path: reports/rag_eval.*
+
+  orchestration-eval-live:
+    # How often the REAL planner model picks the right agent (all of dataset/routing_eval.json, the via=llm cases included), gated at
+    # --min-routing. Weekly and by hand: it makes ~40 short OpenRouter calls (a few cents). Does nothing without the secret (forks).
+    # The deterministic half (rules + trajectories) already ran in `backend`. Not yet run on GitHub: only its command was run locally.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      LANGFUSE_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements.lock
+      - name: torch CPU build (as in the Dockerfile)
+        run: pip install "torch==$(grep -E '^torch==' requirements.lock | cut -d= -f3)" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install (pinned versions from requirements.lock)
+        run: pip install -r requirements-dev.txt -c requirements.lock
+      - name: Routing accuracy of the real planner model
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then echo "OPENROUTER_API_KEY is not set: skipped"; exit 0; fi
+          python -m scripts.run_orchestration_eval --live --only routing --min-routing 0.85 --report reports/orchestration_eval_live
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: orchestration-eval-live-report
+          path: reports/orchestration_eval_live.*
+          if-no-files-found: ignore
 
   images:
     # Slow (dependency layers): only on main, and without Chromium so the crawler-less image builds quickly.

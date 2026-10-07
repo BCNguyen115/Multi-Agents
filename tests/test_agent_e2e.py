@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.agents.data_agent.agent import DataAnalystAgent
+from src.config import settings
 from src.orchestrator.core import Orchestrator
 from src.orchestrator.verifier import verify_dashboard_spec
 from src.agents.data_agent.ingest import safe_read_csv
@@ -46,7 +47,9 @@ def test_dashboard_is_verified_and_self_consistent(agent, csv_text):
     spec = reply["dashboard_spec"]
     assert reply["type"] == "dashboard" and reply["pev_trace"]["is_verified"] is True
     assert spec["version"] == 2 and spec["language"] == "vi" and len(spec["charts"]) >= 3 and spec["kpis"]
-    assert spec["table"]["totalRows"] == 4380 and len(spec["table"]["rows"]) == 4380 and not spec["table"]["truncated"]
+    # the spec carries a preview of the table; the grid pages through all 4,380 rows on the server (tests/test_table_rows.py)
+    assert spec["table"]["totalRows"] == 4380 and len(spec["table"]["rows"]) == settings.DATA_TABLE_ROWS and spec["table"]["truncated"]
+    assert asyncio.run(agent.table_page("s1", 4379, 10, {}))["total_all"] == 4380
     assert all(c["insight"] or not c["fact_ids"] for c in spec["charts"])
     slicers = {s["field"]: s["values"] for s in spec["slicers"]}
     assert set(slicers["region"]) == {"North", "South", "East", "West"} and slicers["region"][0] == "North"  # most frequent first
@@ -110,8 +113,6 @@ def test_unreadable_files_get_a_friendly_error_not_a_crash(agent, content):
 
 
 def test_oversize_upload_is_refused_before_parsing(agent, monkeypatch):
-    from src.config import settings
-
     monkeypatch.setattr(settings, "DATA_MAX_FILE_MB", 0)
     reply = run(agent, "dashboard", "a,b\n1,2\n")
     assert reply["type"] == "error" and "sales.csv" in reply["content"]

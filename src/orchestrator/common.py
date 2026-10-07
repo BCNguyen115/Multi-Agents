@@ -11,10 +11,28 @@ from src.shared.messages import msg
 _DEFAULT_MAX_RETRIES: int = 2
 
 
+def _run_config(session_id: str, run_id: str, langfuse_handler: Any = None) -> dict[str, Any]:
+    """LangGraph config of one request. The run id is the thread (see checkpointing.py); the session rides along as
+    checkpoint metadata so ``scripts.replay_run list --session`` can find the runs of a conversation."""
+    config: dict[str, Any] = {"configurable": {"thread_id": run_id}, "metadata": {"session_id": session_id}}
+    if langfuse_handler:
+        config["callbacks"] = [langfuse_handler]
+    return config
+
+
 def _build_pev_trace(
+    target_agent: str, plan: str, is_verified: bool, verifier_feedback: str, run_id: Optional[str] = None
+) -> dict[str, Any]:
+    """PEV trace metadata attached to every final response (sync + SSE paths). ``run_id`` only when the run was checkpointed."""
+    trace = _pev_trace_body(target_agent, plan, is_verified, verifier_feedback)
+    if run_id:
+        trace["run_id"] = run_id
+    return trace
+
+
+def _pev_trace_body(
     target_agent: str, plan: str, is_verified: bool, verifier_feedback: str
 ) -> dict[str, Any]:
-    """PEV trace metadata attached to every final response (sync + SSE paths)."""
     return {
         "status": "Verified" if is_verified else "Warning",
         "planner": {

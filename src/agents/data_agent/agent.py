@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from src.agents.base_agent import BaseAgent
-from src.agents.data_agent import compute
+from src.agents.data_agent import compute, grid
 from src.agents.data_agent.charts import ChartContext, ChartSpec, build_kpis, compile_chart, plan_dashboard, plan_single_chart
 from src.agents.data_agent.i18n import detect_language, format_number, format_pct, tr
 from src.agents.data_agent.ingest import Dataset, load_dataset, safe_read_csv  # noqa: F401  (safe_read_csv: re-exported for the verifier)
@@ -67,6 +67,7 @@ class _Analysis:
     dataset: Dataset
     profile: dict[str, Any]
     facts: list[Insight]
+    haystack: Optional[pd.Series] = None  # the grid's search text, built on the first search (grid.build_haystack)
 
 
 def _json_safe(value: Any) -> Any:
@@ -85,14 +86,8 @@ def _json_safe(value: Any) -> Any:
 
 
 def _table_rows(df: pd.DataFrame, limit: int) -> list[dict[str, Any]]:
-    """First ``limit`` rows as JSON-safe records (dates as ISO text, missing values as null)."""
-    part = df.head(limit).copy()
-    for column in part.columns:
-        if pd.api.types.is_datetime64_any_dtype(part[column]):
-            text = part[column].dt.strftime("%Y-%m-%d %H:%M:%S")
-            part[column] = text.str.replace(" 00:00:00", "", regex=False)
-    part = part.replace([np.inf, -np.inf], np.nan).astype(object)
-    return part.where(part.notna(), None).to_dict(orient="records")
+    """First ``limit`` rows as JSON-safe records: the preview shipped with the spec (the grid pages through ALL rows: grid.py)."""
+    return grid.records(df.head(limit))
 
 
 def _column_type(profile: dict[str, Any], column: str) -> str:
@@ -432,6 +427,44 @@ class DataAnalystAgent(BaseAgent):
         if analysis is None:
             raise LookupError("no active dataset for this session")
         return _json_safe(await asyncio.to_thread(self._filtered, analysis, chart_specs, filters, lang, focus))
+
+    # ------------------------------------------------------------------
+    # The data grid: every row of the upload, paged, searched, filtered and sorted here (grid.py)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _grid_view(analysis: _Analysis, query: dict[str, Any]) -> pd.DataFrame:
+        df = analysis.dataset.df
+        haystack = None
+        if str(query.get("search") or "").strip():
+            if analysis.haystack is None:  # ponytail: one lower-cased string per row kept with the analysis; an inverted index if 100k-row files are searched all day
+                analysis.haystack = grid.build_haystack(df)
+            haystack = analysis.haystack
+        return grid.filter_and_sort(df, analysis.profile["dimensions"], query, haystack)
+
+    async def table_page(self, session_id: str, start: int, limit: int, query: dict[str, Any]) -> dict[str, Any]:
+        """One page of the grid: ``{rows, total (rows matching the query), total_all (rows in the upload)}``.
+
+        Raises:
+            LookupError: no dataset is active for the session.
+            ValueError: an unknown column, an unsupported filter or a malformed value in ``query``.
+        """
+        analysis = await self._analysis_for(session_id)
+        if analysis is None:
+            raise LookupError("no active dataset for this session")
+
+        def work() -> dict[str, Any]:
+            view = self._grid_view(analysis, query)
+            return {"rows": grid.page(view, start, limit), "total": len(view), "total_all": len(analysis.dataset.df)}
+
+        return _json_safe(await asyncio.to_thread(work))
+
+    async def table_csv(self, session_id: str, query: dict[str, Any]) -> str:
+        """Every row matching ``query`` as CSV text (same errors as :meth:`table_page`)."""
+        analysis = await self._analysis_for(session_id)
+        if analysis is None:
+            raise LookupError("no active dataset for this session")
+        return await asyncio.to_thread(lambda: grid.to_csv(self._grid_view(analysis, query), analysis.profile["labels"]))
 
     async def _dashboard_reply(self, analysis: _Analysis, query: str, filename: str, lang: str, session_id: str) -> str:
         spec, story = await asyncio.to_thread(self._build_dashboard, analysis, query, filename, lang)
