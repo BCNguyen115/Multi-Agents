@@ -1,0 +1,70 @@
+# Understand-Anything ignore rules (gitignore syntax). Keeps the knowledge graph about the project's OWN code.
+# Review it: comment a line out to include that path, add a line to exclude more. Patterns here are applied on top of the
+# built-in defaults (node_modules, .git, dist, build, lock files...). `!pattern` force-includes a path.
+
+# ── Secrets and local configuration (never analyse) ──────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Agent, editor and tool folders: not project code ─────────────────────────
+.agents/
+.aider-desk/
+.archify/
+.claude/
+.hallmark/
+.impeccable/
+graphify-out/
+.ua/
+.understand-anything/
+%SystemDrive%/
+skills-lock.json
+
+# ── Virtualenvs, caches, build output ────────────────────────────────────────
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+model_cache/
+frontend/.next/
+frontend/node_modules/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+*.tsbuildinfo
+
+# ── Vendored or generated frontend assets ────────────────────────────────────
+frontend/public/duckdb/
+frontend/next-env.d.ts
+
+# ── Data and generated reports: content, not code ────────────────────────────
+# The contract corpus (38 PDF + 14 DOCX + a few JSON/CSV eval sets) would drown the graph. The two orchestration eval
+# sets are small and describe agent routing, so they stay in; remove the `!` lines to drop them as well.
+dataset/*
+!dataset/routing_eval.json
+!dataset/trajectory_eval.json
+reports/
+temp_diagrams/
+
+# ── Binary documents and images (nothing to parse) ───────────────────────────
+*.docx
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.woff
+*.woff2
+
+# ── Lock files (pins, no structure) ──────────────────────────────────────────
+requirements.lock
+frontend/package-lock.json
+
+# ── Optional: uncomment to exclude more ──────────────────────────────────────
+# legacy/                  # retired code: Streamlit UI and the old standalone rag_pipeline (11 files)
+# tests/                   # drop tests: smaller graph, but no `tested_by` coverage edges
+# frontend/tests/          # frontend unit and e2e tests
+# docs/                    # the 5 markdown design documents
+# migrations/              # Alembic revisions
+# deploy/                  # nginx TLS example
