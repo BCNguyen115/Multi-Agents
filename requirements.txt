@@ -28,7 +28,7 @@ psycopg[binary,pool]>=3.1    # mem0's PostgreSQL/pgvector store (MEM0_VECTOR_STO
 alembic>=1.13                # versioned schema changes (migrations/, src/shared/migrations.py)
 python-pptx>=1.0             # PowerPoint decks in the knowledge base (src/ingestion/document_loader.py)
 pypdfium2>=4.30              # renders PDF pages: OCR input and the cited-page preview (src/ingestion/ocr.py, preview.py)
-pytesseract>=0.3             # wrapper for the tesseract program (installed in the backend image)
+pytesseract>=0.3.13             # wrapper for the tesseract program (installed in the backend image)
 tavily-python>=0.3.0
 crawl4ai>=0.4.0              # web crawl (needs Chromium: see Dockerfile INSTALL_BROWSER)
 
