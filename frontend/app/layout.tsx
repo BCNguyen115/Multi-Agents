@@ -14,6 +14,7 @@ import { AuthProvider } from '../context/AuthContext';
 import { AuthModal } from '../components/auth/AuthModal';
 import { ChangePasswordDialog } from '../components/auth/ChangePasswordDialog';
 import { ApprovalInbox } from '../components/ApprovalInbox';
+import { MemoryDialog } from '../components/user/MemoryDialog';
 
 export const metadata = {
   title: 'Multi-Agent Enterprise System',
@@ -58,6 +59,7 @@ export default function RootLayout({
           <AuthModal />
           <ChangePasswordDialog />
           <ApprovalInbox />
+          <MemoryDialog />
         </AuthProvider>
       </body>
     </html>

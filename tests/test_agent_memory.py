@@ -88,7 +88,7 @@ def test_a_write_that_times_out_or_fails_never_raises(monkeypatch, caplog):
     orch = make(SlowMemory(delay=0.3))
 
     async def scenario():
-        orch._remember_in_background("s1", "hello")
+        orch._remember_in_background("s1", "Tôi là Lan")  # says something about the person, so it is worth extracting
         await asyncio.gather(*orch._background_tasks)
 
     asyncio.run(scenario())  # no exception: the request that triggered it has long been answered

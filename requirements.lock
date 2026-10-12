@@ -130,6 +130,7 @@ playwright-stealth==2.0.3
 portalocker==3.2.0
 posthog==7.60.2
 preshed==3.0.13
+prometheus_client==0.26.0
 propcache==0.5.4
 Protego==0.7.0
 protobuf==6.33.6

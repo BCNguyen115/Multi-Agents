@@ -24,13 +24,28 @@ def _key(url: str) -> str:
     return f"{host}{parts.path.rstrip('/')}" + (f"?{parts.query}" if parts.query else "")
 
 
+def _host(url: str) -> str:
+    return urlparse(url.strip().rstrip(_TRAILING)).netloc.lower().removeprefix("www.")
+
+
+def _printed_by(url: str, sources: list[dict[str, str]]) -> int | None:
+    """Position of the page that itself prints ``url`` on its own website: a section page (``/cong-nghe.html``) lists its articles, and an
+    article link taken from that list is the page's own, not an invented address. A link printed on a page but pointing to ANOTHER
+    website does not count: a page cannot get an outside address into the answer by writing it in its text."""
+    clean = url.rstrip(_TRAILING)
+    for position, source in enumerate(sources, start=1):
+        if _host(source["url"]) == _host(clean) and clean in source["text"]:
+            return position
+    return None
+
+
 def verify_web_answer(answer: str, sources: list[dict[str, str]], question: str = "") -> dict[str, Any]:
     """``sources``: ``{"title", "url", "text"}`` in the order the model saw them (``text`` as the model saw it, i.e. after sanitising)."""
     numbered = {_key(source["url"]): position for position, source in enumerate(sources, start=1)}
     cited: list[int] = []
     unknown: list[str] = []
     for url in dict.fromkeys(_LINK.findall(answer)):
-        position = numbered.get(_key(url))
+        position = numbered.get(_key(url)) or _printed_by(url, sources)
         if position is None:
             unknown.append(url.rstrip(_TRAILING))
         elif position not in cited:

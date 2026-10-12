@@ -35,8 +35,8 @@ EMBEDDING_BATCH_SIZE: int = 100
 
 _INSERT_CHUNK_SQL: str = """
 INSERT INTO rag_chunks (content, raw_content, embedding, filename, category, section_title,
-                        detected_pattern, doc_key, doc_hash, chunk_index, page, lang)
-VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+                        detected_pattern, doc_key, doc_hash, chunk_index, page, lang, tenant_id)
+VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
 """
 
 _INSERT_CHUNK_RETURNING_SQL: str = _INSERT_CHUNK_SQL.rstrip().rstrip(";") + " RETURNING id;"
@@ -175,7 +175,7 @@ class IngestionEmbedder:
             rows.append((
                 chunk.content, chunk.raw_content, json.dumps(vector.tolist()), m.get("filename", ""), m.get("category", ""),
                 m.get("section_title", ""), m.get("detected_pattern", ""), doc_key, m.get("doc_hash"), m.get("chunk_index"), m.get("page"),
-                detect_language(chunk.raw_content[:600]),
+                detect_language(chunk.raw_content[:600]), m.get("tenant_id") or "public",
             ))
         passages: list[tuple[int, int, str]] = []  # (index of the chunk, position, text)
         if settings.RAG_INDEX_PASSAGES:

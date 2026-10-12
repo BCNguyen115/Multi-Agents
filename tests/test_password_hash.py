@@ -31,7 +31,7 @@ def test_a_successful_sign_in_replaces_a_cheaper_hash(gateway, monkeypatch):  # 
     cheap = hash_password("a long enough password")
     monkeypatch.setattr(settings, "AUTH_SCRYPT_LOG2_N", 12)
     gateway.pg_client.rows["carol"] = {"username": "carol", "display_name": "", "password_hash": cheap, "recovery_hash": None,
-                                       "roles": [], "tenant_id": "t", "department_id": "d"}
+                                       "roles": [], "tenant_id": "t", "department_id": "d", "disabled": False}
     assert sign_in(gateway, "carol", "a long enough password").user["user"] == "carol"
     upgraded = gateway.pg_client.rows["carol"]["password_hash"]
     assert upgraded.split("$")[1] == str(4096) and verify_password("a long enough password", upgraded)
@@ -42,7 +42,7 @@ def test_a_wrong_password_leaves_the_stored_hash_alone(gateway, monkeypatch):  #
     cheap = hash_password("a long enough password")
     monkeypatch.setattr(settings, "AUTH_SCRYPT_LOG2_N", 12)
     gateway.pg_client.rows["carol"] = {"username": "carol", "display_name": "", "password_hash": cheap, "recovery_hash": None,
-                                       "roles": [], "tenant_id": "t", "department_id": "d"}
+                                       "roles": [], "tenant_id": "t", "department_id": "d", "disabled": False}
     with pytest.raises(gateway.HTTPException):
         sign_in(gateway, "carol", "not my password")
     assert gateway.pg_client.rows["carol"]["password_hash"] == cheap

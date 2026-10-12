@@ -2,6 +2,7 @@ import { isUnauthorized } from './authClient';
 import { HumanApprovalRequest, PEVEventData, PEVStepData, PEVTrace } from './types';
 import { getLang, t } from './i18n';
 import { apiFetch } from './apiFetch';
+import { selectedRepoId } from './codingApi';
 
 export interface StreamCallbacks {
   onPevStep?: (data: PEVStepData) => void;
@@ -40,6 +41,7 @@ export async function fetchSSEStream(
     session_id: sessionId,
     agent_mode: agentMode,
     target_agent: resolvedTarget,
+    ...(resolvedTarget === 'coding_agent' ? { coding_repo_id: selectedRepoId() } : {}),
   };
 
   try {

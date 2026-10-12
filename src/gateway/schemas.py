@@ -43,6 +43,9 @@ class ChatRequest(BaseModel):
     target_agent: str | None = Field(
         default=None, description="Optional forced target agent (e.g. rag_agent, data_agent, search_agent, db_agent)"
     )
+    coding_repo_id: str | None = Field(
+        default=None, max_length=80, pattern=r"^[A-Za-z0-9_-]*$", description="The repository a Coding task is for (empty = the built-in default)"
+    )
 
 
 class ChatResponse(BaseModel):

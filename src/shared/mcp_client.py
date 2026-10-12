@@ -15,7 +15,9 @@ import json
 import logging
 import re
 import socket
+from decimal import Decimal
 from typing import Any, Optional
+from uuid import UUID
 from urllib.parse import urlparse
 
 import httpx
@@ -233,8 +235,10 @@ class MCPClient:
                 for k, v in row.items():
                     if hasattr(v, "isoformat"):
                         clean_row[k] = v.isoformat()
-                    elif isinstance(v, (bytes, bytearray)):
+                    elif isinstance(v, (bytes, bytearray, UUID)):
                         clean_row[k] = str(v)
+                    elif isinstance(v, Decimal):  # numeric columns (money, rates): a JSON number, an int when it is one
+                        clean_row[k] = int(v) if v == v.to_integral_value() else float(v)
                     else:
                         clean_row[k] = v
                 clean_results.append(clean_row)
@@ -249,7 +253,7 @@ class MCPClient:
                 {
                     "status": "success",
                     "row_count": len(clean_results),
-                    "data": clean_results[:50],  # Limit max rows in context
+                    "data": clean_results[: settings.DB_AGENT_MAX_ROWS],  # rows kept in the reply; row_count says how many there were
                 },
                 ensure_ascii=False,
             )

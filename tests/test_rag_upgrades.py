@@ -409,7 +409,8 @@ def test_each_chunk_is_stored_with_its_language():
         DocumentChunk(content="c2", raw_content="Các bên đồng ý rằng thời hạn hợp đồng là hai năm và thông báo trước ba mươi ngày.", metadata={"filename": "a.pdf"}),
     ]
     asyncio.run(IngestionEmbedder(pg, None).replace_document("nda/a.pdf", chunks, np.zeros((2, 3), dtype=np.float32)))
-    assert [row[-1] for row in pg.inserted] == ["en", "vi"]
+    assert [row[-2] for row in pg.inserted] == ["en", "vi"]  # lang; the last column is the owning tenant
+    assert {row[-1] for row in pg.inserted} == {"public"}
 
 
 def test_a_reduced_embedding_size_is_requested_only_when_configured(monkeypatch):

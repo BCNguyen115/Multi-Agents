@@ -20,6 +20,8 @@ def inject_row_level_security(
     tenant_id: str = "tenant_enterprise",
     department_id: str = "dept_general",
     read_only_dialect: str = "postgres",
+    unscoped_schemas: frozenset[str] = frozenset({"aw"}),
+    unscoped_tables: frozenset[str] = frozenset(),
 ) -> str:
     """Inject Row-Level Security (RLS) constraints into a SQL statement AST.
 
@@ -56,7 +58,17 @@ def inject_row_level_security(
     if not select_nodes:
         return expression.sql(dialect=read_only_dialect)
 
+    cte_names = {(cte.alias or "").lower() for cte in expression.find_all(exp.CTE)}
+
+    def unscoped(table: exp.Table) -> bool:
+        """Company-wide reference data (schema ``aw``: one company, no tenant/department columns) and CTE names carry no scope columns."""
+        name, schema = (table.name or "").lower(), (table.db or "").lower()
+        return schema in unscoped_schemas or (not schema and (name in unscoped_tables or name in cte_names))
+
     for select in select_nodes:
+        own_tables = [t for t in select.find_all(exp.Table) if t.find_ancestor(exp.Select) is select]
+        if own_tables and all(unscoped(t) for t in own_tables):
+            continue  # reads only tables that have no tenant/department columns: nothing to scope
         # Two AND-ed predicates, appended to any existing WHERE (which is kept as is)
         for column, value in (("department_id", safe_dept), ("tenant_id", safe_tenant)):
             select.where(

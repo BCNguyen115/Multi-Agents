@@ -45,7 +45,7 @@ def test_a_sign_up_lands_in_the_pending_tenant_and_the_ui_is_told(gateway):  # n
 def test_retrieval_is_confined_to_the_callers_tenant_when_unassigned(as_caller, monkeypatch):
     monkeypatch.setattr(settings, "RAG_TENANT_IDS", None)
     as_caller(principal(settings.RLS_TENANT_ID))
-    assert knowledge_tenants() is None  # an assigned account: the operator's setting (None = the whole corpus)
+    assert knowledge_tenants() == ["public", settings.RLS_TENANT_ID]  # an assigned account: the shared corpus and its own tenant
     as_caller(principal(settings.REGISTRATION_TENANT_ID))
     assert knowledge_tenants() == [settings.REGISTRATION_TENANT_ID]  # no chunk is stored under it: nothing comes back
 
@@ -64,5 +64,5 @@ def test_listing_and_viewing_documents_is_refused_while_unassigned():
         asyncio.run(knowledge.list_documents(request=None, category=None, principal=pending))
     assert listing.value.status_code == 403
     with pytest.raises(HTTPException) as page:
-        asyncio.run(knowledge.page_image(doc_key="nda/a.pdf", page=1, q="", scale=1.0, principal=pending))
+        asyncio.run(knowledge.page_image(request=None, doc_key="nda/a.pdf", page=1, q="", scale=1.0, principal=pending))
     assert page.value.status_code == 403

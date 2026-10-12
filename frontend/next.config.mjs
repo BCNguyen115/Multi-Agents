@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
-// Browser-side hardening. The CSP is REPORT-ONLY on purpose: it was written without running the app in a browser, so first open
-// the app and the dashboards with the console visible (DuckDB-WASM now loads its worker and wasm from this origin: public/duckdb),
-// fix what it reports, then rename the header to Content-Security-Policy to enforce it.
+// Browser-side hardening. The CSP is ENFORCED: the Chromium e2e specs (chat stream, upload, dashboards with DuckDB-WASM and AG Grid, the
+// admin console) pass with it on. If a new feature needs another source, add it to the matching directive below; to debug, rename the header
+// to Content-Security-Policy-Report-Only and read the console.
 const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:",
@@ -22,7 +22,7 @@ const securityHeaders = [
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
   { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' }, // browsers ignore it over plain http
-  { key: 'Content-Security-Policy-Report-Only', value: csp },
+  { key: 'Content-Security-Policy', value: csp },
 ];
 
 const nextConfig = {

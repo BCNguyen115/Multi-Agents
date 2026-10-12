@@ -144,6 +144,9 @@ scratch/tmp*
 *.md
 
 # ------------------------------------------------------------------------------
+# Database dumps made by docker-compose.backup.yml
+backups/
+
 # 6b. Local-only folders and generated reports (kept on disk, not in the repository)
 # ------------------------------------------------------------------------------
 /legacy/
@@ -152,6 +155,7 @@ scratch/tmp*
 /*.docx
 /frontend/public/*.pdf
 /frontend/public/duckdb/
+/frontend/public/monaco/
 /.impeccable/
 /.claude/
 
@@ -217,3 +221,17 @@ Thumbs.db
 #
 # To stop tracking files that were committed before a rule existed (history keeps them; files stay on disk):
 #   git rm -r --cached .agents graphify-out .impeccable/critique/2026-10-02T02-47-04Z__frontend.md
+
+# 8. Local leftovers and large inputs that do not belong in the history
+/New Text Document.txt
+/package.json
+/package-lock.json
+/pnpm-lock.yaml
+/.hallmark/
+# the SQL agent's source workbooks (43 MB): put them in dataset/archive yourself, python -m scripts.load_adventureworks reads them from there
+/dataset/archive/
+# third-party prompt collection (not ours)
+/claude-code-system-prompts-main/
+# a personal PDF and a byte-identical copy (other name) of a tracked SOW
+/dataset/project/B*Nguy*.pdf
+/dataset/sow/7.22.2026_Update_-_SOW-Video_Production_Communication_Services.pdf

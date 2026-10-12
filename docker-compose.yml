@@ -97,6 +97,8 @@ services:
       - "127.0.0.1:8000:8000"   # the browser talks to the frontend (Next rewrites /api); expose this only behind an authenticating proxy
     volumes:
       - ./dataset:/app/dataset   # documents for ingestion; ingestion writes its walkthrough report here
+    security_opt:
+      - no-new-privileges:true   # not read_only / cap_drop: the backend writes uploads and may launch Chromium (INSTALL_BROWSER); the frontend and sandbox do neither
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,6 +121,13 @@ services:
       API_URL: http://backend:8000
     ports:
       - "${FRONTEND_BIND:-0.0.0.0}:3001:3000"   # behind a TLS proxy set FRONTEND_BIND=127.0.0.1 (deploy/nginx-tls.example.conf)
+    read_only: true              # checked: /login and / answer 200 with these flags
+    tmpfs:
+      - /tmp:size=64m
+      - /app/.next/cache:size=128m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       backend:
         condition: service_healthy

@@ -17,12 +17,15 @@ from pydantic import BaseModel, Field
 from src.config import settings
 from src.shared.auth import Principal, authenticate
 from src.shared.logger import get_logger
+from src.shared.memory_manager import redact_pii
 from src.shared.messages import msg
 from src.shared.rate_limit import enforce
 
 logger: logging.Logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["feedback"])
+
+REASONS = ("wrong", "outdated", "missing_source", "incomplete", "off_topic", "other")  # what a thumbs-down can say, as the Quality page groups them
 
 
 class CitedSource(BaseModel):
@@ -39,6 +42,13 @@ class FeedbackIn(BaseModel):
     session_id: str = Field(default="", max_length=200)
     comment: str = Field(default="", max_length=1000)
     cited: list[CitedSource] = Field(default_factory=list, max_length=10)
+    # what the Quality page needs to find out WHY an answer was judged badly
+    agent: str = Field(default="", max_length=40, pattern=r"^[a-z_]*$")
+    answer: str = Field(default="", max_length=4000, description="the text of the answer (personal data is masked before it is stored)")
+    run_id: str = Field(default="", max_length=100)
+    verified: Optional[bool] = Field(default=None, description="did the Verifier pass the answer")
+    retries: int = Field(default=0, ge=0, le=10, description="how many times the agent had to answer again")
+    reasons: list[Literal["wrong", "outdated", "missing_source", "incomplete", "off_topic", "other"]] = Field(default_factory=list, max_length=6)
 
 
 @router.post("/feedback", status_code=204, summary="Thumbs up or down on an answer")
@@ -48,8 +58,10 @@ async def submit_feedback(body: FeedbackIn, request: Request, principal: Princip
         raise HTTPException(status_code=503, detail=msg("service.starting"))
     await enforce(getattr(request.app.state, "redis_client", None), principal, request, "feedback", settings.RATE_LIMIT_FEEDBACK_PER_MINUTE)
     await pg.execute(
-        "INSERT INTO rag_feedback (tenant_id, user_id, session_id, message_id, query, rating, comment, cited) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)",
+        "INSERT INTO rag_feedback (tenant_id, user_id, session_id, message_id, query, rating, comment, cited, agent, answer, run_id, verified, retries, reasons)"
+        " VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14)",
         principal.tenant_id, principal.user_id, body.session_id, body.message_id, body.query, body.rating, body.comment,
         json.dumps([c.model_dump() for c in body.cited], ensure_ascii=False),
+        body.agent, redact_pii(body.answer), body.run_id, body.verified, body.retries, sorted(set(body.reasons)),
     )
     logger.info("Feedback %+d from user=%s on message=%s (%d source(s))", body.rating, principal.user_id, body.message_id, len(body.cited))

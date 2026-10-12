@@ -13,6 +13,8 @@ Usage:
 """
 
 import logging
+import re
+import uuid
 import warnings
 from typing import Any, Optional
 
@@ -28,7 +30,6 @@ warnings.filterwarnings(
 
 logger: logging.Logger = get_logger(__name__)
 
-import re
 
 # ---------------------------------------------------------------------------
 # PII Redaction Pipeline — Regex Patterns (Tightened for VN specifics)
@@ -117,6 +118,23 @@ def vector_store_config(cfg: Any) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - mem0 then builds its own local store
         pass
     return {"provider": "qdrant", "config": config}
+
+
+_PERSONAL_CUE = re.compile(
+    r"(?:\b(?:tôi|mình|em|anh|chị)\s+(?:là|tên|làm|thích|muốn|hay|luôn|thường|ở|sống|đang|cần|không thích|quen)\b"
+    r"|\b(?:hãy nhớ|nhớ rằng|nhớ là|đừng quên|từ nay|từ giờ|luôn luôn|mặc định|ưu tiên|gọi tôi|xưng hô)\b"
+    r"|\b(?:my name|i am|i'm|i work|i prefer|i like|i always|i usually|remember (?:that|me)|from now on|please always|call me|my role|my team)\b)",
+    re.IGNORECASE,
+)
+
+
+def worth_remembering(text: str, mode: str = "intent") -> bool:
+    """Should this message be sent to long-term memory? Every extraction is an LLM call that stores whatever it finds, so by default only a
+    message that SAYS something about the person (who they are, what they prefer, "remember...") goes in, not every question.
+    ``mode``: ``all`` = every message (the old behaviour), ``intent`` = the cue above, ``off`` = never."""
+    if mode == "all":
+        return True
+    return mode == "intent" and bool(_PERSONAL_CUE.search(text or ""))
 
 
 class DualResult(dict):
@@ -339,6 +357,7 @@ class MemoryManager:
             self._fallback_store[target_user_id] = []
 
         fallback_entry = {
+            "id": uuid.uuid4().hex,
             "memory": clean_text,
             "metadata": metadata or {},
         }
@@ -395,6 +414,47 @@ class MemoryManager:
             memories = [m["memory"] for m in user_mems[-limit:]]
 
         return DualList(memories)
+
+    def list_memories(self, user_id: str, limit: int = 100) -> list[dict[str, str]]:
+        """What is remembered about one user, WITH ids (``get_memories`` returns bare text): ``[{"id", "memory", "created_at"}]``."""
+        if not user_id:
+            return []
+        rows: list[dict[str, str]] = []
+        if self.mem0_client is not None:
+            try:
+                results: Any = self.mem0_client.get_all(filters={"user_id": user_id}, top_k=limit)
+                items = results.get("results", []) if isinstance(results, dict) else (results if isinstance(results, list) else [])
+                rows = [
+                    {"id": str(i["id"]), "memory": str(i["memory"]), "created_at": str(i.get("created_at") or "")}
+                    for i in items if isinstance(i, dict) and i.get("id") and i.get("memory")
+                ]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("mem0ai list_memories failed (%s)", exc or type(exc).__name__, extra={"session_id": user_id})
+        rows += [{"id": m["id"], "memory": m["memory"], "created_at": ""} for m in self._fallback_store.get(user_id, []) if m.get("id")]
+        return rows[:limit]
+
+    def delete_memory(self, user_id: str, memory_id: str) -> bool:
+        """Forget one item. It must be one of THIS user's (the id alone is never enough), so nobody can delete another person's memory."""
+        if memory_id not in {m["id"] for m in self.list_memories(user_id)}:
+            return False
+        if user_id in self._fallback_store:
+            kept = [m for m in self._fallback_store[user_id] if m.get("id") != memory_id]
+            if len(kept) != len(self._fallback_store[user_id]):
+                self._fallback_store[user_id] = kept
+                return True
+        if self.mem0_client is None:
+            return False
+        self.mem0_client.delete(memory_id)
+        return True
+
+    def delete_all(self, user_id: str) -> int:
+        """Forget everything about one user; returns how many items were removed."""
+        count = len(self.list_memories(user_id, limit=10000))
+        if user_id in self._fallback_store:
+            self._fallback_store.pop(user_id)
+        if self.mem0_client is not None:
+            self.mem0_client.delete_all(user_id=user_id)
+        return count
 
     def get_relevant_memories(
         self,

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agent-platform
+description: Multi-agent enterprise platform - FastAPI/LangGraph backend and Next.js frontend (PostgreSQL, Redis, the Python sandbox and the reranker are provided by the cluster)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

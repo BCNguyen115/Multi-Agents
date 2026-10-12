@@ -46,23 +46,26 @@ from langgraph.graph import END, StateGraph
 
 from src.agents.base_agent import BaseAgent
 from src.config import Settings
+from src.config import settings as global_settings
 from src.orchestrator.prompt_templates import (
     GRACEFUL_DECLINE_MESSAGE,
     build_planner_prompt,
     build_verifier_prompt,
 )
+from src.orchestrator import followup
 from src.orchestrator.approvals import ApprovalMixin
-from src.orchestrator.common import _DEFAULT_MAX_RETRIES, _build_pev_trace, _initial_state, _run_config  # noqa: F401  (re-exported: tests and callers import them from here)
+from src.orchestrator.common import _DEFAULT_MAX_RETRIES, _build_pev_trace, _initial_state, _run_config, max_retries_for, reexecutions  # noqa: F401  (re-exported: tests and callers import them from here)
 from src.orchestrator.state import AgentState
 from src.orchestrator.streaming import StreamingMixin
 from src.registry.manager import AgentRegistry
 from src.shared import answer_stream
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
+from src.shared import metrics, quality, usage, user_context
 from src.shared.messages import msg
 from src.shared.intents import is_dashboard_request as _is_dashboard_request
-from src.shared.memory_manager import MemoryManager
-from src.shared.auth import current_scope, memory_user_id
+from src.shared.memory_manager import MemoryManager, worth_remembering
+from src.shared.auth import current_principal, current_scope, memory_user_id
 from src.shared.security import unwrap_user_input
 
 logger: logging.Logger = get_logger(__name__)
@@ -81,6 +84,7 @@ _FORCED_ROUTES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("data",), "data_agent"),
     (("db", "database", "sql"), "db_agent"),
     (("integration", "api"), "integration_agent"),
+    (("coding",), "coding_agent"),  # only by choosing the mode: the automatic planner never routes a question to something that edits code
 )
 _FORCED_PLANS: dict[str, str] = {
     "rag_agent": "Tra cứu và trích xuất tài liệu nội bộ để trả lời câu hỏi: '{query}'.",
@@ -239,15 +243,15 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
             retry_count = final_state.get("retry_count", 0)
 
             # Circuit Breaker: Annotate response if Verifier exhausted retries
-            if not is_verified and retry_count >= final_state.get("max_retries", _DEFAULT_MAX_RETRIES):
+            if not is_verified and (retry_count >= max_retries_for(final_state) or final_state.get("verifier_down")):
                 logger.warning(
                     "PEV Loop: Max retries exhausted (retries=%d, verified=%s) — returning raw result with warning",
                     retry_count, is_verified,
                     extra={"session_id": session_id},
                 )
-                response_text = self._annotate_unverified(response_text, retry_count)
+                response_text = self._annotate_unverified(response_text, retry_count, bool(final_state.get("verifier_down")))
 
-            pev_trace = _build_pev_trace(target_agent, plan, is_verified, verifier_fb, request_id if self.graph.checkpointer else None)
+            pev_trace = _build_pev_trace(target_agent, plan, is_verified, verifier_fb, request_id if self.graph.checkpointer else None, reexecutions(retry_count, is_verified))
 
             # Embed pev_trace into JSON payload
             try:
@@ -270,7 +274,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
                 extra={"session_id": session_id},
             )
 
-            self._remember_in_background(session_id, query)
+            self._after_run(session_id, query, target_agent, is_verified, retry_count, response_text)
             return response_text
 
         except Exception as exc:
@@ -339,6 +343,12 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
             result = await result
         return result
 
+    def _after_run(self, session_id: str, query: str, agent: str, verified: bool, retries: int, answer: str) -> None:
+        """What happens once a request has its final answer: the PEV numbers (Monitoring), then what to remember about the person."""
+        metrics.record_pev(agent, verified, reexecutions(retries, verified))
+        quality.maybe_review(self.llm_client, self.fast_model, agent, query, answer, verified, retries, session_id)
+        self._remember_in_background(session_id, query)
+
     def _remember_in_background(self, session_id: str, query: str) -> None:
         """Long-term memory extraction calls an LLM; the user must never wait for it (or for its retries).
 
@@ -346,6 +356,8 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
         preferences from it, and extracts nothing from routing logs.
         """
         text: str = unwrap_user_input(query)[0]
+        if not worth_remembering(text, global_settings.MEMORY_EXTRACT_MODE):
+            return  # a plain question says nothing about the person: no extraction call, nothing stored
         owner: str = memory_user_id(session_id)  # resolved now, in the request's context
 
         async def store() -> None:
@@ -369,6 +381,14 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
             is_viz = _is_dashboard_request(query)
             plan = "Phân tích dữ liệu từ file CSV qua Dashboard." if is_viz else "Phân tích dữ liệu từ file CSV và tổng hợp kết quả."
             return "data_agent", plan, is_viz
+
+        # 1b. Số liệu công ty trong database (checked before the web words: "tình hình nhân sự hiện nay" is not a news search)
+        company_keywords = [
+            "tình hình công ty", "tổng quan công ty", "tình hình nhân sự", "tổng quan nhân sự", "quân số", "bao nhiêu nhân viên", "số lượng nhân viên",
+            "phòng ban", "đơn hàng", "nhà cung cấp", "tồn kho", "phế phẩm", "doanh số",
+        ]
+        if any(kw in q_lower for kw in company_keywords):
+            return "db_agent", f"Truy vấn dữ liệu công ty trong cơ sở dữ liệu để trả lời: '{query}'.", False
 
         # 2. Tìm kiếm Internet / Web
         search_keywords = [
@@ -403,6 +423,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
 
     async def _planner_node(self, state: AgentState) -> dict[str, Any]:
         """Planner Node — Analyzes query/context, loads memories, builds plan, selects agent."""
+        usage.attribute("", "planner", 1)
         query: str = state.get("query", "")
         session_id: str = state.get("session_id", "N/A")
         csv_content: Optional[str] = state.get("csv_content")
@@ -660,6 +681,9 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
         csv_filename: str = state.get("csv_filename") or "uploaded.csv"
         feedback: str = state.get("verifier_feedback", "")
         retry_count: int = state.get("retry_count", 0)
+        usage.attribute(target_agent_name, "executor", retry_count + 1)  # cost report: which agent, which attempt
+        if target_agent_name in {"rag_agent", "search_agent"}:  # the agents that write prose answers; nothing that builds a query or a call
+            user_context.set_memories(list((state.get("team_memory") or {}).get("long_term_memories") or []))
 
         logger.info(
             "PEV Node: Executor executing (agent='%s', retry=%d)",
@@ -683,6 +707,9 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
                 sub_agent = self.registry.lookup(target)
                 if not sub_agent:
                     return {"agent": target, "result": f"Agent {target} không tồn tại"}
+                caller = current_principal()
+                if caller is not None and not caller.can_use_agent(target):  # the department's policy: this part of the question is not theirs to run
+                    return {"agent": target, "task": sub_q, "result": msg("orch.agent_forbidden", agent=target)}
                 try:
                     res = await sub_agent.process_request(query=sub_q, session_id=session_id)
                     return {"agent": target, "task": sub_q, "result": res}
@@ -712,6 +739,13 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
                 "final_response": GRACEFUL_DECLINE_MESSAGE,
             }
 
+        caller = current_principal()
+        if caller is not None and not caller.can_use_agent(target_agent_name):
+            logger.info("Executor: '%s' is not allowed for department %s/%s", target_agent_name, caller.tenant_id, caller.department_id, extra={"session_id": session_id})
+            denied = msg("orch.agent_forbidden", agent=target_agent_name)
+            # a clear refusal is the right answer: the error shape makes the Verifier pass it without asking an LLM to grade it
+            return {"execution_result": json.dumps({"type": "error", "message": denied}, ensure_ascii=False), "final_response": denied}
+
         agent: Optional[BaseAgent] = self.registry.lookup(target_agent_name)
         if agent is None:
             logger.warning(
@@ -726,9 +760,11 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
 
         # Build adjusted query if feedback exists
         exec_query: str = query
+        if target_agent_name not in {"rag_agent", "integration_agent"} and not csv_content:  # rag rewrites in its planner; a mutating call is never reworded
+            exec_query = await followup.standalone(self.llm_client, self.redis_client, session_id, query)
         if feedback:
             exec_query = (
-                f"{query}\n\n[Ghi chú từ Verifier: Kết quả trước bị từ chối do: "
+                f"{exec_query}\n\n[Ghi chú từ Verifier: Kết quả trước bị từ chối do: "
                 f"'{feedback}'. Hãy tự điều chỉnh để trả lời đầy đủ hơn.]"
             )
 
@@ -793,7 +829,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
                 }
             elif is_approved is not True and hasattr(agent, "generate_sql"):
                 sql_preview, explanation = await agent.generate_sql(exec_query, session_id)
-                if getattr(agent, "is_sensitive_sql", lambda s, q: False)(sql_preview, exec_query):
+                if sql_preview and getattr(agent, "is_sensitive_sql", lambda s, q: False)(sql_preview, exec_query):  # no statement, nothing to approve
                     action_id = f"act_{uuid.uuid4().hex[:8]}"
                     approval_payload = {
                         "action_id": action_id,
@@ -941,11 +977,13 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
         return {"is_verified": False, "verifier_feedback": feedback, "retry_count": retry_count + 1}
 
     @staticmethod
-    def _annotate_unverified(response_text: str, retries: int) -> str:
+    def _annotate_unverified(response_text: str, retries: int, unavailable: bool = False) -> str:
         """Warn that a result never passed verification without breaking JSON payloads (answer + sources,
         dashboard spec): the note goes into the human-readable field, plain text just gets it prepended."""
         marker = "chưa được kiểm duyệt đầy đủ"
         note = f"> **Cảnh báo:** Kết quả này {marker} sau {retries} lần thử. Vui lòng kiểm tra lại thông tin trước khi sử dụng."
+        if unavailable:
+            note = f"> **Cảnh báo:** Kết quả này {marker} vì bộ kiểm định tạm thời không phản hồi. Vui lòng kiểm tra lại thông tin trước khi sử dụng."
         if marker in response_text:
             return response_text
         try:
@@ -999,6 +1037,7 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
         target_agent: str = state.get("target_agent", "")
         session_id: str = state.get("session_id", "N/A")
         retry_count: int = state.get("retry_count", 0)
+        usage.attribute(target_agent, "verifier", retry_count + 1)
 
         logger.info(
             "PEV Node: Verifier evaluating", extra={"session_id": session_id}
@@ -1025,6 +1064,8 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
                 return self._web_verdict(verification, retry_count)
             if verification.get("kind") == "api":
                 return self._api_verdict(verification, retry_count)
+            if verification.get("kind") == "code":  # the reply only says a task was queued; the real checks gate the publish endpoint
+                return {"is_verified": verification.get("status") == "queued", "verifier_feedback": "", "retry_count": retry_count}
             return self._rag_verdict(verification, retry_count, bool(getattr(self.settings, "RAG_REQUIRE_QUOTES", False)))
         if isinstance(parsed_res, dict) and "sql" in parsed_res and isinstance(parsed_res.get("data"), list):  # db_agent
             db_verdict = self._db_verdict(parsed_res, retry_count)
@@ -1076,6 +1117,10 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
             }
 
         except Exception as exc:
+            if global_settings.VERIFIER_FAIL_CLOSED:
+                # the judge is down: a retry would meet the same wall, and passing the answer silently would turn an outage into "verified"
+                logger.warning("Verifier node exception (answer goes out marked unverified): %s", exc, extra={"session_id": session_id})
+                return {"is_verified": False, "verifier_feedback": msg("orch.verifier_down"), "verifier_down": True}
             logger.warning(
                 "Verifier node exception (defaulting to verified=True): %s",
                 exc,
@@ -1099,7 +1144,9 @@ class Orchestrator(ApprovalMixin, StreamingMixin):
         """
         is_verified: bool = state.get("is_verified", True)
         retry_count: int = state.get("retry_count", 0)
-        max_retries: int = state.get("max_retries", _DEFAULT_MAX_RETRIES)
+        max_retries: int = max_retries_for(state)
+        if state.get("verifier_down"):
+            return "end"
 
         # Warning annotation on exhausted retries is applied in handle_request / handle_stream_request
         # (routing functions cannot mutate LangGraph state).

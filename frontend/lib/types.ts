@@ -255,6 +255,7 @@ export interface FilteredDashboard {
 }
 
 export interface PEVTrace {
+  run_id?: string;
   status?: string;
   is_verified?: boolean;
   retry_count?: number;
@@ -274,6 +275,8 @@ export interface PEVTrace {
   verifier?: {
     node?: string;
     is_verified?: boolean;
+    /** How many times the agent answered again after the Verifier rejected it. */
+    retries?: number;
     verifier_feedback?: string;
     status?: string;
   };
@@ -320,8 +323,8 @@ export interface ChatMessage {
   status?: 'loading' | 'complete' | 'error';
   /** The text is a live preview of the answer still being written: the Verifier has not seen it, the final answer replaces it. */
   isPreview?: boolean;
-  /** The message is a live card, not text: `knowledge-docs` = the documents in the knowledge base (`/docs`). */
-  kind?: 'knowledge-docs';
+  /** The message is a live card, not text: `knowledge-docs` = the documents in the knowledge base (`/docs`), `saved-dashboards` = the saved dashboards (`/dashboards`). */
+  kind?: 'knowledge-docs' | 'saved-dashboards';
 }
 
 export interface CSVMetadata {

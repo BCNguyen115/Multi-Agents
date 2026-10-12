@@ -1,0 +1,14 @@
+# Where alerts go. This sends them to a webhook; replace the URL (or the receiver) with Slack, Teams, e-mail, PagerDuty...
+# Reference: https://prometheus.io/docs/alerting/latest/configuration/
+route:
+  receiver: default
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url: "http://host.docker.internal:9099/alert"
+        send_resolved: true

@@ -1,8 +1,11 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, Send, ChevronDown, Cloud, Database, Globe, FileSpreadsheet, FileText, X, Loader2 } from 'lucide-react';
+import { Plus, Send, ChevronDown, Cloud, Code2, Database, Globe, FileSpreadsheet, FileText, Table2, X, Loader2 } from 'lucide-react';
 import { ACCEPT_ATTRIBUTE, isTabularFile } from '../lib/fileTypes';
+import { agentModeAllowed } from '../lib/agents';
+import { CodingRepoPicker } from './CodingRepoPicker';
+import { useAuth } from '../context/AuthContext';
 import { t, useLang } from '../lib/i18n';
 
 interface ChatInputProps {
@@ -23,17 +26,23 @@ export function ChatInput({
   onFileSelect,
 }: ChatInputProps) {
   const [lang] = useLang();
+  const { me } = useAuth();
   const [text, setText] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const agents = [
+  const everyAgent = [
     { id: 'RAG Agent', name: 'RAG Agent', icon: Cloud, desc: t(lang, 'agent.ragDesc') },
     { id: 'Data Agent', name: 'Data Agent', icon: Database, desc: t(lang, 'agent.dataDesc') },
+    { id: 'Database Agent', name: 'SQL Agent', icon: Table2, desc: t(lang, 'agent.dbDesc') },
     { id: 'Search Agent', name: 'Search Agent', icon: Globe, desc: t(lang, 'agent.searchDesc') },
+    ...(me?.can_code ? [{ id: 'Coding Agent', name: 'Coding Agent', icon: Code2, desc: t(lang, 'agent.codingDesc') }] : []),
   ];
+  // what the department's policy leaves (if it left none of these, show them all: the server still decides)
+  const allowedList = everyAgent.filter((a) => agentModeAllowed(me?.allowed_agents, a.id));
+  const agents = allowedList.length > 0 ? allowedList : everyAgent;
 
   const currentAgent = agents.find(a => a.id === selectedAgent) || agents[0];
   const isExpanded = text.length > 0 || attachedFile !== null || text.includes('\n');
@@ -94,6 +103,8 @@ export function ChatInput({
           e.target.value = '';
         }}
       />
+
+      {selectedAgent === 'Coding Agent' && <CodingRepoPicker />}
 
       {/* CHAT INPUT CONTAINER */}
       <div
@@ -302,7 +313,8 @@ function AgentDropdown({ currentAgent, agents, selectedAgent, onSelect, isOpen, 
           <div className="mt-1 space-y-0.5" role="listbox">
             {agents.map((agent) => {
               const Icon = agent.icon;
-              const isSelected = selectedAgent === agent.id || selectedAgent.includes(agent.name.split(' ')[0]);
+              const exactMode = agents.some((a) => a.id === selectedAgent);  // "Database Agent" also contains "Data": an exact id wins over the loose match
+              const isSelected = exactMode ? selectedAgent === agent.id : selectedAgent.includes(agent.name.split(' ')[0]);
               return (
                 <button
                   key={agent.id}

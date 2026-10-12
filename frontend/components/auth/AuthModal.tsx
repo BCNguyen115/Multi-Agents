@@ -252,6 +252,11 @@ export function AuthModal() {
                   {t(lang, 'auth.forgot')}
                 </button>
               )}
+              {!signUp && config.sso_enabled && (
+                <a href="/api/auth/oidc/login" className={PRIMARY_BUTTON}>
+                  {t(lang, 'auth.sso')}
+                </a>
+              )}
             </form>
           )}
         </div>

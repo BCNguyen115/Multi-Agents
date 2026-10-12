@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from src.config import settings
 from src.ingestion.preview import render_page
 from src.shared import audit
-from src.shared.auth import Principal, authenticate
+from src.shared.auth import Principal, acting_as, authenticate, knowledge_tenants
 from src.shared.logger import get_logger
 from src.shared.messages import msg
 
@@ -96,6 +96,20 @@ def _file_path(doc_key: str) -> Path:
     return path
 
 
+def _readable(principal: Principal) -> Optional[list[str]]:
+    """The tenants whose documents this caller may list and view: exactly the ones retrieval reads for them."""
+    with acting_as(principal):
+        return knowledge_tenants()
+
+
+def _deletable(principal: Principal) -> Optional[list[str]]:
+    """The tenants whose documents this caller may delete: their own, plus the shared corpus for a system administrator."""
+    readable = _readable(principal)
+    if readable is None or not (principal.authenticated and settings.KNOWLEDGE_TENANT_ISOLATION and settings.RAG_TENANT_IDS is None):
+        return readable
+    return readable if principal.can_admin else [principal.tenant_id]
+
+
 @router.get("/documents", response_model=list[KnowledgeDocument], summary="Documents stored in the knowledge base")
 async def list_documents(
     request: Request, category: Optional[str] = Query(default=None, max_length=40), principal: Principal = Depends(authenticate)
@@ -107,10 +121,10 @@ async def list_documents(
         SELECT {_SQL_KEY} AS doc_key, max(filename) AS filename, max(category) AS category, count(*) AS chunks,
                max(page) AS pages, COALESCE(sum(length(raw_content)), 0) AS chars, max(created_at) AS updated_at
         FROM rag_chunks
-        WHERE ($1::text IS NULL OR category = $1)
+        WHERE ($1::text IS NULL OR category = $1) AND ($3::text[] IS NULL OR tenant_id = ANY($3))
         GROUP BY 1 ORDER BY max(created_at) DESC LIMIT $2
         """,
-        category, MAX_DOCUMENTS,
+        category, MAX_DOCUMENTS, _readable(principal),  # the tenants retrieval reads from: what a user cannot ask about is not listed either
     )
     documents = []
     for row in rows:
@@ -131,7 +145,7 @@ async def delete_document(
         logger.warning("Knowledge delete refused: user=%s roles=%s", principal.user_id, settings.KNOWLEDGE_UPLOAD_ROLES)
         raise HTTPException(status_code=403, detail=msg("forbidden.knowledge"))
     path = _file_path(doc_key)  # validates the key before it is used in SQL or on disk
-    status = await _pg(request).execute(f"DELETE FROM rag_chunks WHERE {_SQL_KEY} = $1", doc_key)
+    status = await _pg(request).execute(f"DELETE FROM rag_chunks WHERE {_SQL_KEY} = $1 AND ($2::text[] IS NULL OR tenant_id = ANY($2))", doc_key, _deletable(principal))
     deleted = int(status.split()[-1])
     if deleted == 0:
         raise HTTPException(status_code=404, detail=msg("kb.not_found"))
@@ -153,6 +167,7 @@ async def delete_document(
 
 @router.get("/page", summary="One page of a stored PDF as an image, the cited passage highlighted")
 async def page_image(
+    request: Request,
     doc_key: str = Query(..., max_length=200),
     page: int = Query(..., ge=1, le=5000),
     q: str = Query(default="", max_length=MAX_SNIPPET_CHARS),
@@ -163,6 +178,10 @@ async def page_image(
         raise HTTPException(status_code=403, detail=msg("forbidden.pending"))
     path = _file_path(doc_key)
     if path.suffix.lower() != ".pdf" or not path.is_file():
+        raise HTTPException(status_code=404, detail=msg("kb.page_unavailable"))
+    if _readable(principal) is not None and not await _pg(request).fetch(  # the kept file is not scoped by tenant: the chunks are
+        f"SELECT 1 FROM rag_chunks WHERE {_SQL_KEY} = $1 AND tenant_id = ANY($2) LIMIT 1", doc_key, _readable(principal)
+    ):
         raise HTTPException(status_code=404, detail=msg("kb.page_unavailable"))
     try:
         png, total, highlighted = await asyncio.to_thread(render_page, path, page, q or None, scale)

@@ -78,6 +78,22 @@ async def ensure_readonly_role(pg: Any, role: str, password: str, tables: list[s
     return granted
 
 
+async def grant_schema_read(pg: Any, role: str, schema: str) -> list[str]:
+    """Let ``role`` SELECT every table that exists in ``schema`` (company reference data such as ``aw``, loaded by a script) and find them without
+    the schema prefix (``search_path``). Starts from nothing like ``ensure_readonly_role``; returns the tables granted (none when the schema is absent)."""
+    quoted_role, quoted_schema = _identifier(role, "role name"), _identifier(schema, "schema")
+    if not await pg.fetch("SELECT 1 FROM pg_namespace WHERE nspname = $1", schema):
+        return []
+    await pg.execute(f"GRANT USAGE ON SCHEMA {quoted_schema} TO {quoted_role}")
+    await pg.execute(f"REVOKE ALL ON ALL TABLES IN SCHEMA {quoted_schema} FROM {quoted_role}")
+    tables = [r["tablename"] for r in await pg.fetch("SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename", schema)]
+    for table in tables:
+        await pg.execute(f"GRANT SELECT ON TABLE {quoted_schema}.{_identifier(table, 'table name')} TO {quoted_role}")
+    await pg.execute(f'ALTER ROLE {quoted_role} SET search_path = {quoted_schema}, "public"')
+    logger.info("Read-only role %s: SELECT on %d tables of schema %s", role, len(tables), schema, extra={"session_id": "SYSTEM"})
+    return tables
+
+
 # What the policies read: set per transaction by ``PostgresClient.fetch_scoped`` (``set_config(name, value, true)``).
 SCOPE_SETTINGS: dict[str, str] = {"tenant_id": "app.tenant_id", "department_id": "app.department_id"}
 POLICY_NAME = "tenant_scope"

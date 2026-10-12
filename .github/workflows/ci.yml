@@ -104,6 +104,63 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  e2e:
+    # Browser tests (Playwright, Chromium) against `next dev`; the specs mock the API with page.route, so no backend is needed.
+    # Ten specs predate the UI redesign and are left out in tests/e2e/playwright.config.ts (grepInvert) until they are rewritten.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --config tests/e2e/playwright.config.ts --project=chromium
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: frontend/tests/e2e/playwright-report
+
+  deploy-config:
+    # The deployment files must stay valid: Helm chart, Prometheus rules and config, Alertmanager config, the compose overrides.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      POSTGRES_PASSWORD: ci
+      LANGFUSE_NEXTAUTH_SECRET: ci
+      LANGFUSE_SALT: ci
+      REDIS_PASSWORD: ci
+      SANDBOX_SECRET: ci-sandbox-secret-0123456789
+      METRICS_TOKEN: ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Helm chart lints and renders (placeholders for the secrets it requires)
+        run: |
+          SETS="--set secrets.POSTGRES_URL=postgresql://u:p@db:5432/a --set secrets.REDIS_URL=redis://:p@r:6379/0 --set secrets.OPENROUTER_API_KEY=k --set secrets.AUTH_JWT_SECRET=0123456789abcdef0123456789abcdef --set secrets.SANDBOX_SECRET=0123456789abcdef"
+          docker run --rm -v "$PWD/deploy/helm:/c:ro" alpine/helm:3.16.2 lint /c/agent-platform $SETS
+          docker run --rm -v "$PWD/deploy/helm:/c:ro" alpine/helm:3.16.2 template agent /c/agent-platform $SETS --set ingress.enabled=true > /dev/null
+          if docker run --rm -v "$PWD/deploy/helm:/c:ro" alpine/helm:3.16.2 template agent /c/agent-platform > /dev/null 2>&1; then echo "the chart must refuse to render without its required secrets"; exit 1; fi
+      - name: Prometheus rules and config, Alertmanager config
+        run: |
+          docker run --rm --entrypoint promtool -v "$PWD/deploy/prometheus:/etc/prometheus:ro" prom/prometheus:v2.55.1 check rules /etc/prometheus/alerts.yml
+          docker run --rm --entrypoint sh -v "$PWD/deploy/prometheus:/etc/prometheus:ro" prom/prometheus:v2.55.1 -c 'printf x > /tmp/metrics_token && promtool check config /etc/prometheus/prometheus.yml'
+          docker run --rm --entrypoint amtool -v "$PWD/deploy/alertmanager:/c:ro" prom/alertmanager:v0.27.0 check-config /c/alertmanager.yml
+      - name: Compose overrides are valid
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.monitoring.yml config -q
+          docker compose -f docker-compose.yml -f docker-compose.backup.yml config -q
+
   rag-eval:
     # Retrieval-quality gate (hit@5 / MRR of the planner mode on the real corpus and the hand-written questions). It runs on
     # every push, pull request and manual run: it ingests dataset/ with the embedding model, starts the TEI reranker and

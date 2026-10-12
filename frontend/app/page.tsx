@@ -16,6 +16,7 @@ import { toast } from '../lib/toast';
 import { getLang, isDefaultChatTitle, t, useLang } from '../lib/i18n';
 import { apiFetch } from '../lib/apiFetch';
 import { emptyFirst, findEmptyChat, isUnwritten } from '../lib/newChat';
+import { agentModeAllowed, firstAllowedMode } from '../lib/agents';
 
 /** How long a deleted conversation stays recoverable before it is really removed (and the removal synced). */
 const UNDO_DELETE_MS = 6000;
@@ -325,9 +326,18 @@ export default function HomePage() {
     });
   };
 
+  // The department's policy can take the open agent away (or change while the page is open): move to one it still allows
+  const allowedAgents = me?.allowed_agents ?? null;
+  useEffect(() => {
+    if (!allowedAgents) return;
+    setCurrentAgentMode((mode) => (agentModeAllowed(allowedAgents, mode) ? mode : firstAllowedMode(allowedAgents, mode)));
+  }, [allowedAgents]);
+
   const handleAgentSelect = (agentId: string) => {
     if (agentId === 'rag_agent' || agentId.includes('RAG')) {
       setCurrentAgentMode('RAG Agent');
+    } else if (agentId === 'db_agent' || agentId === 'Database Agent') {  // before the 'Data' test: "Database Agent" contains "Data"
+      setCurrentAgentMode('Database Agent');
     } else if (agentId === 'data_agent' || agentId.includes('Data')) {
       setCurrentAgentMode('Data Agent');
     } else if (agentId === 'search_agent' || agentId.includes('Search')) {
@@ -400,7 +410,7 @@ export default function HomePage() {
       />
 
       {/* Main Content Area */}
-      <main id="main-content" tabIndex={-1} className="flex-1 flex flex-col h-full min-h-0 min-w-0 w-full max-w-full overflow-x-hidden relative bg-background overflow-y-hidden focus:outline-none">
+      <main id="main-content" tabIndex={-1} className="flex-1 flex flex-col h-full min-h-0 min-w-0 w-full max-w-full overflow-x-clip relative bg-background overflow-y-hidden focus:outline-none">
         <Header
           currentAgent={currentAgentMode}
         />

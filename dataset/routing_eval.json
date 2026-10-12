@@ -27,6 +27,10 @@
     {"id": "r24", "via": "rules", "query": "Chính sách nghỉ phép của công ty quy định thế nào?", "expected": "rag_agent"},
     {"id": "r25", "via": "rules", "query": "Điều khoản phạt vi phạm trong SOW dự án Alpha", "expected": "rag_agent"},
     {"id": "r26", "via": "rules", "csv": true, "query": "Cột nào có nhiều giá trị trống nhất?", "expected": "data_agent"},
+    {"id": "r27", "via": "rules", "query": "Tình hình nhân sự hiện nay thế nào?", "expected": "db_agent"},
+    {"id": "r28", "via": "rules", "query": "Phòng ban nào có nhiều nhân viên nhất?", "expected": "db_agent"},
+    {"id": "r29", "via": "rules", "query": "Tổng quan công ty hiện tại", "expected": "db_agent"},
+    {"id": "r30", "via": "rules", "query": "Sản phẩm nào đang tồn kho thấp?", "expected": "db_agent"},
 
     {"id": "l01", "via": "llm", "query": "What is the termination notice period in the MSA?", "expected": "rag_agent"},
     {"id": "l02", "via": "llm", "query": "Summarize the latest news about OpenAI", "expected": "search_agent"},

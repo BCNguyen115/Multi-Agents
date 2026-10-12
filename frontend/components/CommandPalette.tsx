@@ -9,6 +9,7 @@ import {
   FileDown,
   Presentation,
   Cpu,
+  Code2,
   Database,
   Cloud,
   Globe,
@@ -18,6 +19,8 @@ import {
   X,
 } from 'lucide-react';
 import { ChatSession } from './Sidebar';
+import { useAuth } from '../context/AuthContext';
+import { agentModeAllowed } from '../lib/agents';
 import { isDefaultChatTitle, t, useLang } from '../lib/i18n';
 
 export interface CommandPaletteProps {
@@ -56,6 +59,7 @@ export function CommandPalette({
   onExportPPTX,
 }: CommandPaletteProps) {
   const [lang] = useLang();
+  const { me } = useAuth();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -170,6 +174,17 @@ export function CommandPalette({
           onClose();
         },
       },
+      ...(me?.can_code ? [{
+        id: 'agent-coding',
+        category: 'Agents' as const,
+        title: t(lang, 'cmd.agentCoding'),
+        subtitle: t(lang, 'cmd.agentCodingHint'),
+        icon: <Code2 className="w-4 h-4 text-accent-verifier" />,
+        action: () => {
+          onSelectAgent('Coding Agent');
+          onClose();
+        },
+      }] : []),
       {
         id: 'agent-db',
         category: 'Agents',
@@ -198,9 +213,13 @@ export function CommandPalette({
       });
     });
 
-    return list;
+    // an agent the department's policy does not allow is not offered (the server refuses it anyway)
+    const modeOfCommand: Record<string, string> = { 'agent-data': 'Data Agent', 'agent-rag': 'RAG Agent', 'agent-search': 'Search Agent', 'agent-db': 'Database Agent', 'agent-coding': 'Coding Agent' };
+    return list.filter((item) => !(item.id in modeOfCommand) || agentModeAllowed(me?.allowed_agents, modeOfCommand[item.id]));
   }, [
     lang,
+    me?.allowed_agents,
+    me?.can_code,
     sessions,
     onNewChat,
     onClose,

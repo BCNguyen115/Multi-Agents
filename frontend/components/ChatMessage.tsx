@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import { t, useLang } from '../lib/i18n';
+import { isDashboardAttempt } from '../lib/pevTrace';
 import remarkGfm from 'remark-gfm';
 import { Bot, User, ExternalLink, AlertTriangle, Copy, Check, Loader2, ShieldCheck, ShieldAlert, Hourglass } from 'lucide-react';
 import { ChatMessage as ChatMessageType, SourceItem, CSVMetadata } from '../lib/types';
@@ -15,6 +16,9 @@ import { DashboardSkeleton } from './dashboard/DashboardSkeleton';
 import { DataSummaryView } from './DataSummaryView';
 import { ApprovalCard } from './ApprovalCard';
 import { KnowledgeDocumentsCard } from './KnowledgeDocumentsCard';
+import { SavedDashboardsCard } from './SavedDashboardsCard';
+import { CodingTaskCard } from './CodingTaskCard';
+import { jobIdOf } from '../lib/codingApi';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -43,7 +47,7 @@ function isDataAgentTarget(message: ChatMessageType): boolean {
   // If no SSE target yet, check message.agentMode
   if (message.agentMode) {
     const mode = message.agentMode.toLowerCase();
-    if (mode.includes('search') || mode.includes('rag') || mode.includes('db_agent') || mode.includes('integration')) {
+    if (mode.includes('search') || mode.includes('rag') || mode.includes('db_agent') || mode.includes('database') || mode.includes('integration')) {
       return false;
     }
     return mode.includes('data');
@@ -309,6 +313,8 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
   // The reply may be a JSON envelope: parsed when the content changes, not on every render
   const wrapped = useMemo(() => parseWrappedReply(message.role, message.content), [message.role, message.content]);
   const displayAnswer = wrapped.text ?? message.content;
+  // a coding task was queued by this reply: the card follows it and shows the diff for a reviewer
+  const codingJobId = message.pevTrace?.executor?.agent_used === 'coding_agent' ? jobIdOf(displayAnswer ?? '') : null;
   let parsedSources: SourceItem[] = wrapped.sources ?? message.sources ?? [];
   const isSummaryReply = wrapped.isSummary;
 
@@ -371,6 +377,8 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
         )}
 
         {message.kind === 'knowledge-docs' && <KnowledgeDocumentsCard />}
+        {message.kind === 'saved-dashboards' && <SavedDashboardsCard />}
+        {codingJobId && <CodingTaskCard jobId={codingJobId} />}
 
         {/* Human-in-the-Loop Confirmation Card */}
         {message.approvalRequest && (
@@ -443,7 +451,7 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
             metadata={activeCSV.metadata as import('../lib/types').CSVMetadata}
             generatedCode={message.generatedCode}
           />
-        ) : !isThisMessageLoading && !message.dashboardSpec && (message.pevTrace?.is_verified === false || message.pevTrace?.verifier?.is_verified === false || message.pevEvents?.verifying?.is_verified === false) ? (
+        ) : !isThisMessageLoading && !message.dashboardSpec && isDashboardAttempt(message) && (message.pevTrace?.is_verified === false || message.pevTrace?.verifier?.is_verified === false || message.pevEvents?.verifying?.is_verified === false) ? (
           <div className="my-3 p-3.5 bg-accent-error/5 border border-accent-error/20 rounded-xl text-accent-error text-xs flex items-center gap-2.5 font-medium">
             <AlertTriangle className="w-4.5 h-4.5 shrink-0" />
             <span>{t(lang, 'chat.blocked')}</span>
@@ -453,9 +461,18 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
 
         {/* Sources */}
         {parsedSources.length > 0 && <SourcesList sources={parsedSources} />}
-        {/* Thumbs: only for answers that cite documents (web results have no `file`) and are finished */}
-        {!isThisMessageLoading && Boolean(userQuery) && parsedSources.some((s) => s.file) && (
-          <FeedbackButtons messageId={message.id} query={userQuery as string} sources={parsedSources} />
+        {/* Thumbs under every finished answer, whichever agent wrote it: the Quality page needs them for all of them */}
+        {!isThisMessageLoading && Boolean(userQuery) && Boolean(displayAnswer) && (
+          <FeedbackButtons
+            messageId={message.id}
+            query={userQuery as string}
+            sources={parsedSources}
+            agent={message.pevTrace?.planner?.target_agent ?? message.pevEvents?.final_response?.target_agent ?? ''}
+            answer={displayAnswer}
+            runId={message.pevTrace?.run_id ?? ''}
+            verified={message.pevTrace?.verifier?.is_verified ?? message.pevTrace?.is_verified}
+            retries={message.pevTrace?.verifier?.retries ?? 0}
+          />
         )}
       </div>
     </div>

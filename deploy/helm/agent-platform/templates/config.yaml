@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agent.fullname" . }}-config
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | toString | quote }}
+  {{- end }}
+{{- if not .Values.existingSecret }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "agent.secretName" . }}
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  {{- range $key := list "POSTGRES_URL" "REDIS_URL" "OPENROUTER_API_KEY" "AUTH_JWT_SECRET" "SANDBOX_SECRET" }}
+  {{ $key }}: {{ required (printf "secrets.%s is required (or set existingSecret)" $key) (index $.Values.secrets $key) | quote }}
+  {{- end }}
+  {{- range $key, $value := .Values.secrets.extra }}
+  {{ $key }}: {{ $value | toString | quote }}
+  {{- end }}
+{{- end }}

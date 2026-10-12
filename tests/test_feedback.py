@@ -35,7 +35,7 @@ def test_a_thumb_is_stored_for_the_caller_with_what_was_cited():
     pg = PG()
     body = FeedbackIn(rating=1, query="Thời hạn NDA?", message_id="m1", cited=[{"file": "nda/a.pdf", "section": "Term", "page": 3, "snippet": "The term is two years."}])
     send(body, pg)
-    tenant, user, session, message, query, rating, comment, cited = pg.rows[0]
+    tenant, user, session, message, query, rating, comment, cited, *context = pg.rows[0]  # context: agent, answer, run_id, verified, retries, reasons
     assert (tenant, user, message, query, rating) == ("acme", "alice", "m1", "Thời hạn NDA?", 1)
     assert json.loads(cited)[0]["file"] == "nda/a.pdf"
 

@@ -14,6 +14,7 @@ from src.agents.base_agent import BaseAgent
 from src.agents.search_agent.verification import verify_web_answer
 from src.config import Settings
 from src.shared.mcp_client import _is_internal_host, resolves_to_private_address
+from src.shared import user_context
 from src.shared.security import audit_context_safety
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
@@ -248,7 +249,7 @@ class SearchAgent(BaseAgent):
             web_context = "\n---\n".join(context_blocks)
 
             # Step 3: LLM Synthesis
-            system_prompt = _SYSTEM_PROMPT.format(web_context=web_context)
+            system_prompt = _SYSTEM_PROMPT.format(web_context=web_context) + user_context.memory_note()
 
             response: Any = await self.llm_client.chat_completion(
                 messages=[

@@ -1,0 +1,14 @@
+# Several LOCAL repositories for the coding agent: every git folder under CODING_REPOS_DIR can be picked by an administrator in the chat
+# (Coding mode -> Repository -> Manage). Use it together with docker-compose.coding.yml:
+#
+#   CODING_REPOS_DIR=D:/work docker compose -f docker-compose.yml -f docker-compose.coding.yml -f docker-compose.coding-repos.yml up -d --force-recreate --no-deps backend
+#
+# The folder is mounted READ-WRITE because publishing creates a branch (agent/<id>-<title>) in the chosen repository's .git; the agent itself
+# never touches it (it works on a copy in the sandbox, which has no mount and no network). If you only want the checkout you are in, use
+# docker-compose.coding-local.yml instead, which keeps the working tree read-only.
+services:
+  backend:
+    environment:
+      CODING_LOCAL_ROOTS: '["/coding-repo","/repos"]'
+    volumes:
+      - ${CODING_REPOS_DIR:?set CODING_REPOS_DIR to the folder that holds your git repositories}:/repos:rw

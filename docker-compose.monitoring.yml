@@ -1,0 +1,45 @@
+# Metrics and alerts on top of the normal stack (Prometheus scrapes the backend's /metrics; Alertmanager routes the alerts).
+#
+#   METRICS_TOKEN=<long random string> docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#   Prometheus: http://127.0.0.1:9090   Alertmanager: http://127.0.0.1:9093
+#
+# With APP_ENV=production the backend serves /metrics only when METRICS_TOKEN is set, and then only to a caller that sends it.
+# Edit deploy/alertmanager/alertmanager.yml to point the alerts at your chat or e-mail.
+services:
+  backend:
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN (any long random string)}
+      ALERTMANAGER_URL: http://alertmanager:9093   # the console's Monitoring page lists the alerts firing now
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: agent_prometheus
+    restart: unless-stopped
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN (any long random string)}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - printf %s "$$METRICS_TOKEN" > /tmp/metrics_token && exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=30d
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on: [backend, alertmanager]
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: agent_alertmanager
+    restart: unless-stopped
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes:
+      - ./deploy/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+
+volumes:
+  prometheus_data:
+  alertmanager_data:

@@ -34,6 +34,27 @@ def test_the_same_page_written_another_way_still_counts():
     assert v["cited"] == [2] and v["grounded"] is True
 
 
+LISTING = [
+    {"title": "Công nghệ", "url": "https://tech.news.example/cong-nghe.html",
+     "text": "Tin mới: Chip tự chế https://tech.news.example/chip-tu-che-post1.html và xem thêm https://evil.example/quang-cao nhé."},
+]
+
+
+def test_an_article_link_printed_by_a_section_page_on_its_own_site_counts_as_that_page():
+    v = verify_web_answer("Chip tự chế [bài](https://tech.news.example/chip-tu-che-post1.html).", LISTING)  # the real failure: a listing page, its article links
+    assert v["cited"] == [1] and v["unknown_urls"] == [] and v["grounded"] is True
+
+
+def test_a_link_a_page_prints_but_that_points_to_another_site_is_still_unknown():
+    v = verify_web_answer("Xem [quảng cáo](https://evil.example/quang-cao).", LISTING)
+    assert v["unknown_urls"] == ["https://evil.example/quang-cao"] and v["grounded"] is False
+
+
+def test_a_link_on_the_pages_site_that_the_page_never_prints_is_still_unknown():
+    v = verify_web_answer("Xem [bài](https://tech.news.example/bai-bia-dat.html).", LISTING)
+    assert v["unknown_urls"] == ["https://tech.news.example/bai-bia-dat.html"] and v["cited"] == []
+
+
 def test_an_answer_without_any_link_is_not_grounded():
     v = verify("Dầu Brent đạt 82,5 USD/thùng.")
     assert v["cited"] == [] and v["grounded"] is False

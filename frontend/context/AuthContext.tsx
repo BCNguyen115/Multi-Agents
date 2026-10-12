@@ -70,10 +70,15 @@ interface AuthContextValue {
   approvalsOpen: boolean;
   openApprovals: () => void;
   closeApprovals: () => void;
+  memoryOpen: boolean;
+  openMemory: () => void;
+  closeMemory: () => void;
 }
 
 export const THEME_KEY = 'theme';
 const GUEST: AuthUser = { id: 'guest', name: '', role: 'guest' };
+const SESSION_CHECK_ATTEMPTS = 30; // while the backend is starting: 30 tries, 2 s apart
+const SESSION_CHECK_DELAY_MS = 2000;
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -127,18 +132,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [approvalsOpen, setApprovalsOpen] = useState(false);
   const openApprovals = useCallback(() => setApprovalsOpen(true), []);
   const closeApprovals = useCallback(() => setApprovalsOpen(false), []);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const openMemory = useCallback(() => setMemoryOpen(true), []);
+  const closeMemory = useCallback(() => setMemoryOpen(false), []);
 
   // Who is signed in, and what the dialog may offer. A 401 (backend needs a login) makes the visitor a guest and asks for one.
+  // A backend that is still starting (docker just came up) answers 5xx or not at all: that is NOT "nobody is signed in", so the check is
+  // repeated until the backend answers, instead of leaving the page as a guest with no sign-in dialog.
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      fetchAuthConfig(),
-      fetchMe().catch((error) => {
-        console.warn('Could not check the session', error);
-        return undefined;
-      }),
-    ]).then(([cfg, current]) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = async (attempt: number): Promise<void> => {
+      const [cfg, current] = await Promise.all([
+        fetchAuthConfig(),
+        fetchMe().catch((error) => {
+          console.warn('Could not check the session', error);
+          return undefined;
+        }),
+      ]);
       if (cancelled) return;
+      if (current === undefined && attempt < SESSION_CHECK_ATTEMPTS) {
+        timer = setTimeout(() => void check(attempt + 1), SESSION_CHECK_DELAY_MS);
+        return;
+      }
       setConfig(cfg);
       if (current !== undefined) setMe(current);
       setLoading(false);
@@ -146,9 +162,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (cfg.login_enabled) openAuthModal('signin');
         else if (window.location.pathname !== LOGIN_PATH) window.location.assign(LOGIN_PATH); // identity provider: its own login page
       }
-    });
+    };
+    void check(1);
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
   }, [openAuthModal]);
 
@@ -276,11 +294,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       approvalsOpen,
       openApprovals,
       closeApprovals,
+      memoryOpen,
+      openMemory,
+      closeMemory,
     }),
     [
       user, me, loading, config, theme, language, login, register, resetPassword, changePassword, finishSignIn, logout,
       setTheme, setLanguage, authModal, openAuthModal, closeAuthModal, changePasswordOpen, openChangePassword, closeChangePassword,
-      approvalsOpen, openApprovals, closeApprovals,
+      approvalsOpen, openApprovals, closeApprovals, memoryOpen, openMemory, closeMemory,
     ]
   );
 

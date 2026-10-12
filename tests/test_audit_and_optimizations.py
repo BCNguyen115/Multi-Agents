@@ -36,7 +36,10 @@ if "fastapi" not in sys.modules:
     sys.modules["fastapi"] = mock_fastapi
 
 if "fastapi.middleware.cors" not in sys.modules:
-    sys.modules["fastapi.middleware.cors"] = MagicMock()
+    try:
+        import fastapi.middleware.cors  # noqa: F401 - the real module when FastAPI is installed (a stub would break main.app's middleware stack)
+    except ImportError:
+        sys.modules["fastapi.middleware.cors"] = MagicMock()
 
 def _installed(name: str) -> bool:
     try:

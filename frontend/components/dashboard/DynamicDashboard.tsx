@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { EChartComponent } from './EChartComponent';
 import { DashboardTable } from './DashboardTable';
+import { SaveDashboardButton } from './SaveDashboardButton';
 import type { ChartItem, DashboardSpec, FilteredDashboard, KPIItem } from '../../lib/types';
 import { useIsDark } from '../../lib/useIsDark';
 import { ui } from '../../lib/uiText';
@@ -34,6 +35,8 @@ import { toast } from '../../lib/toast';
 
 interface DynamicDashboardProps {
   spec: DashboardSpec;
+  /** Show the "Save" button; a dashboard that was opened from the saved list is already saved. */
+  saveable?: boolean;
 }
 
 type Translate = (key: Parameters<typeof ui>[1], params?: Record<string, string | number>) => string;
@@ -168,7 +171,7 @@ function SlicerRow({
   );
 }
 
-const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
+const DashboardView: React.FC<DynamicDashboardProps> = ({ spec, saveable = true }) => {
   const isDark = useIsDark();
   const t: Translate = useCallback((key, params) => ui(spec.language, key, params), [spec.language]);
 
@@ -288,6 +291,7 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {saveable && <SaveDashboardButton spec={spec} />}
           <details className="relative">
             <summary className="btn-dash list-none [&::-webkit-details-marker]:hidden">
               <FileDown className="w-3.5 h-3.5 text-accent-primary" aria-hidden="true" /> {t('export')}
@@ -467,9 +471,9 @@ const DashboardView: React.FC<DynamicDashboardProps> = ({ spec }) => {
 };
 
 /** Renders a spec v2; a dashboard saved by an older version (no `analysis`, `story`...) gets a notice instead of crashing. */
-export const DynamicDashboard: React.FC<DynamicDashboardProps> = ({ spec }) =>
+export const DynamicDashboard: React.FC<DynamicDashboardProps> = ({ spec, saveable }) =>
   isDashboardSpecV2(spec) ? (
-    <DashboardView spec={spec} />
+    <DashboardView spec={spec} saveable={saveable} />
   ) : (
     <div data-testid="dashboard-outdated" role="status" className="my-4 flex items-start gap-3 rounded-2xl border border-border-strong bg-surface-raised p-4 text-sm text-foreground-secondary">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-foreground" aria-hidden="true" />

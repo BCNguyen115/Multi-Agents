@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { applyExecuting, applyFinal, applyPevStep, applyPlan, applyVerifying, createInitialPevTraceState } from '../../lib/pevTrace';
+import { applyExecuting, applyFinal, applyPevStep, applyPlan, applyVerifying, createInitialPevTraceState, isDashboardAttempt } from '../../lib/pevTrace';
+
+describe('isDashboardAttempt', () => {
+  it('is true only for the data agent, whichever place the trace carries the agent in', () => {
+    expect(isDashboardAttempt({ pevEvents: { final_response: { response: '', target_agent: 'data_agent', is_verified: false } } })).toBe(true);
+    expect(isDashboardAttempt({ pevEvents: { plan: { plan: '', target_agent: 'data_agent' } } })).toBe(true);
+    expect(isDashboardAttempt({ pevTrace: { planner: { target_agent: 'data_agent' } } })).toBe(true);
+  });
+
+  it('is false for web, document, database and integration answers (they never tried to build a dashboard) and for an unknown agent', () => {
+    for (const agent of ['search_agent', 'rag_agent', 'db_agent', 'integration_agent']) {
+      expect(isDashboardAttempt({ pevEvents: { final_response: { response: '', target_agent: agent, is_verified: false } } })).toBe(false);
+    }
+    expect(isDashboardAttempt({})).toBe(false);
+  });
+});
 
 describe('createInitialPevTraceState', () => {
   it('starts at the planner and pre-selects the agent the user picked', () => {
