@@ -164,9 +164,12 @@ jobs:
   rag-eval:
     # Retrieval-quality gate (hit@5 / MRR of the planner mode on the real corpus and the hand-written questions). It runs on
     # every push, pull request and manual run: it ingests dataset/ with the embedding model, starts the TEI reranker and
-    # calls OpenRouter (secret OPENROUTER_API_KEY), so it is slow and costs a few cents per run. The thresholds sit a little
-    # below the numbers measured locally (hit@5 0.587, MRR 0.443: docs/RAG_REVIEW_AND_FIXES.md); raise them when retrieval
-    # improves. It cannot run where the secret is not available (pull requests from forks, and Dependabot's, which GitHub
+    # calls OpenRouter (secret OPENROUTER_API_KEY), so it is slow and costs a few cents per run. The planner model and the HyDE
+    # passage are not deterministic and 75 questions cannot resolve 0.1 (the report's own 95 % interval is about 0.2 wide): the SAME
+    # corpus gave hit@5 0.587 / MRR 0.443 (docs/RAG_REVIEW_AND_FIXES.md), 0.533 / 0.334 (first run on GitHub) and 0.48 / 0.357
+    # (a rerun on the files git tracks). So the thresholds are a FLOOR that catches a broken retrieval (embeddings or index gone:
+    # numbers near 0.1), not a quality target; a real regression of a few points shows up in --baseline (create it with
+    # --save-baseline from the average of several runs) and in the manual comparisons of docs/RAG_REVIEW_AND_FIXES.md. It cannot run where the secret is not available (pull requests from forks, and Dependabot's, which GitHub
     # gives no repository secrets): only those are left out, anything else with the secret missing FAILS in the first step.
     # Not yet run on GitHub: only its commands were run locally.
     if: >-
@@ -221,7 +224,7 @@ jobs:
       - name: Ingest dataset/
         run: python -m scripts.run_ingestion
       - name: Retrieval gate
-        run: python -m scripts.run_rag_eval --manual --rerank --min-hit5 0.55 --min-mrr 0.40 --baseline reports/rag_eval_baseline.json
+        run: python -m scripts.run_rag_eval --manual --rerank --min-hit5 0.45 --min-mrr 0.30 --baseline reports/rag_eval_baseline.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
