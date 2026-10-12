@@ -45,7 +45,7 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between font-semibold mb-2.5 text-foreground hover:text-accent-primary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 rounded-lg p-1"
+        className="w-full flex items-center justify-between font-semibold mb-2.5 text-foreground hover:text-accent-primary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary rounded-lg p-1"
       >
         <span className="flex items-center gap-1.5 text-xs font-bold">
           <BookOpen className="w-4 h-4 text-accent-primary" />
@@ -72,7 +72,7 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
                     href={targetUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="group relative flex flex-col justify-between p-3 bg-surface-raised border border-border rounded-xl hover:border-accent-primary hover:shadow-enterprise transition-all duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                    className="group relative flex flex-col justify-between p-3 bg-surface-raised border border-border rounded-xl hover:border-accent-primary hover:shadow-enterprise transition-[color,background-color,border-color,opacity,transform] duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
                   >
                     <div className="flex items-center justify-between gap-2 mb-1.5">
                       <div className="flex items-center gap-1.5 min-w-0">
@@ -119,7 +119,7 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
                     <div className="flex items-center justify-between font-medium text-foreground gap-2 mb-1">
                       <span className="truncate flex items-center gap-1.5 font-semibold" title={fileName}>
                         {src.cite !== undefined && (
-                          <span className="shrink-0 rounded bg-accent-primary/10 px-1.5 py-0.5 font-mono text-2xs font-bold text-accent-primary" data-testid="source-cite">
+                          <span className="shrink-0 rounded bg-accent-primary/10 px-1.5 py-0.5 font-mono text-xs font-bold text-accent-primary" data-testid="source-cite">
                             [{src.cite}]
                           </span>
                         )}
@@ -131,13 +131,13 @@ export function SourcesList({ sources }: { sources: SourceItem[] }) {
                       </span>
                     </div>
                     {(src.section || src.page) && (
-                      <p className="flex items-center gap-2 text-2xs text-foreground-muted">
+                      <p className="flex items-center gap-2 text-xs text-foreground-muted">
                         <span>{[src.section, src.page ? t(lang, 'sources.page', { page: src.page }) : ''].filter(Boolean).join(' · ')}</span>
                         {canPreview && (
                           <button
                             type="button"
                             onClick={() => setViewing(src)}
-                            className="rounded px-1.5 py-0.5 font-semibold text-accent-primary hover:bg-accent-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                            className="rounded px-1.5 py-0.5 font-semibold text-accent-primary hover:bg-accent-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
                           >
                             {t(lang, 'source.viewPage', { page: src.page as number })}
                           </button>

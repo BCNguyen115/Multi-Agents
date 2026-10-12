@@ -1,7 +1,6 @@
 # Security scans. Not yet run on GitHub itself: written against the project layout and the audits run locally.
 #   dependencies: `npm audit` BLOCKS (0 vulnerabilities in the runtime dependencies: image-size and Next's postcss are pinned by
-#                 `overrides` in frontend/package.json; drop an override when its parent ships the fix). pip-audit is still informational:
-#                 run it locally once, fix what it finds, then remove its `continue-on-error`.
+#                 `overrides` in frontend/package.json; drop an override when its parent ships the fix). pip-audit and bandit (high) block too.
 #   secrets:      blocking. A false positive goes into .gitleaks.toml (allowlist), never a `continue-on-error`.
 #   filesystem:   Trivy over the repository (dependencies' known CVEs, Dockerfile and compose misconfigurations).
 name: Security
@@ -26,11 +25,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # BLOCKING. The one ignored advisory is nltk (PYSEC-2026-3740, no fixed version yet), pulled in only by Crawl4AI; remove the
+      # --ignore-vuln as soon as a fix ships (the weekly run will tell: `pip-audit` lists the fix versions).
       - name: pip-audit (pinned versions)
-        continue-on-error: true
         run: |
           pip install pip-audit
-          pip-audit -r requirements.lock --no-deps --disable-pip
+          pip-audit -r requirements.lock --no-deps --disable-pip --ignore-vuln PYSEC-2026-3740
+      # High-severity findings only: the medium ones are SQL f-strings built from constants (parameters are always $n) and the sandbox's
+      # deliberate exec/pickle, which a reviewer already checked (see docs/OPERATIONS.md).
+      - name: bandit (high severity)
+        run: |
+          pip install bandit
+          bandit -r src -q -lll
       - uses: actions/setup-node@v4
         with:
           node-version: 20

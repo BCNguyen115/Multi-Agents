@@ -1,0 +1,15 @@
+# The coding agent on a LOCAL folder (this checkout) instead of a GitHub link. Use it together with docker-compose.coding.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.coding.yml -f docker-compose.coding-local.yml up -d --build
+#
+# What the container gets: the folder READ-ONLY (so the agent starts from your working tree, uncommitted work included; files your .gitignore
+# excludes, such as .env, are never sent to the sandbox) and its .git directory READ-WRITE, because publishing creates a branch there
+# (agent/<id>-<title>). Your working tree and your checked-out branch are never touched. There is no pull request: you look at the branch with
+# `git log agent/...` / `git diff agent/...~1 agent/...` and merge or delete it yourself.
+services:
+  backend:
+    environment:
+      CODING_REPO_URL: /coding-repo
+    volumes:
+      - ./:/coding-repo:ro
+      - ./.git:/coding-repo/.git:rw

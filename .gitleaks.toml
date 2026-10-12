@@ -8,9 +8,13 @@ paths = [
   '''\.env\.example$''',
   '''tests/''',
   '''docs/''',
+  # generated cache of file hashes that an old commit still holds (the folder is ignored now)
+  '''graphify-out/''',
 ]
 regexes = [
   '''change-me''',
   '''your-[a-z-]*-key''',
   '''ci-sandbox-secret-0123456789''',
+  # the throw-away values `helm lint` gets in .github/workflows/ci.yml (nothing real is behind them)
+  '''0123456789abcdef(0123456789abcdef)?''',
 ]

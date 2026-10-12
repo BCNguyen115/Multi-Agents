@@ -278,8 +278,12 @@ async def ingest_upload(
     max_chunks: int = MAX_CHUNKS,
     session_id: str = "INGESTION",
     llm_client: Any = None,
+    tenant_id: str = "public",
 ) -> dict[str, Any]:
     """Add or update one document in the knowledge base. Raises ``UploadError`` for input problems.
+
+    ``tenant_id`` owns the document: only that tenant (and the folder-ingested ``public`` corpus's readers, for ``public``) retrieves it.
+    A document of ANOTHER tenant under the same key is never replaced: the upload is refused instead.
 
     Returns ``status`` (``added`` / ``updated`` / ``unchanged``), the resolved ``category``, chunk counts and
     ``saved_to_dataset``. An embedding or database failure propagates as is (the transaction leaves the old chunks).
@@ -299,6 +303,11 @@ async def ingest_upload(
         contextualized = await contextualize_chunks(llm_client, doc.raw_text, chunks, session_id=session_id)
 
     key: str = doc.metadata["doc_key"]
+    owners = await embedder.pg.fetch("SELECT DISTINCT tenant_id FROM rag_chunks WHERE doc_key = $1", key, session_id=session_id)
+    if any(row["tenant_id"] != tenant_id for row in owners):
+        raise UploadError(msg("upload.tenant_conflict", doc_key=key))  # replacing it would delete another tenant's (or the shared) document
+    for chunk in chunks:
+        chunk.metadata["tenant_id"] = tenant_id
     rows = await embedder.pg.fetch(
         "SELECT count(*) AS n FROM rag_chunks WHERE doc_key = $1 OR (doc_key IS NULL AND category = $2 AND filename = $3)",
         key, doc.category, filename, session_id=session_id,

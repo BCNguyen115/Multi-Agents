@@ -1,0 +1,67 @@
+# Backend + frontend of the agent platform. What the chart does NOT run: PostgreSQL with pgvector, Redis (with a password), the
+# python-sandbox service and the TEI reranker. Point to them below. Build and push the two images first:
+#   docker build -t <registry>/agent-backend:<tag> .            docker build -t <registry>/agent-frontend:<tag> ./frontend
+#
+#   helm upgrade --install agent deploy/helm/agent-platform -f my-values.yaml --set secrets.POSTGRES_URL=... (see "secrets")
+
+image:
+  backend: {repository: agent-backend, tag: latest, pullPolicy: IfNotPresent}
+  frontend: {repository: agent-frontend, tag: latest, pullPolicy: IfNotPresent}
+imagePullSecrets: []
+
+backend:
+  replicas: 2            # state lives in PostgreSQL and Redis, so any number of replicas works (scripts/replica_check.py)
+  port: 8000
+  resources:
+    requests: {cpu: 250m, memory: 768Mi}
+    limits: {memory: 2Gi}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+
+frontend:
+  replicas: 2
+  port: 3000
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 512Mi}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+
+# Non-secret settings of the backend (any key of src/config.py Settings, as an environment variable).
+config:
+  APP_ENV: production
+  AUTH_MODE: jwt
+  MEM0_VECTOR_STORE: pgvector
+  SANDBOX_URL: http://python-sandbox:8080
+  RERANKER_ENDPOINT: http://tei-reranker:80/rerank
+  LANGFUSE_ENABLED: "false"
+  # Single sign-on (leave empty for password sign-in only); the client secret goes under secrets.extra
+  # OIDC_ISSUER: https://login.example.com/realms/corp
+  # OIDC_CLIENT_ID: agent-platform
+  # OIDC_REDIRECT_URI: https://agent.example.com/api/auth/oidc/callback
+  # Which peers may forward a visitor's real address; the ingress controller's network when it overwrites X-Forwarded-For
+  # FORWARDED_ALLOW_IPS: 10.0.0.0/8
+  # The console's Monitoring page lists the alerts firing in your Alertmanager (read-only; leave empty when you have none)
+  # ALERTMANAGER_URL: http://alertmanager.monitoring:9093
+  # BACKUP_STATUS_DIR (newest backup and its age) needs the backup folder mounted into the backend pod; this chart runs no backup job
+  # and mounts no volume, so leave it unset unless you add the volume yourself.
+
+# Secret settings. The chart makes a Secret from these, or use one you manage yourself (existingSecret) with the same keys.
+secrets:
+  POSTGRES_URL: ""          # postgresql://user:password@host:5432/agentdb  (needs the pgvector extension)
+  REDIS_URL: ""             # redis://:password@host:6379/0
+  OPENROUTER_API_KEY: ""
+  AUTH_JWT_SECRET: ""       # at least 32 random characters
+  SANDBOX_SECRET: ""        # at least 16 random characters, the same as the sandbox's
+  extra: {}                 # e.g. DB_AGENT_PASSWORD, OIDC_CLIENT_SECRET, METRICS_TOKEN, TAVILY_API_KEY
+existingSecret: ""
+
+# The browser only talks to the frontend (it forwards /api to the backend), so only the frontend is exposed.
+ingress:
+  enabled: false
+  className: ""
+  host: agent.example.com
+  annotations: {}
+  tls: []                   # e.g. [{secretName: agent-tls, hosts: [agent.example.com]}]

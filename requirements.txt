@@ -8,6 +8,7 @@ uvicorn[standard]>=0.30.0
 sse-starlette>=2.0.0
 python-multipart>=0.0.9      # FastAPI UploadFile + Form
 httpx>=0.27.0                # async HTTP (MCP client, reranker)
+prometheus-client>=0.20      # /metrics for Prometheus (src/shared/metrics.py)
 
 # --- Data stores ---
 asyncpg>=0.29.0              # PostgreSQL async driver (pgvector used through SQL)
@@ -21,6 +22,7 @@ openai>=1.35.0
 litellm>=1.40.0
 langfuse[langchain]>=2.36.0,<3.0.0  # LiteLLM requires the V2 SDK
 langgraph>=0.1.5             # StateGraph / PEV loop
+langgraph-checkpoint-postgres>=3.0  # run checkpoints (CHECKPOINT_ENABLED): src/orchestrator/checkpointing.py
 langchain-core>=0.2.0
 langchain-text-splitters>=0.2.0
 mem0ai[nlp,extras]>=0.1.0    # long-term memory
@@ -30,7 +32,7 @@ python-pptx>=1.0             # PowerPoint decks in the knowledge base (src/inges
 pypdfium2>=4.30              # renders PDF pages: OCR input and the cited-page preview (src/ingestion/ocr.py, preview.py)
 pytesseract>=0.3             # wrapper for the tesseract program (installed in the backend image)
 tavily-python>=0.3.0
-crawl4ai>=0.4.0              # web crawl (needs Chromium: see Dockerfile INSTALL_BROWSER)
+scrapling[fetchers,rag]>=0.4.15  # web crawl for search_agent: HTTP first, Chromium only for JS-drawn pages (Dockerfile INSTALL_BROWSER); rag = Markdown output
 
 # --- Security & data quality ---
 PyJWT>=2.8.0                 # gateway bearer-token verification (src/shared/auth.py)

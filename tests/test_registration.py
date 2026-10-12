@@ -24,7 +24,7 @@ class FakePG:
             if username in self.rows:
                 return []
             self.rows[username] = {"username": username, "display_name": display_name, "password_hash": password_hash,
-                                   "recovery_hash": recovery_hash, "roles": [], "tenant_id": tenant, "department_id": dept}
+                                   "recovery_hash": recovery_hash, "roles": [], "tenant_id": tenant, "department_id": dept, "disabled": False}
             return [{"username": username}]
         if sql.startswith("UPDATE"):
             username, password_hash, *rest = args
@@ -101,7 +101,7 @@ def test_roles_cannot_be_asked_for_and_weak_input_is_refused(gateway):
 
 
 def test_the_sign_in_screen_learns_what_it_may_offer(gateway):
-    assert asyncio.run(gateway.auth_config()) == {"login_enabled": True, "registration_enabled": True}
+    assert asyncio.run(gateway.auth_config()) == {"login_enabled": True, "registration_enabled": True, "sso_enabled": False}
 
 
 # ------------------------------------------------------------------ recovery key, reset and change of the password

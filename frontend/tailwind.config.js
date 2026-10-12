@@ -32,6 +32,7 @@ module.exports = {
         border: {
           DEFAULT: token('--border'),
           strong: token('--border-strong'),
+          input: token('--border-input'),
           focus: token('--border-focus'),
         },
 
@@ -43,26 +44,16 @@ module.exports = {
           error:    token('--accent-error'),
           primary:  token('--accent-primary'),
           'primary-hover': token('--accent-primary-hover'),
+          // Solid fills that carry text, and the text colour that is legible on any accent fill
+          fill: token('--accent-fill'),
+          'fill-hover': token('--accent-fill-hover'),
+          on: token('--accent-on'),
         },
 
-        // FPT Brand
+        // FPT brand: tokens only, they accompany the logo and are not interface accents (DESIGN.md)
         brand: {
           primary: 'var(--brand-primary)',
           accent:  'var(--brand-accent)',
-          50: '#f0f7ff',
-          100: '#e0effe',
-          500: '#005697',
-          600: '#004880',
-          700: '#005697',
-          800: '#003e6d',
-          900: '#002949',
-        },
-
-        // Legacy FPT compat
-        fpt: {
-          blue: '#005697',
-          orange: '#F37021',
-          green: '#10B981',
         },
       },
 
@@ -158,6 +149,17 @@ module.exports = {
         '2xs': ['10px', { lineHeight: '14px' }],
       },
 
+      /* ── Stacking: one named scale instead of z-[9999] ─── */
+      zIndex: {
+        sidebar: '60',
+        menu: '70',
+        modal: '80',
+        viewer: '90',
+        palette: '100',
+        toast: '110',
+        skip: '120',
+      },
+
       /* ── Min/Height Extensions ───────────────────────── */
       minHeight: {
         'kpi': '112px',
@@ -177,9 +179,11 @@ module.exports = {
         '200': '200ms',
         '300': '300ms',
       },
+      // `ease-out` / `ease-in` / `ease-in-out` utilities resolve to the named easings in globals.css
       transitionTimingFunction: {
-        'out': 'ease-out',
-        'in-out': 'ease-in-out',
+        'out': 'var(--ease-out)',
+        'in': 'var(--ease-in)',
+        'in-out': 'var(--ease-in-out)',
       },
 
       /* ── Grid (12-col Dashboard) ────────────────────── */

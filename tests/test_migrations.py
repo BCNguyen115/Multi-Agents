@@ -3,6 +3,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ HEAD = head_revision()  # every revision is applied by upgrade_to_head, whatever
 
 
 def test_the_history_has_one_head_and_the_baseline_cannot_be_downgraded():
-    assert head_revision() == "0008"
+    assert head_revision() == "0016"
     spec = importlib.util.spec_from_file_location("baseline", ROOT / "migrations" / "versions" / "0001_baseline_rag_chunks.py")
     baseline = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(baseline)
@@ -43,7 +44,7 @@ class TestAgainstPostgres:
     def reset():
         engine = create_engine(database_url(DSN))
         with engine.begin() as connection:
-            connection.execute(text("DROP TABLE IF EXISTS rag_passages, rag_feedback, rag_meta, rag_chunks, alembic_version CASCADE"))
+            connection.execute(text("DROP TABLE IF EXISTS rag_passages, rag_feedback, answer_reviews, coding_repos, rag_meta, rag_chunks, alembic_version CASCADE"))
         engine.dispose()
 
     @staticmethod
@@ -89,11 +90,19 @@ class TestAgainstPostgres:
         # separate processes, like backend replicas: the advisory lock in migrations/env.py serialises them
         self.reset()
         env = {**os.environ, "POSTGRES_URL": DSN}
+        # output goes to files, not pipes: one reader per pipe would be needed, and the child holding the lock blocks as soon as its pipe is full
+        logs = [(tempfile.TemporaryFile("w+"), tempfile.TemporaryFile("w+")) for _ in range(4)]
         procs = [
-            subprocess.Popen([sys.executable, "-m", "scripts.migrate"], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            for _ in range(4)
+            subprocess.Popen([sys.executable, "-m", "scripts.migrate"], cwd=ROOT, env=env, stdout=out, stderr=err, text=True)
+            for out, err in logs
         ]
-        outputs = [p.communicate(timeout=180) for p in procs]
+        for p in procs:
+            p.wait(timeout=180)
+        outputs = []
+        for out, err in logs:
+            out.seek(0), err.seek(0)
+            outputs.append((out.read(), err.read()))
+            out.close(), err.close()
         assert [p.returncode for p in procs] == [0, 0, 0, 0], outputs
         assert all(f"revision {HEAD}" in out for out, _ in outputs)
         engine = create_engine(database_url(DSN))

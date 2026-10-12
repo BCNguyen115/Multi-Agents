@@ -2,7 +2,7 @@
 
 import { useEffect, type RefObject } from 'react';
 
-const FOCUSABLE = 'button, input, [href], [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = 'button, input, select, textarea, [href], [tabindex]:not([tabindex="-1"])';
 
 /**
  * What a modal dialog owes the keyboard: Escape closes it (when `canClose`), Tab stays inside it, and closing hands the

@@ -1,5 +1,6 @@
 """Knowledge base: more formats, OCR, listing/deleting documents, page preview, gateway messages in two languages."""
 import asyncio
+import os
 import io
 import re
 import shutil
@@ -275,3 +276,67 @@ def test_the_upload_message_follows_the_language_and_mentions_ocr():
         reset_lang(token)
     assert "thêm mới" in vietnamese and "OCR" in vietnamese
     assert english.startswith("Added **a.pdf**") and "read by OCR" in english and "split into several passages" in english
+
+
+# ------------------------------------------------------------------ tenant scope: the tenants retrieval reads from (RAG_TENANT_IDS)
+def test_the_tenant_restriction_of_retrieval_limits_what_is_listed_deleted_and_shown(monkeypatch, tmp_path):
+    (tmp_path / "scans").mkdir()
+    scanned_pdf(tmp_path / "scans" / "s.pdf")
+    monkeypatch.setattr(settings, "RAG_TENANT_IDS", ["acme"])
+    calls = []
+
+    class Recording(FakePg):
+        async def fetch(self, sql, *args, **kw):
+            calls.append(args)
+            return await super().fetch(sql, *args, **kw)
+
+        async def execute(self, sql, *args, **kw):
+            calls.append(args)
+            return await super().execute(sql, *args, **kw)
+
+    async def go():
+        app, c = client(monkeypatch, tmp_path, roles=["admin"])
+        app.state.pg_client = Recording()
+        async with c:
+            await c.get("/api/knowledge/documents")
+            assert calls[-1][-1] == ["acme"]  # the list is asked for acme's chunks only
+            await c.delete("/api/knowledge/documents", params={"doc_key": "nda/a.pdf"})
+            assert calls[-1] == ("nda/a.pdf", ["acme"])  # and so is the delete
+            # the kept PDF belongs to nobody in the file system: with no chunk of an allowed tenant behind it, the page is not shown
+            assert (await c.get("/api/knowledge/page", params={"doc_key": "scans/s.pdf", "page": 1})).status_code == 404
+
+    asyncio.run(go())
+
+
+@pytest.mark.skipif(not os.getenv("RAG_TEST_DSN"), reason="set RAG_TEST_DSN to a scratch PostgreSQL database (superuser, pgvector)")
+def test_on_a_real_database_only_the_allowed_tenants_documents_are_listed_or_deleted(monkeypatch, tmp_path):
+    from src.shared.migrations import upgrade_to_head
+    from src.shared.postgres_client import PostgresClient
+
+    dsn = os.environ["RAG_TEST_DSN"]
+    upgrade_to_head(dsn)
+    monkeypatch.setattr(settings, "RAG_TENANT_IDS", ["acme"])
+
+    async def go():
+        pg = PostgresClient(dsn=dsn)
+        await pg.connect(min_size=1, max_size=2)
+        try:
+            await pg.execute("DELETE FROM rag_chunks")
+            for key, tenant in (("nda/mine.pdf", "acme"), ("nda/theirs.pdf", "rival")):
+                category, filename = key.split("/")
+                await pg.execute(
+                    "INSERT INTO rag_chunks (content, raw_content, filename, category, doc_key, tenant_id) VALUES ('x', 'x', $1, $2, $3, $4)",
+                    filename, category, key, tenant,
+                )
+            app, c = client(monkeypatch, tmp_path, roles=["admin"])
+            app.state.pg_client = pg
+            async with c:
+                assert [d["doc_key"] for d in (await c.get("/api/knowledge/documents")).json()] == ["nda/mine.pdf"]
+                assert (await c.delete("/api/knowledge/documents", params={"doc_key": "nda/theirs.pdf"})).status_code == 404
+                assert (await c.delete("/api/knowledge/documents", params={"doc_key": "nda/mine.pdf"})).status_code == 200
+            assert await pg.fetch("SELECT 1 FROM rag_chunks WHERE doc_key = 'nda/theirs.pdf'")  # the other tenant's document is untouched
+        finally:
+            await pg.execute("DELETE FROM rag_chunks")
+            await pg.disconnect()
+
+    asyncio.run(go())

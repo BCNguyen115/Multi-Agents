@@ -160,8 +160,11 @@ class FakePG:
     def __init__(self):
         self.stored: dict[str, str] = {}
         self.counts: dict[str, int] = {}
+        self.owners: dict[str, str] = {}  # doc_key -> tenant_id of the stored chunks
 
     async def fetch(self, sql, *args, **kw):
+        if "DISTINCT tenant_id" in sql:
+            return [{"tenant_id": self.owners[args[0]]}] if args[0] in self.owners else []
         if "count(*)" in sql:
             return [{"n": self.counts.get(args[0], 0)}]
         return [{"doc_key": k, "doc_hash": v} for k, v in self.stored.items()]
@@ -181,6 +184,7 @@ class FakeEmbedder(IngestionEmbedder):
         self.written.append((doc_key, chunks))
         self.pg.stored[doc_key] = chunks[0].metadata["doc_hash"]
         self.pg.counts[doc_key] = len(chunks)
+        self.pg.owners[doc_key] = chunks[0].metadata.get("tenant_id", "public")
         return len(chunks)
 
 

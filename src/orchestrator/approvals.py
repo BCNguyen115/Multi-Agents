@@ -326,14 +326,22 @@ class ApprovalMixin:
 
                 from src.agents.db_agent.rls_transformer import inject_row_level_security
                 tenant_id, department_id = (requester["tenant"], requester["department"]) if requester else current_scope()  # whose data this is
-                secured_sql = inject_row_level_security(sql, tenant_id=tenant_id, department_id=department_id)
-                mcp_res = await agent.mcp_client.execute_sql_query(
-                    query_sql=secured_sql, session_id=session_id
-                )
-                try:
-                    res_dict = json.loads(mcp_res)
-                except Exception:
-                    res_dict = {"status": "success", "data": mcp_res}
+                if hasattr(agent, "execute_sql"):
+                    # an approval decides whether the statement runs, not whether it is checked: the validator, the caller's table rules,
+                    # row-level security and parameterization all apply, exactly as for a statement nobody had to approve
+                    checked = await agent.execute_sql(sql, session_id, tenant_id, department_id)
+                    if not checked.ok:
+                        return {"status": "error", "action_id": action_id, "decision": "approve", "response": msg("orch.sql_refused", error=checked.error)}
+                    secured_sql, res_dict = checked.sql, {"status": "success", "data": checked.rows or []}
+                else:
+                    secured_sql = inject_row_level_security(sql, tenant_id=tenant_id, department_id=department_id)
+                    mcp_res = await agent.mcp_client.execute_sql_query(
+                        query_sql=secured_sql, session_id=session_id
+                    )
+                    try:
+                        res_dict = json.loads(mcp_res)
+                    except Exception:
+                        res_dict = {"status": "success", "data": mcp_res}
 
                 data = res_dict.get("data", [])
                 exec_summary = msg(

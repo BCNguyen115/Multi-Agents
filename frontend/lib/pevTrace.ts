@@ -4,7 +4,7 @@
  */
 
 import type { StreamCallbacks } from './sse';
-import type { PEVStepData, PEVTraceState } from './types';
+import type { ChatMessage, PEVStepData, PEVTraceState } from './types';
 import { getLang, t } from './i18n';
 
 // The description of each node is written in the interface language. The step log / message the backend sends is not shown:
@@ -12,11 +12,23 @@ import { getLang, t } from './i18n';
 
 type Payload<K extends keyof StreamCallbacks> = Parameters<NonNullable<StreamCallbacks[K]>>[0];
 
+/**
+ * Was this answer an attempt to build a dashboard? Only the data agent builds one, so "the dashboard could not be built" is a
+ * message for its results alone: a web, document or database answer that failed verification is explained by the verification
+ * card ("not verified"), not by a dashboard it never tried to make.
+ */
+export function isDashboardAttempt(message: Pick<ChatMessage, 'pevEvents' | 'pevTrace'>): boolean {
+  const agent =
+    message.pevEvents?.final_response?.target_agent ?? message.pevEvents?.plan?.target_agent ?? message.pevTrace?.planner?.target_agent;
+  return agent === 'data_agent';
+}
+
 export function createInitialPevTraceState(agentMode?: string): PEVTraceState {
   const isSearch = agentMode?.includes('Search');
-  const isData = agentMode?.includes('Data');
+  const isDb = agentMode?.includes('Database');  // "Database Agent" also contains "Data"
+  const isData = !isDb && agentMode?.includes('Data');
   const isRag = agentMode?.includes('RAG');
-  const targetAgent = isSearch ? 'search_agent' : isData ? 'data_agent' : isRag ? 'rag_agent' : undefined;
+  const targetAgent = isSearch ? 'search_agent' : isDb ? 'db_agent' : isData ? 'data_agent' : isRag ? 'rag_agent' : undefined;
 
   return {
     currentStep: 'planner',

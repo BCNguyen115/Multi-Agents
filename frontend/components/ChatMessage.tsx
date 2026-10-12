@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import { t, useLang } from '../lib/i18n';
+import { isDashboardAttempt } from '../lib/pevTrace';
 import remarkGfm from 'remark-gfm';
 import { Bot, User, ExternalLink, AlertTriangle, Copy, Check, Loader2, ShieldCheck, ShieldAlert, Hourglass } from 'lucide-react';
 import { ChatMessage as ChatMessageType, SourceItem, CSVMetadata } from '../lib/types';
@@ -15,6 +16,9 @@ import { DashboardSkeleton } from './dashboard/DashboardSkeleton';
 import { DataSummaryView } from './DataSummaryView';
 import { ApprovalCard } from './ApprovalCard';
 import { KnowledgeDocumentsCard } from './KnowledgeDocumentsCard';
+import { SavedDashboardsCard } from './SavedDashboardsCard';
+import { CodingTaskCard } from './CodingTaskCard';
+import { jobIdOf } from '../lib/codingApi';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -43,7 +47,7 @@ function isDataAgentTarget(message: ChatMessageType): boolean {
   // If no SSE target yet, check message.agentMode
   if (message.agentMode) {
     const mode = message.agentMode.toLowerCase();
-    if (mode.includes('search') || mode.includes('rag') || mode.includes('db_agent') || mode.includes('integration')) {
+    if (mode.includes('search') || mode.includes('rag') || mode.includes('db_agent') || mode.includes('database') || mode.includes('integration')) {
       return false;
     }
     return mode.includes('data');
@@ -52,7 +56,7 @@ function isDataAgentTarget(message: ChatMessageType): boolean {
   return false;
 }
 
-type VerificationKind = 'rag' | 'data' | 'db' | 'other';
+type VerificationKind = 'rag' | 'data' | 'db' | 'web' | 'api' | 'other';
 
 /** Verdict of the Verifier for a finished message: `true`/`false`, or `null` when the message carries none. */
 function verifierVerdict(message: ChatMessageType): boolean | null {
@@ -78,6 +82,8 @@ function verificationKind(message: ChatMessageType): VerificationKind {
   if (target.includes('rag')) return 'rag';
   if (target.includes('data_agent') || target.includes('data agent')) return 'data';
   if (target.includes('db')) return 'db';
+  if (target.includes('search')) return 'web';
+  if (target.includes('integration')) return 'api';
   return 'other';
 }
 
@@ -101,7 +107,7 @@ function VerificationStrip({ message, loading }: { message: ChatMessageType; loa
       </p>
       {state !== 'preview' && (
         <details className="mt-1 text-foreground-secondary">
-          <summary className="cursor-pointer w-fit rounded font-medium hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40">
+          <summary className="cursor-pointer w-fit rounded font-medium hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary">
             {t(lang, 'verify.whatChecked')}
           </summary>
           <p className="mt-1 leading-relaxed">{t(lang, `verify.detail.${verificationKind(message)}`)}</p>
@@ -171,7 +177,7 @@ function CopyCodeButton({ code }: { code: string }) {
     <button
       type="button"
       onClick={handleCopy}
-      className="p-1 rounded-md hover:bg-surface-overlay text-foreground-muted hover:text-foreground transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary/50"
+      className="p-1 rounded-md hover:bg-surface-overlay text-foreground-muted hover:text-foreground transition-[color,background-color,border-color,opacity,transform] duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary"
       title={copied ? t(lang, 'chat.copied') : t(lang, 'chat.copyCode')}
       aria-label={t(lang, 'chat.copyCode')}
     >
@@ -307,6 +313,8 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
   // The reply may be a JSON envelope: parsed when the content changes, not on every render
   const wrapped = useMemo(() => parseWrappedReply(message.role, message.content), [message.role, message.content]);
   const displayAnswer = wrapped.text ?? message.content;
+  // a coding task was queued by this reply: the card follows it and shows the diff for a reviewer
+  const codingJobId = message.pevTrace?.executor?.agent_used === 'coding_agent' ? jobIdOf(displayAnswer ?? '') : null;
   let parsedSources: SourceItem[] = wrapped.sources ?? message.sources ?? [];
   const isSummaryReply = wrapped.isSummary;
 
@@ -336,7 +344,7 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
   if (message.role === 'user') {
     return (
       <div className="flex items-start justify-end gap-3 my-3 w-full">
-        <div className="max-w-[80%] bg-accent-primary text-white px-5 py-2.5 rounded-2xl rounded-tr-sm shadow-xs text-sm font-medium leading-relaxed whitespace-pre-wrap">
+        <div className="max-w-[80%] bg-accent-fill text-white px-5 py-2.5 rounded-2xl rounded-tr-sm shadow-xs text-sm font-medium leading-relaxed whitespace-pre-wrap">
           {displayAnswer}
         </div>
         <div className="w-8 h-8 rounded-full bg-surface-raised border border-border text-foreground flex items-center justify-center shrink-0">
@@ -369,6 +377,8 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
         )}
 
         {message.kind === 'knowledge-docs' && <KnowledgeDocumentsCard />}
+        {message.kind === 'saved-dashboards' && <SavedDashboardsCard />}
+        {codingJobId && <CodingTaskCard jobId={codingJobId} />}
 
         {/* Human-in-the-Loop Confirmation Card */}
         {message.approvalRequest && (
@@ -441,7 +451,7 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
             metadata={activeCSV.metadata as import('../lib/types').CSVMetadata}
             generatedCode={message.generatedCode}
           />
-        ) : !isThisMessageLoading && !message.dashboardSpec && (message.pevTrace?.is_verified === false || message.pevTrace?.verifier?.is_verified === false || message.pevEvents?.verifying?.is_verified === false) ? (
+        ) : !isThisMessageLoading && !message.dashboardSpec && isDashboardAttempt(message) && (message.pevTrace?.is_verified === false || message.pevTrace?.verifier?.is_verified === false || message.pevEvents?.verifying?.is_verified === false) ? (
           <div className="my-3 p-3.5 bg-accent-error/5 border border-accent-error/20 rounded-xl text-accent-error text-xs flex items-center gap-2.5 font-medium">
             <AlertTriangle className="w-4.5 h-4.5 shrink-0" />
             <span>{t(lang, 'chat.blocked')}</span>
@@ -451,9 +461,18 @@ const ChatMessageView: React.FC<ChatMessageProps> = ({
 
         {/* Sources */}
         {parsedSources.length > 0 && <SourcesList sources={parsedSources} />}
-        {/* Thumbs: only for answers that cite documents (web results have no `file`) and are finished */}
-        {!isThisMessageLoading && Boolean(userQuery) && parsedSources.some((s) => s.file) && (
-          <FeedbackButtons messageId={message.id} query={userQuery as string} sources={parsedSources} />
+        {/* Thumbs under every finished answer, whichever agent wrote it: the Quality page needs them for all of them */}
+        {!isThisMessageLoading && Boolean(userQuery) && Boolean(displayAnswer) && (
+          <FeedbackButtons
+            messageId={message.id}
+            query={userQuery as string}
+            sources={parsedSources}
+            agent={message.pevTrace?.planner?.target_agent ?? message.pevEvents?.final_response?.target_agent ?? ''}
+            answer={displayAnswer}
+            runId={message.pevTrace?.run_id ?? ''}
+            verified={message.pevTrace?.verifier?.is_verified ?? message.pevTrace?.is_verified}
+            retries={message.pevTrace?.verifier?.retries ?? 0}
+          />
         )}
       </div>
     </div>

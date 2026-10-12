@@ -6,7 +6,7 @@ import { Check, Copy, Loader2, X } from 'lucide-react';
 import { useAuth, type AuthTab } from '../../context/AuthContext';
 import { t, useLang, type MessageKey } from '../../lib/i18n';
 import { useDialogA11y } from '../../lib/useDialogA11y';
-import { Field } from './Field';
+import { Field, PRIMARY_BUTTON } from './Field';
 
 // The same rules the backend enforces (RegisterRequest): checking them here only saves a round trip.
 const USERNAME_RULE = /^[A-Za-z0-9._-]{3,32}$/;
@@ -14,10 +14,8 @@ const MIN_PASSWORD = 10;
 
 type View = 'form' | 'forgot' | 'recovery';
 
-const PRIMARY_BUTTON =
-  'flex w-full min-h-11 items-center justify-center gap-2 rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent-primary-hover disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface';
 const LINK_BUTTON =
-  'text-sm font-medium text-accent-primary hover:underline cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40';
+  'text-sm font-medium text-accent-primary hover:underline cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary';
 
 /** Sign-in / sign-up / forgot-password dialog. Opens from the settings menu, and by itself when the session is missing or has expired. */
 export function AuthModal() {
@@ -138,7 +136,7 @@ export function AuthModal() {
       aria-selected={tab === id}
       aria-controls="auth-panel"
       onClick={() => setTab(id)}
-      className={`flex-1 rounded-full px-4 py-2 text-sm font-medium transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40 ${
+      className={`flex-1 rounded-full px-4 py-2 text-sm font-medium transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary ${
         tab === id ? 'bg-surface-raised text-foreground' : 'text-foreground-secondary hover:text-foreground'
       }`}
     >
@@ -149,7 +147,7 @@ export function AuthModal() {
   const title: MessageKey = locked ? 'auth.recovery.title' : forgot ? 'auth.forgot.title' : signUp ? 'auth.title.signUp' : 'auth.title.signIn';
 
   return createPortal(
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-background/60 backdrop-blur-sm" data-testid="auth-modal">
+    <div className="fixed inset-0 z-modal flex items-center justify-center p-4 bg-background/60 backdrop-blur-sm" data-testid="auth-modal">
       <div
         ref={dialogRef}
         role="dialog"
@@ -163,7 +161,7 @@ export function AuthModal() {
             onClick={closeAuthModal}
             disabled={busy}
             aria-label={t(lang, 'auth.close')}
-            className="absolute right-3 top-3 w-9 h-9 rounded-full flex items-center justify-center text-foreground-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+            className="absolute right-3 top-3 w-9 h-9 rounded-full flex items-center justify-center text-foreground-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
           >
             <X className="w-[18px] h-[18px]" aria-hidden="true" />
           </button>
@@ -191,7 +189,7 @@ export function AuthModal() {
                 <button
                   type="button"
                   onClick={copyKey}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-foreground-secondary hover:bg-surface-raised hover:text-foreground cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-foreground-secondary hover:bg-surface-raised hover:text-foreground cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
                 >
                   {copied ? <Check className="w-3.5 h-3.5 text-accent-primary" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
                   {copied ? t(lang, 'auth.recovery.copied') : t(lang, 'auth.recovery.copy')}
@@ -253,6 +251,11 @@ export function AuthModal() {
                 <button type="button" onClick={() => setView('forgot')} className={LINK_BUTTON}>
                   {t(lang, 'auth.forgot')}
                 </button>
+              )}
+              {!signUp && config.sso_enabled && (
+                <a href="/api/auth/oidc/login" className={PRIMARY_BUTTON}>
+                  {t(lang, 'auth.sso')}
+                </a>
               )}
             </form>
           )}

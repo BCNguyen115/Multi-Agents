@@ -172,7 +172,7 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
                       <option key={val} value={val}>{val}</option>
                     ))}
                   </select>
-                  <p className="text-2xs font-mono text-foreground-muted">Hold Ctrl/Cmd for multi-select</p>
+                  <p className="text-xs font-mono text-foreground-muted">{t(lang, 'ent.multiSelectHint')}</p>
                 </div>
               );
             })
@@ -180,16 +180,16 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
         </div>
 
         <div className="lg:col-span-3 space-y-6">
-          {/* KPI Cards: 112px, a 3px token-colored bar on the left (.kpi-card), figures in tabular mono */}
+          {/* KPI Cards: 112px, same flat card as the v2 dashboard's KpiCard (no side stripe), figures in tabular mono */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="enterprise-card kpi-card h-[112px] min-h-[112px] pr-4 py-3.5 flex flex-col justify-between overflow-hidden">
+            <div className="enterprise-card h-[112px] min-h-[112px] px-4 py-3.5 flex flex-col justify-between overflow-hidden">
               <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider truncate">{t(lang, 'ent.totalRecords')}</p>
               <p className="text-2xl font-bold font-mono tabular-nums text-foreground tracking-tight">{totalRowsCount.toLocaleString()}</p>
               <span className="text-xs text-foreground-muted font-mono truncate">{t(lang, 'ent.hintRows')}</span>
             </div>
 
             {primaryNumericCol && (
-              <div className="enterprise-card kpi-card h-[112px] min-h-[112px] pr-4 py-3.5 flex flex-col justify-between overflow-hidden">
+              <div className="enterprise-card h-[112px] min-h-[112px] px-4 py-3.5 flex flex-col justify-between overflow-hidden">
                 <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider truncate" title={t(lang, 'ent.totalOf', { column: primaryNumericCol.replace(/_/g, ' ') })}>
                   {t(lang, 'ent.totalOf', { column: primaryNumericCol.replace(/_/g, ' ') })}
                 </p>
@@ -201,7 +201,7 @@ export const EnterpriseDashboard: React.FC<EnterpriseDashboardProps> = ({ metada
             )}
 
             {primaryNumericCol && (
-              <div className="enterprise-card kpi-card h-[112px] min-h-[112px] pr-4 py-3.5 flex flex-col justify-between overflow-hidden">
+              <div className="enterprise-card h-[112px] min-h-[112px] px-4 py-3.5 flex flex-col justify-between overflow-hidden">
                 <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider truncate" title={t(lang, 'ent.avgOf', { column: primaryNumericCol.replace(/_/g, ' ') })}>
                   {t(lang, 'ent.avgOf', { column: primaryNumericCol.replace(/_/g, ' ') })}
                 </p>

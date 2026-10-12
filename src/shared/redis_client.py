@@ -125,6 +125,16 @@ class RedisClient:
             )
             raise
 
+    async def take_value(self, key: str, session_id: str = "N/A") -> Optional[str]:
+        """Read AND delete a value in one step (``GETDEL``): for single-use values such as the OIDC ``state``, so a replay finds nothing."""
+        if self.client is None:
+            raise RuntimeError("Redis client is not connected.")
+        try:
+            return await self.client.getdel(key)
+        except aioredis.RedisError as exc:
+            logger.error("Redis GETDEL failed for key=%s: %s", key, exc, extra={"session_id": session_id})
+            raise
+
     async def get_value(
         self,
         key: str,

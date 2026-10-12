@@ -41,6 +41,7 @@ class AgentState(TypedDict, total=False):
     verifier_feedback: str
     retry_count: int
     max_retries: int
+    verifier_down: Optional[bool]  # the Verifier could not judge (LLM failure): the run ends there, the answer goes out marked unverified
     agent_mode: Optional[str]
     target_agent: str
     forced_target_agent: Optional[str]

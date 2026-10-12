@@ -1,21 +1,42 @@
 """SearchAgent — Real-time Web Search and Crawling Agent.
 
-Combines Tavily Search API with Crawl4AI async web scraper to retrieve
+Combines Tavily Search API with the Scrapling web scraper to retrieve
 live web context and synthesize comprehensive answers using LLMClient.
 """
 
 import asyncio
+import json
 import logging
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 from src.agents.base_agent import BaseAgent
+from src.agents.search_agent.verification import verify_web_answer
 from src.config import Settings
+from src.shared.mcp_client import _is_internal_host, resolves_to_private_address
+from src.shared import user_context
 from src.shared.security import audit_context_safety
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
 from src.shared.security import unwrap_user_input
 
 logger: logging.Logger = get_logger(__name__)
+
+_SCRAPE_TIMEOUT: float = 15.0  # per page, the HTTP read and the browser fallback together
+_MAX_PAGE_CHARS: int = 3000  # what one page contributes to the prompt
+_MIN_PAGE_CHARS: int = 300  # a page shorter than this over plain HTTP is probably drawn by JavaScript: try the browser
+_MAX_REDIRECTS: int = 3
+_REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
+
+
+async def _is_public_web_url(url: str) -> bool:
+    """Search results are untrusted: only http(s) URLs of public hosts are fetched, never localhost, ``.internal`` names
+    or a name that resolves to a private range (the cloud metadata service, the Docker network)."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not host or _is_internal_host(host):
+        return False
+    return not await resolves_to_private_address(host)
 
 _SYSTEM_PROMPT = """Bạn là một Chuyên gia Tìm kiếm và Phân tích Thông tin Web Thời gian thực (SearchAgent).
 Nhiệm vụ: Tổng hợp câu trả lời chi tiết, chính xác dựa TRỰC TIẾP và CHỈ dựa trên thông tin tìm kiếm và cào dữ liệu được cung cấp dưới đây.
@@ -36,7 +57,7 @@ Dưới đây là thông tin cào được từ Web:
 
 
 class SearchAgent(BaseAgent):
-    """Real-time Search Agent using Tavily API & Crawl4AI."""
+    """Real-time Search Agent using Tavily API & Scrapling."""
 
     def __init__(
         self,
@@ -96,44 +117,60 @@ class SearchAgent(BaseAgent):
             logger.error("Tavily search failed: %s", exc)
             return []
 
-    async def _scrape_urls(self, urls: list[str]) -> dict[str, str]:
-        """Phase 2: Deep crawl web pages using Crawl4AI AsyncWebCrawler with safe snippet fallback."""
-        scraped_data: dict[str, str] = {}
-        if not urls:
-            return scraped_data
+    async def _fetch_page(self, url: str) -> str:
+        """One page as Markdown with Scrapling: plain HTTP first (~0.5 s, no browser), a real browser only when the page
+        comes back (almost) empty because JavaScript draws it. Redirects are followed by hand so each hop is vetted."""
+        from scrapling.fetchers import AsyncFetcher, DynamicFetcher
 
+        for _ in range(_MAX_REDIRECTS + 1):
+            if not await _is_public_web_url(url):
+                logger.warning("Refusing to crawl a non-public URL: %s", url)
+                return ""
+            page = await AsyncFetcher.get(url, timeout=8, follow_redirects=False)
+            headers = {k.lower(): v for k, v in page.headers.items()}
+            if page.status in _REDIRECT_STATUSES and headers.get("location"):
+                url = urljoin(url, headers["location"])
+                continue
+            break
+        else:
+            return ""  # redirect loop
+        if page.status != 200 or "html" not in headers.get("content-type", "html"):
+            return ""
+
+        text = await asyncio.to_thread(page.markdown)
+        if len(text) >= _MIN_PAGE_CHARS:
+            return text
         try:
-            from crawl4ai import AsyncWebCrawler
+            # ponytail: the browser follows redirects and script navigation itself, only the URL above was vetted
+            rendered = await DynamicFetcher.async_fetch(url, timeout=12_000, disable_resources=True, network_idle=True)
+            if rendered.status == 200:
+                return await asyncio.to_thread(rendered.markdown)
+        except Exception as exc:  # no Chromium in this image (INSTALL_BROWSER=false), or the page never settled
+            logger.info("Browser fallback for %s unavailable (%s) — keeping the plain HTTP text", url, exc)
+        return text
 
-            async with AsyncWebCrawler(verbose=False) as crawler:
-                for url in urls:
-                    try:
-                        result = await asyncio.wait_for(
-                            crawler.arun(url=url),
-                            timeout=8.0,
-                        )
-                        if result and getattr(result, "markdown", None):
-                            scraped_data[url] = str(result.markdown)[:3000]
-                        else:
-                            scraped_data[url] = ""
-                    except asyncio.TimeoutError:
-                        logger.warning("Crawling URL %s timed out after 8s — falling back to search snippet", url)
-                        scraped_data[url] = ""
-                    except Exception as crawl_err:
-                        logger.warning("Failed to crawl URL %s (%s) — falling back to search snippet", url, crawl_err)
-                        scraped_data[url] = ""
-        except ImportError:
-            logger.error("crawl4ai package is not installed.")
-        except Exception as exc:
-            logger.error("Crawl4AI scraping error: %s — using Tavily search snippets fallback", exc)
+    async def _scrape_urls(self, urls: list[str]) -> dict[str, str]:
+        """Phase 2: read the search results with Scrapling, all at once. A page that cannot be read maps to "" and the
+        caller then uses the search snippet."""
 
-        return scraped_data
+        async def one(url: str) -> tuple[str, str]:
+            try:
+                return url, (await asyncio.wait_for(self._fetch_page(url), timeout=_SCRAPE_TIMEOUT))[:_MAX_PAGE_CHARS]
+            except asyncio.TimeoutError:
+                logger.warning("Crawling URL %s timed out after %.0fs — falling back to search snippet", url, _SCRAPE_TIMEOUT)
+            except ImportError:
+                logger.error("scrapling package is not installed.")
+            except Exception as crawl_err:
+                logger.warning("Failed to crawl URL %s (%s) — falling back to search snippet", url, crawl_err)
+            return url, ""
+
+        return dict(await asyncio.gather(*(one(url) for url in urls)))
 
     async def process_request(self, query: str, session_id: str) -> str:
         """Process user search query end-to-end (Search -> Crawl -> Synthesis).
 
         Implements circuit breaker pattern: graceful degradation when external
-        services (Tavily, Crawl4AI) are unavailable.
+        services (Tavily, Scrapling) are unavailable.
         """
         logger.info(
             "SearchAgent processing query: '%s'", query, extra={"session_id": session_id}
@@ -165,7 +202,7 @@ class SearchAgent(BaseAgent):
                 crawled_content = await self._scrape_urls(urls)
             except Exception as crawl_exc:
                 logger.warning(
-                    "Crawl4AI fallback triggered: %s — using Tavily snippets only",
+                    "Scrapling fallback triggered: %s — using Tavily snippets only",
                     crawl_exc,
                     extra={"session_id": session_id},
                 )
@@ -190,6 +227,7 @@ class SearchAgent(BaseAgent):
 
             # Combine context into Zero-Trust Data Spotlighting Envelopes
             context_blocks: list[str] = []
+            evidence: list[dict[str, str]] = []  # exactly what the model is shown: the answer is checked against it
             for idx, res in enumerate(search_results):
                 title = sanitized_titles[idx] or res["title"]
                 url = res["url"]
@@ -199,6 +237,7 @@ class SearchAgent(BaseAgent):
                     else (crawled_content.get(url, "") or res.get("snippet", ""))
                 )
 
+                evidence.append({"title": title, "url": url, "text": clean_content})
                 source_id = f"web_{idx + 1}"
                 spotlight_block = (
                     f'<<<BEGIN_UNTRUSTED_EXTERNAL_SOURCE id="{source_id}" source="web" trust_level="zero">>>\n'
@@ -210,7 +249,7 @@ class SearchAgent(BaseAgent):
             web_context = "\n---\n".join(context_blocks)
 
             # Step 3: LLM Synthesis
-            system_prompt = _SYSTEM_PROMPT.format(web_context=web_context)
+            system_prompt = _SYSTEM_PROMPT.format(web_context=web_context) + user_context.memory_note()
 
             response: Any = await self.llm_client.chat_completion(
                 messages=[
@@ -224,7 +263,18 @@ class SearchAgent(BaseAgent):
                 session_id=session_id,
             )
             answer: str = response.choices[0].message.content or ""
-            return answer
+            return json.dumps(
+                {
+                    "answer": answer,
+                    "sources": [
+                        {"title": e["title"], "url": e["url"], "domain": urlparse(e["url"]).netloc.removeprefix("www."),
+                         "snippet": e["text"][:200], "file": e["url"], "section": e["title"]}
+                        for e in evidence
+                    ],
+                    "verification": verify_web_answer(answer, evidence, clean_query),  # read by the orchestrator's Verifier: no LLM judge
+                },
+                ensure_ascii=False,
+            )
 
         except Exception as exc:
             logger.error(

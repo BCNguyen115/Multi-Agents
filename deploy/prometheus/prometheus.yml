@@ -1,0 +1,21 @@
+# Prometheus for the agent platform. Started by docker-compose.monitoring.yml, which writes METRICS_TOKEN to /tmp/metrics_token.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: agent-backend
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /tmp/metrics_token
+    static_configs:
+      - targets: ["backend:8000"]

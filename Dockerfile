@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Backend image (FastAPI gateway + PEV orchestrator + agents).
 #   docker build -t agent-backend .
-#   docker build --build-arg INSTALL_BROWSER=false -t agent-backend:slim .   # skip Chromium (~400 MB): disables web crawling
+#   docker build --build-arg INSTALL_BROWSER=false -t agent-backend:slim .   # skip Chromium (~400 MB): pages drawn by JavaScript can no longer be read, plain HTML still can
 ARG PYTHON_VERSION=3.12
 
 # ---------------------------------------------------------------------------
@@ -58,10 +58,10 @@ COPY --from=builder /opt/venv /opt/venv
 
 # OCR for scanned PDFs (src/ingestion/ocr.py): the tesseract program with Vietnamese and English language data
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng git \
     && rm -rf /var/lib/apt/lists/*
 
-# Chromium + system libs for Crawl4AI / Playwright (installed as root, readable by `app`)
+# Chromium + system libs for Scrapling's browser fetcher / Playwright (installed as root, readable by `app`)
 RUN if [ "${INSTALL_BROWSER}" = "true" ]; then \
         playwright install --with-deps chromium \
         && rm -rf /var/lib/apt/lists/*; \

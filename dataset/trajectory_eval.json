@@ -1,0 +1,117 @@
+{
+  "_comment": "Trajectory eval (python -m scripts.run_orchestration_eval). Each scenario runs the real PEV graph with scripted agents and a scripted LLM, then compares (1) the steps taken (plan:<agent> | exec:<agent> | hitl | decline | verify:pass | verify:retry | end:unverified) and (2) how many times each tool was called, 0 included: a mutating call or a sensitive query must NEVER run before approval. Deterministic, no API key.",
+  "scenarios": [
+    {
+      "id": "t01_rag_answer_is_checked_and_accepted",
+      "mode": "rag_agent", "query": "Thời hạn NDA là bao lâu?",
+      "agents": {"rag_agent": {"replies": [{"answer": "Thời hạn là 2 năm [1].", "sources": [], "verification": {"status": "ok", "grounded": true, "cited": [1], "unsupported_numbers": []}}]}},
+      "expect": {"trajectory": ["plan:rag_agent", "exec:rag_agent", "verify:pass"], "calls": {"rag_agent.process_request": 1}}
+    },
+    {
+      "id": "t02_uncited_rag_answer_is_retried_with_the_verifier_note",
+      "mode": "rag_agent", "query": "Thời hạn NDA là bao lâu?",
+      "agents": {"rag_agent": {"replies": [
+        {"answer": "Thời hạn là 2 năm.", "sources": [], "verification": {"status": "ok", "grounded": false, "cited": [], "unsupported_numbers": []}},
+        {"answer": "Thời hạn là 2 năm [1].", "sources": [], "verification": {"status": "ok", "grounded": true, "cited": [1], "unsupported_numbers": []}}
+      ]}},
+      "expect": {"trajectory": ["plan:rag_agent", "exec:rag_agent", "verify:retry", "exec:rag_agent", "verify:pass"], "calls": {"rag_agent.process_request": 2}, "retry_query_contains": {"rag_agent": "Verifier"}}
+    },
+    {
+      "id": "t03_an_answer_that_never_passes_stops_after_the_retry_budget",
+      "mode": "rag_agent", "query": "Thời hạn NDA là bao lâu?",
+      "agents": {"rag_agent": {"replies": [{"answer": "Thời hạn là 2 năm.", "sources": [], "verification": {"status": "ok", "grounded": false, "cited": [], "unsupported_numbers": []}}]}},
+      "expect": {"trajectory": ["plan:rag_agent", "exec:rag_agent", "verify:retry", "exec:rag_agent", "verify:retry", "end:unverified"], "calls": {"rag_agent.process_request": 2}}
+    },
+    {
+      "id": "t04_a_sensitive_query_waits_for_approval_and_never_runs",
+      "mode": "db_agent", "query": "Lương của nhân viên phòng IT là bao nhiêu?",
+      "agents": {"db_agent": {"sql": "SELECT salary FROM employees", "sensitive": true, "replies": ["unused"]}},
+      "expect": {"trajectory": ["plan:db_agent", "hitl", "verify:pass"], "calls": {"db_agent.generate_sql": 1, "db_agent.process_request": 0, "db_agent.execute_sql_query": 0}}
+    },
+    {
+      "id": "t05_a_plain_query_runs_without_approval",
+      "mode": "db_agent", "query": "Có bao nhiêu bản ghi?",
+      "agents": {"db_agent": {"sql": "SELECT count(*) FROM t", "sensitive": false, "replies": [{"answer": "Có 12 bản ghi.", "sql": "SELECT count(*) FROM t", "data": [{"count": 12}], "row_count": 1}]}},
+      "expect": {"trajectory": ["plan:db_agent", "exec:db_agent", "verify:pass"], "calls": {"db_agent.generate_sql": 1, "db_agent.process_request": 1, "db_agent.execute_sql_query": 0}}
+    },
+    {
+      "id": "t06_a_number_the_rows_do_not_contain_is_retried",
+      "mode": "db_agent", "query": "Có bao nhiêu bản ghi?",
+      "agents": {"db_agent": {"sql": "SELECT count(*) FROM t", "sensitive": false, "replies": [
+        {"answer": "Có 15 bản ghi.", "sql": "SELECT count(*) FROM t", "data": [{"count": 12}], "row_count": 1},
+        {"answer": "Có 12 bản ghi.", "sql": "SELECT count(*) FROM t", "data": [{"count": 12}], "row_count": 1}
+      ]}},
+      "expect": {"trajectory": ["plan:db_agent", "exec:db_agent", "verify:retry", "exec:db_agent", "verify:pass"], "calls": {"db_agent.process_request": 2}}
+    },
+    {
+      "id": "t07_a_mutating_api_call_waits_for_approval_and_never_runs",
+      "mode": "integration_agent", "query": "Tạo đơn hàng mới qua API",
+      "agents": {"integration_agent": {"url": "http://localhost:8000/orders", "method": "POST", "replies": ["unused"]}},
+      "expect": {"trajectory": ["plan:integration_agent", "hitl", "verify:pass"], "calls": {"integration_agent.parse_request": 1, "integration_agent.process_request": 0, "integration_agent.execute_rest_request": 0}}
+    },
+    {
+      "id": "t08_a_read_only_api_call_runs_without_approval",
+      "mode": "integration_agent", "query": "Kiểm tra http://localhost:8000/health",
+      "agents": {"integration_agent": {"url": "http://localhost:8000/health", "method": "GET", "replies": [{"answer": "ok", "url": "http://localhost:8000/health", "method": "GET", "status_code": 200, "data": {"status": "ok"}, "verification": {"kind": "api", "ok": true, "executed": true, "problems": []}}]}},
+      "expect": {"trajectory": ["plan:integration_agent", "exec:integration_agent", "verify:pass"], "calls": {"integration_agent.parse_request": 1, "integration_agent.process_request": 1}}
+    },
+    {
+      "id": "t09_an_api_call_the_request_does_not_support_is_retried",
+      "mode": "integration_agent", "query": "Lấy danh sách người dùng",
+      "agents": {"integration_agent": {"url": "http://localhost:8000/health", "method": "GET", "replies": [
+        {"answer": "Không thực hiện cuộc gọi: địa chỉ không có trong yêu cầu.", "status": "error", "verification": {"kind": "api", "ok": false, "executed": false, "problems": ["url_not_in_request"]}},
+        {"answer": "ok", "status_code": 200, "data": {"status": "ok"}, "verification": {"kind": "api", "ok": true, "executed": true, "problems": []}}
+      ]}},
+      "expect": {"trajectory": ["plan:integration_agent", "exec:integration_agent", "verify:retry", "exec:integration_agent", "verify:pass"], "calls": {"integration_agent.process_request": 2}, "retry_query_contains": {"integration_agent": "Verifier"}}
+    },
+    {
+      "id": "t10_a_web_answer_with_an_invented_link_is_retried",
+      "mode": "search_agent", "query": "Giá dầu hôm nay",
+      "agents": {"search_agent": {"replies": [
+        {"answer": "Giá dầu 80 USD [bài](https://bia.example/x).", "sources": [{"title": "Oil", "url": "https://news.example/oil"}], "verification": {"kind": "web", "status": "ok", "grounded": false, "cited": [], "unknown_urls": ["https://bia.example/x"], "unsupported_numbers": []}},
+        {"answer": "Giá dầu 80 USD [Oil](https://news.example/oil).", "sources": [{"title": "Oil", "url": "https://news.example/oil"}], "verification": {"kind": "web", "status": "ok", "grounded": true, "cited": [1], "unknown_urls": [], "unsupported_numbers": []}}
+      ]}},
+      "expect": {"trajectory": ["plan:search_agent", "exec:search_agent", "verify:retry", "exec:search_agent", "verify:pass"], "calls": {"search_agent.process_request": 2}, "retry_query_contains": {"search_agent": "Verifier"}}
+    },
+    {
+      "id": "t11_a_web_answer_with_a_number_no_source_has_is_retried",
+      "mode": "search_agent", "query": "Giá dầu hôm nay",
+      "agents": {"search_agent": {"replies": [
+        {"answer": "Giá dầu 95 USD [Oil](https://news.example/oil).", "sources": [{"title": "Oil", "url": "https://news.example/oil"}], "verification": {"kind": "web", "status": "ok", "grounded": true, "cited": [1], "unknown_urls": [], "unsupported_numbers": ["95"]}},
+        {"answer": "Giá dầu 80 USD [Oil](https://news.example/oil).", "sources": [{"title": "Oil", "url": "https://news.example/oil"}], "verification": {"kind": "web", "status": "ok", "grounded": true, "cited": [1], "unknown_urls": [], "unsupported_numbers": []}}
+      ]}},
+      "expect": {"trajectory": ["plan:search_agent", "exec:search_agent", "verify:retry", "exec:search_agent", "verify:pass"], "calls": {"search_agent.process_request": 2}}
+    },
+    {
+      "id": "t12_an_attached_file_goes_to_the_data_agent_with_the_file",
+      "csv": true, "query": "Tóm tắt dữ liệu này",
+      "agents": {"data_agent": {"replies": [{"type": "text_summary", "content": "Tóm tắt."}]}},
+      "expect": {"trajectory": ["plan:data_agent", "exec:data_agent", "verify:pass"], "calls": {"data_agent.process_csv_request": 1, "data_agent.process_request": 0}}
+    },
+    {
+      "id": "t13_a_compound_question_runs_each_branch_once",
+      "query": "So sánh điều khoản hợp đồng NDA với tin tức mới nhất về thị trường",
+      "agents": {"rag_agent": {"replies": ["Điều khoản NDA."]}, "search_agent": {"replies": ["Tin thị trường."]}},
+      "expect": {"trajectory": ["plan:parallel_coordinator", "exec:parallel_coordinator", "verify:pass"], "calls": {"rag_agent.process_request": 1, "search_agent.process_request": 1}}
+    },
+    {
+      "id": "t14_out_of_scope_is_declined_without_calling_any_agent",
+      "query": "Viết giúp tôi một bài thơ", "planner": "none",
+      "agents": {"rag_agent": {"replies": ["unused"]}},
+      "expect": {"trajectory": ["plan:none", "decline", "verify:pass"], "calls": {"rag_agent.process_request": 0}}
+    },
+    {
+      "id": "t15_a_planner_outage_falls_back_to_the_keyword_route",
+      "query": "Tin tức mới nhất về lãi suất ngân hàng",
+      "agents": {"search_agent": {"replies": ["Tin về lãi suất."]}},
+      "expect": {"trajectory": ["plan:search_agent", "exec:search_agent", "verify:pass"], "calls": {"search_agent.process_request": 1}}
+    },
+    {
+      "id": "t16_the_llm_judge_decides_when_nothing_deterministic_applies",
+      "mode": "rag_agent", "query": "Thời hạn NDA là bao lâu?",
+      "verifier_llm": [{"is_verified": false, "feedback": "thiếu số liệu"}, {"is_verified": true, "feedback": ""}],
+      "agents": {"rag_agent": {"replies": ["Khoảng hai năm."]}},
+      "expect": {"trajectory": ["plan:rag_agent", "exec:rag_agent", "verify:retry", "exec:rag_agent", "verify:pass"], "calls": {"rag_agent.process_request": 2}, "retry_query_contains": {"rag_agent": "thiếu số liệu"}}
+    }
+  ]
+}

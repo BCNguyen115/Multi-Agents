@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+# Code sandbox: the coding agent's hands (see src/agents/coding_agent/executor_server.py and docs/CODING_AGENT.md).
+#   docker build -f Dockerfile.code-sandbox -t agent-code-sandbox .
+# It must be able to RUN the project's tests, so it carries the project's dependencies (requirements.lock), plus git and ruff. It has no
+# secret except the signing key it is started with, and the compose override puts it on an internal network with no route out.
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt requirements-dev.txt requirements.lock /tmp/
+# Same trick as the backend image: the CPU build of torch first, so pip does not pull ~5 GB of CUDA libraries nothing here uses.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --default-timeout=120 --retries 5 "torch==$(grep -E '^torch==' /tmp/requirements.lock | cut -d= -f3)" \
+        --index-url https://download.pytorch.org/whl/cpu
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --default-timeout=120 --retries 5 -r /tmp/requirements-dev.txt -c /tmp/requirements.lock \
+    && rm /tmp/requirements.txt /tmp/requirements-dev.txt /tmp/requirements.lock
+
+# Only the executor and what it imports: the repository under work arrives as a tarball and lives in /work (tmpfs).
+COPY src/__init__.py ./src/__init__.py
+COPY src/agents/__init__.py ./src/agents/__init__.py
+COPY src/agents/coding_agent/__init__.py src/agents/coding_agent/policy.py src/agents/coding_agent/shell_guard.py src/agents/coding_agent/workspace.py src/agents/coding_agent/executor_server.py ./src/agents/coding_agent/
+
+RUN groupadd --system --gid 1002 coder && useradd --system --uid 1002 --gid coder --home-dir /work coder && mkdir -p /work && chown coder:coder /work
+USER coder
+ENV PYTHONPATH=/app CODE_SANDBOX_WORK=/work
+EXPOSE 8081
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=4)"
+
+CMD ["python", "-m", "src.agents.coding_agent.executor_server"]

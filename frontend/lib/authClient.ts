@@ -9,8 +9,14 @@ export interface Me {
   roles: string[];
   can_approve: boolean;
   can_manage_knowledge: boolean;
+  /** May use the account administration page (`/admin`). */
+  can_admin?: boolean;
+  /** The Coding mode is on and this person may give the coding agent a task. */
+  can_code?: boolean;
   /** Sensitive actions need a SECOND person: the requester waits, approvers have an inbox. */
   two_person_approval?: boolean;
+  /** The agents the department's policy allows; null or absent = every agent. */
+  allowed_agents?: string[] | null;
   /** A fresh sign-up: chat works, documents and database rows come after an administrator grants access. */
   access_pending?: boolean;
 }
@@ -21,6 +27,8 @@ export const LOGIN_PATH = '/login';
 export interface AuthConfig {
   login_enabled: boolean;
   registration_enabled: boolean;
+  /** The sign-in dialog also offers "Sign in with SSO" (OIDC). */
+  sso_enabled?: boolean;
 }
 
 export const NO_AUTH: AuthConfig = { login_enabled: false, registration_enabled: false };

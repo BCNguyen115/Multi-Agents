@@ -18,6 +18,7 @@ Usage:
 """
 
 import logging
+import re
 from typing import Any, Optional
 
 import sqlglot
@@ -98,6 +99,8 @@ _FORBIDDEN_FUNCTIONS: set[str] = {
     "lo_import",
 }
 
+_DATE_TEXT = re.compile(r"^\d{4}-\d{2}(-\d{2})?([ T]\d{2}:\d{2}(:\d{2})?)?$")
+
 # Known large tables that SHOULD have a WHERE clause
 _LARGE_TABLES: set[str] = {"rag_chunks", "knowledge_documents"}
 
@@ -114,10 +117,32 @@ _BLOCKED_KEYWORDS: list[str] = [
 ]
 
 
+def check_allowed_tables(statement: exp.Expression, allowed: dict[str, set[str]]) -> str:
+    """Why ``statement`` reads something ``allowed`` (``{schema: {table, ...}}``, lowercase) does not cover, or ``""``.
+
+    A table written with a schema must be in that schema's set; one written without is looked up in every schema (the database role's
+    ``search_path`` resolves it). CTE names are not tables. A query may read one schema only: a mix of ``aw`` and ``public`` tables is refused,
+    because the row-level-security rewrite and the access rules differ between them."""
+    cte_names = {(cte.alias or "").lower() for cte in statement.find_all(exp.CTE)}
+    schemas: set[str] = set()
+    for table in statement.find_all(exp.Table):
+        name, schema = (table.name or "").lower(), (table.db or "").lower()
+        if not schema and name in cte_names:
+            continue
+        found = [schema] if schema else [s for s, names in allowed.items() if name in names]
+        if not found or name not in allowed.get(found[0], set()):
+            return f"Security reject: table '{(schema + '.' if schema else '') + name}' is not available to you."
+        schemas.add(found[0])
+    if len(schemas) > 1:
+        return "Security reject: one query may read tables of one schema only (" + ", ".join(sorted(schemas)) + ")."
+    return ""
+
+
 def validate_sql(
     raw_sql: str,
     default_limit: int = _DEFAULT_LIMIT,
     session_id: str = "N/A",
+    allowed_tables: Optional[dict[str, set[str]]] = None,
 ) -> tuple[bool, str, str]:
     """Validate and sanitize an LLM-generated SQL statement via AST parsing.
 
@@ -125,6 +150,7 @@ def validate_sql(
         raw_sql: The raw SQL string produced by the LLM.
         default_limit: The ``LIMIT`` value to inject if none is present.
         session_id: Correlation ID for structured logging.
+        allowed_tables: ``{schema: {table, ...}}`` the caller may read (``check_allowed_tables``); ``None`` = no table rule.
 
     Returns:
         A 3-tuple of ``(is_valid, sanitized_sql, error_message)``.
@@ -238,6 +264,12 @@ def validate_sql(
             logger.warning(msg, extra={"session_id": session_id})
             return False, "", msg
 
+    if allowed_tables is not None:
+        refusal = check_allowed_tables(statement, allowed_tables)
+        if refusal:
+            logger.warning(refusal, extra={"session_id": session_id})
+            return False, "", refusal
+
     # ------------------------------------------------------------------
     # 6. Function Blacklist (DoS, File I/O, Privilege Escalation)
     # ------------------------------------------------------------------
@@ -251,7 +283,7 @@ def validate_sql(
     # ------------------------------------------------------------------
     # 7. Auto-inject LIMIT if missing
     # ------------------------------------------------------------------
-    has_limit: bool = statement.find(exp.Limit) is not None
+    has_limit: bool = statement.args.get("limit") is not None  # the OUTER query's limit: one inside a subquery does not bound the result
     if not has_limit:
         try:
             statement = statement.limit(default_limit)
@@ -297,6 +329,22 @@ def validate_sql(
     return True, sanitized, ""
 
 
+_POSITIONAL_OR_TYPED = (exp.Order, exp.Group, exp.Cast, exp.Interval, exp.Extract)
+_OPERATORS = (exp.Binary, exp.Unary, exp.Predicate, exp.Connector)  # sqlglot makes And/Or/EQ... subclasses of Func too: they are not function calls
+
+
+def _keeps_literal_inline(node: exp.Expression) -> bool:
+    """True for a literal in ORDER BY / GROUP BY / CAST / INTERVAL / EXTRACT or an argument of a real function call."""
+    ancestor = node.parent
+    while ancestor is not None:
+        if isinstance(ancestor, _POSITIONAL_OR_TYPED):
+            return True
+        if isinstance(ancestor, exp.Func) and not isinstance(ancestor, _OPERATORS):
+            return True
+        ancestor = ancestor.parent
+    return False
+
+
 def parameterize_sql(sql: str, dialect: str = "postgres") -> tuple[str, list[Any]]:
     """Extract literal constants from SQL AST and replace with $1, $2, ... positional parameters.
 
@@ -330,6 +378,13 @@ def parameterize_sql(sql: str, dialect: str = "postgres") -> tuple[str, list[Any
             # Keep LIMIT and OFFSET literals inline
             parent = node.parent
             if parent and isinstance(parent, (exp.Limit, exp.Offset)):
+                continue
+            # Literals whose type or meaning a bind parameter would lose stay inline (the SQL was rebuilt from the validated AST, so this
+            # is not an injection path): ORDER BY 1 / GROUP BY 1 are positions, CAST/INTERVAL/EXTRACT/function arguments are typed by their
+            # context, and asyncpg does not turn the text '2013-01-01' into a date for a date column.
+            if _keeps_literal_inline(node):
+                continue
+            if node.is_string and _DATE_TEXT.match(str(node.this)):
                 continue
 
             raw_val = node.this

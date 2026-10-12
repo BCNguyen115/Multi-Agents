@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { UploadCloud, StopCircle, FileSpreadsheet, FileText, Globe, AlertCircle, X, BarChart3 } from 'lucide-react';
+import { UploadCloud, StopCircle, FileSpreadsheet, FileText, Globe, AlertCircle, X, BarChart3, Code2, Table2 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import { ChatMessage as ChatMessageType, CSVMetadata, PEVTraceState } from '../lib/types';
 import { ChatMessage } from './ChatMessage';
 import { processCSVWithDuckDB } from '../lib/duckdb';
@@ -15,10 +16,13 @@ import { applyExecuting, applyFinal, applyPevStep, applyPlan, applyVerifying, cr
 import { apiFetch } from '../lib/apiFetch';
 
 /** One-click prompts of the empty chat. `tone` is the hover color of the icon: the agent's state color. */
-const STARTERS: { id: 'Data Agent' | 'RAG Agent' | 'Search Agent'; Icon: typeof BarChart3; tone: string; labelKey: MessageKey; tag: string }[] = [
+type StarterId = 'Data Agent' | 'RAG Agent' | 'Search Agent' | 'Database Agent' | 'Coding Agent';
+const STARTERS: { id: StarterId; Icon: typeof BarChart3; tone: string; labelKey: MessageKey; tag: string }[] = [
   { id: 'Data Agent', Icon: BarChart3, tone: 'group-hover:bg-accent-primary/10 group-hover:text-accent-primary', labelKey: 'chat.starterDataTitle', tag: 'Data' },
   { id: 'RAG Agent', Icon: FileText, tone: 'group-hover:bg-accent-planner/10 group-hover:text-accent-planner', labelKey: 'chat.starterRagTitle', tag: 'RAG' },
   { id: 'Search Agent', Icon: Globe, tone: 'group-hover:bg-accent-executor/10 group-hover:text-accent-executor', labelKey: 'chat.starterSearchTitle', tag: 'Search' },
+  { id: 'Database Agent', Icon: Table2, tone: 'group-hover:bg-accent-planner/10 group-hover:text-accent-planner', labelKey: 'chat.starterDbTitle', tag: 'SQL' },
+  { id: 'Coding Agent', Icon: Code2, tone: 'group-hover:bg-accent-verifier/10 group-hover:text-accent-verifier', labelKey: 'chat.starterCodingTitle', tag: 'Code' },
 ];
 
 interface ChatInterfaceProps {
@@ -39,6 +43,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onUpdateLastMessage,
 }) => {
   const [lang] = useLang();
+  const { me } = useAuth();
   // Which conversation has a request in flight: a stream started in A must not look "busy" when the user opens B
   const [sendingSession, setSendingSession] = useState<string | null>(null);
   const isSending = sendingSession === sessionId;
@@ -163,14 +168,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     if (m === 'all agents' || m === 'all_agents' || m === 'auto') return null;
     if (m.includes('rag')) return 'rag_agent';
     if (m.includes('search')) return 'search_agent';
+    if (m.includes('db') || m.includes('database') || m.includes('sql')) return 'db_agent';  // before 'data': "database agent" contains it
     if (m.includes('data')) return 'data_agent';
-    if (m.includes('db') || m.includes('database') || m.includes('sql')) return 'db_agent';
     if (m.includes('integration') || m.includes('api')) return 'integration_agent';
     return null;
   };
 
-  const runStarter = (agent: 'Data Agent' | 'RAG Agent' | 'Search Agent', labelKey: MessageKey) => {
+  const runStarter = (agent: StarterId, labelKey: MessageKey) => {
     onSelectAgentMode(agent);
+    if (agent === 'Coding Agent') {  // a coding task is described by the person, never sent for them: it starts real work and costs real money
+      setHeroAlert(t(getLang(), 'chat.codingHint'));
+      return;
+    }
     if (agent === 'Data Agent') {
       if (attachedFile || activeCSV) void handleSendMessageFromInput(t(getLang(), labelKey), attachedFile || activeCSV?.file || null, agent);
       else setHeroAlert(t(getLang(), 'chat.attachCsvAbove'));
@@ -405,6 +414,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       return;
     }
 
+    // `/dashboards` lists the saved dashboards, the same way
+    if (!file && !attachedFile && queryText.trim().toLowerCase() === t(getLang(), 'saved.command')) {
+      const stamp = Date.now();
+      onSendMessage({ id: `user-${stamp}`, role: 'user', content: t(getLang(), 'saved.userMessage') });
+      onSendMessage({ id: `assistant-${stamp}`, role: 'assistant', content: '', kind: 'saved-dashboards', status: 'complete' });
+      return;
+    }
+
     const effectiveMode = overrideMode || currentAgentMode;
     const targetAgentId = getTargetAgentId(effectiveMode);
 
@@ -510,7 +527,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     >
       {/* Drag Overlay */}
       {dragActive && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-accent-primary/5 backdrop-blur-md border-2 border-dashed border-accent-primary rounded-2xl transition-all duration-200 pointer-events-none">
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-accent-primary/5 backdrop-blur-md border-2 border-dashed border-accent-primary rounded-2xl transition-[color,background-color,border-color,opacity,transform] duration-200 pointer-events-none">
           <div className="p-3 bg-accent-primary/10 text-accent-primary rounded-full mb-2 animate-pulse-subtle">
             <UploadCloud className="w-8 h-8" />
           </div>
@@ -525,7 +542,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       {isInitialState ? (
         /* ── HERO CENTERED LAYOUT (New Chat) ── */
-        <div className="relative isolate flex-1 flex flex-col items-center justify-center w-full max-w-3xl mx-auto px-4 transition-all duration-300 ease-in-out">
+        <div className="relative isolate flex-1 flex flex-col items-center justify-center w-full max-w-3xl mx-auto px-4 transition-[color,background-color,border-color,opacity,transform] duration-300 ease-in-out">
           {/* Ambient bloom: a soft light behind the prompt, fading to nothing at the edges (transparent in the light theme) */}
           <div
             aria-hidden="true"
@@ -546,7 +563,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               <button
                 type="button"
                 onClick={() => setHeroAlert(null)}
-                className="hover:opacity-80 p-0.5 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-error/50"
+                className="hover:opacity-80 p-0.5 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-error"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -566,12 +583,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
           {/* Starter prompts: one quiet row each, no boxes */}
           <ul className="w-full max-w-xl mt-8 space-y-1 animate-fade-in">
-            {STARTERS.map(({ id, Icon, tone, labelKey, tag }) => (
+            {STARTERS.filter((starter) => starter.id !== 'Coding Agent' || me?.can_code).map(({ id, Icon, tone, labelKey, tag }) => (
               <li key={id}>
                 <button
                   type="button"
                   onClick={() => runStarter(id, labelKey)}
-                  className="group w-full flex items-center gap-3.5 px-4 py-2.5 rounded-full border border-transparent hover:bg-surface-raised hover:border-border transition-colors duration-150 text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/40"
+                  className="group w-full flex items-center gap-3.5 px-4 py-2.5 rounded-full border border-transparent hover:bg-surface-raised hover:border-border transition-colors duration-150 text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
                 >
                   <span className={`p-1.5 rounded-full bg-surface-raised text-foreground-muted transition-colors ${tone}`}>
                     <Icon className="w-4 h-4" aria-hidden="true" />
@@ -585,7 +602,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       ) : (
         /* ── ACTIVE CHAT WINDOW ── */
-        <div className="flex-1 flex flex-col justify-between h-full overflow-hidden transition-all duration-300 ease-in-out">
+        <div className="flex-1 flex flex-col justify-between h-full overflow-hidden transition-[color,background-color,border-color,opacity,transform] duration-300 ease-in-out">
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-6 scroll-smooth">
             <div className="max-w-5xl mx-auto space-y-6 pb-6">
               {messages.map((msg, index) => (
@@ -610,7 +627,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <button
                   type="button"
                   onClick={stopSending}
-                  className="flex items-center gap-2 px-4 py-2 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-sm font-medium text-foreground-secondary hover:text-foreground transition-all duration-200 cursor-pointer group"
+                  className="flex items-center gap-2 px-4 py-2 bg-surface-raised hover:bg-surface-overlay border border-border rounded-full text-sm font-medium text-foreground-secondary hover:text-foreground transition-[color,background-color,border-color,opacity,transform] duration-200 cursor-pointer group"
                 >
                   <StopCircle className="w-4 h-4 text-accent-error group-hover:scale-110 transition-transform" />
                   <span>{t(lang, 'chat.stop')}</span>

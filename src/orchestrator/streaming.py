@@ -12,7 +12,7 @@ import logging
 import uuid
 from typing import Any, AsyncGenerator
 
-from src.orchestrator.common import _DEFAULT_MAX_RETRIES, _build_pev_trace, _initial_state
+from src.orchestrator.common import _build_pev_trace, _initial_state, _run_config, max_retries_for, reexecutions
 from src.orchestrator.prompt_templates import GRACEFUL_DECLINE_MESSAGE
 from src.shared import answer_stream
 from src.shared.logger import get_logger
@@ -87,11 +87,7 @@ class StreamingMixin:
             tags=["pev_loop_stream", agent_mode or "auto"],
             metadata={"request_id": request_id, "query": query[:120]},
         )
-        config: dict[str, Any] = {
-            "configurable": {"thread_id": session_id}
-        }
-        if langfuse_handler:
-            config["callbacks"] = [langfuse_handler]
+        config: dict[str, Any] = _run_config(session_id, request_id, langfuse_handler)
 
         try:
             # Yield initial active state for Planner Node
@@ -256,11 +252,11 @@ class StreamingMixin:
             )
             is_v = final_values.get("is_verified", True)
             retries = final_values.get("retry_count", 0)
-            max_retries = final_values.get("max_retries", _DEFAULT_MAX_RETRIES)
+            max_retries = max_retries_for(final_values)
 
             # Circuit Breaker: Annotate response if Verifier exhausted retries
-            if not is_v and retries >= max_retries:
-                response_text = self._annotate_unverified(response_text, retries)
+            if not is_v and (retries >= max_retries or final_values.get("verifier_down")):
+                response_text = self._annotate_unverified(response_text, retries, bool(final_values.get("verifier_down")))
                 logger.warning(
                     "Stream PEV Loop: Max retries exhausted (retries=%d, verified=%s) — annotated response",
                     retries, is_v,
@@ -280,7 +276,7 @@ class StreamingMixin:
             plan_str = final_values.get("plan", "")
             verifier_fb = final_values.get("verifier_feedback", "")
 
-            pev_trace = _build_pev_trace(target_agent, plan_str, is_v, verifier_fb)
+            pev_trace = _build_pev_trace(target_agent, plan_str, is_v, verifier_fb, request_id if self.graph.checkpointer else None, reexecutions(retries, is_v))
 
             yield {
                 "event": "final_response",
@@ -293,7 +289,7 @@ class StreamingMixin:
             }
             await asyncio.sleep(0.01)
 
-            self._remember_in_background(session_id, query)
+            self._after_run(session_id, query, target_agent, is_v, retries, response_text)
 
         except Exception as exc:
             logger.error("LangGraph streaming error: %s", exc, extra={"session_id": session_id})

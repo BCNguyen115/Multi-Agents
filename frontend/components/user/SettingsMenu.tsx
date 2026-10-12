@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronLeft, ChevronRight, Globe, KeyRound, LogIn, LogOut, Monitor, Moon, Palette, ShieldCheck, Sun, UserPlus } from 'lucide-react';
+import { Brain, Check, ChevronLeft, ChevronRight, Globe, KeyRound, LogIn, LogOut, Monitor, Moon, Palette, ShieldCheck, Sun, UserPlus, Users } from 'lucide-react';
 import { useAuth, type Theme } from '../../context/AuthContext';
 import { t, useLang, type Lang, type MessageKey } from '../../lib/i18n';
 
@@ -27,12 +27,12 @@ const LANGUAGES: { id: Lang; label: MessageKey }[] = [
 ];
 
 const ITEM =
-  'flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm text-foreground text-left transition-colors cursor-pointer hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised focus-visible:ring-2 focus-visible:ring-accent-primary/40';
+  'flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm text-foreground text-left transition-colors cursor-pointer hover:bg-surface-raised focus-visible:outline-none focus-visible:bg-surface-raised focus-visible:ring-2 focus-visible:ring-accent-primary';
 const ICON = 'w-[18px] h-[18px] shrink-0 text-foreground-secondary';
 
 export function SettingsMenu({ anchor, placement, onClose }: SettingsMenuProps) {
   const [lang] = useLang();
-  const { theme, setTheme, language, setLanguage, isGuest, isAuthenticated, me, config, openAuthModal, openChangePassword, openApprovals, logout } = useAuth();
+  const { theme, setTheme, language, setLanguage, isGuest, isAuthenticated, me, config, openAuthModal, openChangePassword, openApprovals, openMemory, logout } = useAuth();
   const [view, setView] = useState<View>('root');
   const [position, setPosition] = useState<{ left: number; bottom: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -113,7 +113,7 @@ export function SettingsMenu({ anchor, placement, onClose }: SettingsMenuProps) 
       aria-label={t(lang, 'user.settings')}
       onKeyDown={onMenuKeyDown}
       style={{ position: 'fixed', left: position.left, bottom: position.bottom }}
-      className="z-[70] w-64 max-w-[calc(100vw-1rem)] rounded-2xl border border-border-strong bg-surface p-1.5 shadow-lg animate-fade-in-scale"
+      className="z-menu w-64 max-w-[calc(100vw-1rem)] rounded-2xl border border-border-strong bg-surface p-1.5 shadow-lg animate-fade-in-scale"
     >
       {view === 'root' && (
         <>
@@ -151,6 +151,18 @@ export function SettingsMenu({ anchor, placement, onClose }: SettingsMenuProps) 
             <button type="button" role="menuitem" className={ITEM} onClick={() => { onClose(); openApprovals(); }}>
               <ShieldCheck className={ICON} aria-hidden="true" />
               {t(lang, 'approval.inbox.menu')}
+            </button>
+          )}
+          {isAuthenticated && me?.can_admin && (
+            <a role="menuitem" href="/admin" className={ITEM} onClick={onClose}>
+              <Users className={ICON} aria-hidden="true" />
+              {t(lang, 'admin.menu')}
+            </a>
+          )}
+          {isAuthenticated && (
+            <button type="button" role="menuitem" className={ITEM} onClick={() => { onClose(); openMemory(); }}>
+              <Brain className={ICON} aria-hidden="true" />
+              {t(lang, 'memory.menu')}
             </button>
           )}
           {isAuthenticated && config.registration_enabled && (

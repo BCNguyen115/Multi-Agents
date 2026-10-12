@@ -1,0 +1,45 @@
+# The coding agent (optional). It edits a CLONE of your repository inside a container with no route out, and only a person with an approver
+# role can turn the result into a pull request. See docs/CODING_AGENT.md.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.coding.yml up -d --build
+#
+# Needs in .env: CODING_SANDBOX_SECRET (16+ random characters), CODING_REPO_URL (https://github.com/<owner>/<repo>.git) and GITHUB_PR_TOKEN
+# (a fine-grained token with Contents and Pull requests on that one repository). The token stays in the backend; the sandbox never sees it.
+services:
+  backend:
+    environment:
+      CODING_AGENT_ENABLED: "true"
+      CODING_SANDBOX_URL: http://code-sandbox:8081
+      CODING_SANDBOX_SECRET: ${CODING_SANDBOX_SECRET:?set CODING_SANDBOX_SECRET in .env (at least 16 random characters)}
+      CODING_REPO_URL: ${CODING_REPO_URL:-}   # a GitHub link, or leave it and add docker-compose.coding-local.yml to use this folder
+      CODING_REPO_BRANCH: ${CODING_REPO_BRANCH:-main}
+      GITHUB_PR_TOKEN: ${GITHUB_PR_TOKEN:-}
+      CODING_ALLOW_SHELL: ${CODING_ALLOW_SHELL:-false}   # a real shell for the agent, only ever inside the sandbox below (docs/CODING_AGENT.md)
+    networks: [default, sandbox_net]
+
+  code-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.code-sandbox
+    image: agent-code-sandbox:latest
+    container_name: agent_code_sandbox
+    restart: unless-stopped
+    environment:
+      CODING_SANDBOX_SECRET: ${CODING_SANDBOX_SECRET:?set CODING_SANDBOX_SECRET in .env (at least 16 random characters)}
+      CODE_SANDBOX_WORK: /work
+      CODE_SANDBOX_ALLOW_SHELL: ${CODING_ALLOW_SHELL:-false}   # the sandbox honours the shell only when ITS side is on as well
+      TMPDIR: /tmp
+    networks: [sandbox_net]   # internal: true in docker-compose.yml, so nothing in here can reach the internet or your other services
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+      - /work:size=2g,uid=1002,gid=1002
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+          pids: 256

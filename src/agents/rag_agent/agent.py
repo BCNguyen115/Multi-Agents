@@ -29,7 +29,7 @@ from src.agents.rag_agent.knowledge import KnowledgeStore
 from src.agents.rag_agent.planner import QueryPlan, QueryPlanner
 from src.agents.rag_agent.verification import citations as _citations, unsupported_by_citations, unsupported_numbers  # noqa: F401
 from src.config import settings
-from src.shared import answer_stream
+from src.shared import answer_stream, user_context
 from src.shared.auth import knowledge_tenants
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
@@ -279,7 +279,7 @@ class RAGAgent(BaseAgent):
             prompt += f"\n\n**Ý đầy đủ của câu hỏi (viết lại theo cuộc hội thoại trước):** {_neutralize(standalone)[:500]}"
         if feedback:
             prompt += f"\n\n**Lưu ý:** câu trả lời trước bị từ chối vì: {_neutralize(feedback)[:500]}. Hãy sửa lỗi đó."
-        system: str = _RAG_SYSTEM_PROMPT + (QUOTE_RULE if settings.RAG_QUOTE_MODE else "")
+        system: str = _RAG_SYSTEM_PROMPT + (QUOTE_RULE if settings.RAG_QUOTE_MODE else "") + user_context.memory_note()
         messages: list[dict[str, str]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
         sink: Optional[answer_stream.AnswerStream] = answer_stream.current()
         if sink is not None and sink.claim():

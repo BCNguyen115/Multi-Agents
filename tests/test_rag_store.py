@@ -9,7 +9,7 @@ from src.config import settings
 
 # Every table the migrations build on top of rag_chunks (rag_passages has a foreign key to it), plus the revision marker:
 # leaving any behind makes the next test start from a half-migrated schema.
-WIPE = "DROP TABLE IF EXISTS rag_passages, rag_feedback, rag_meta, rag_chunks, alembic_version CASCADE"
+WIPE = "DROP TABLE IF EXISTS rag_passages, rag_feedback, answer_reviews, coding_repos, rag_meta, rag_chunks, alembic_version CASCADE"
 
 
 # ------------------------------------------------------------------ pure helpers

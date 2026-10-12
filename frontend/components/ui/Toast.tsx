@@ -46,12 +46,11 @@ export function ToastContainer() {
     return unsubscribe;
   }, []);
 
-  if (toasts.length === 0) return null;
-
+  // The live region stays mounted while empty: a region that appears together with its text is often not announced
   return (
     <div
       aria-live="polite"
-      className="fixed bottom-5 right-5 z-[9999] flex flex-col gap-2.5 max-w-sm w-full pointer-events-none select-none"
+      className="fixed bottom-5 right-5 z-toast flex flex-col gap-2.5 max-w-sm w-full pointer-events-none select-none"
     >
       {toasts.map((item) => {
         const accent = TOAST_ACCENTS[item.type] || TOAST_ACCENTS.info;
@@ -60,8 +59,8 @@ export function ToastContainer() {
         return (
           <div
             key={item.id}
-            role="status"
-            className={`pointer-events-auto relative overflow-hidden rounded-xl border ${accent.border} bg-surface shadow-lg p-3.5 flex flex-col gap-1.5 animate-fade-in transition-all duration-200`}
+            role={item.type === 'error' ? 'alert' : 'status'}
+            className={`pointer-events-auto relative overflow-hidden rounded-xl border ${accent.border} bg-surface shadow-lg p-3.5 flex flex-col gap-1.5 animate-fade-in transition-[color,background-color,border-color,opacity,transform] duration-200`}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-2.5 flex-1 min-w-0">
@@ -86,7 +85,7 @@ export function ToastContainer() {
                       item.action?.onClick();
                       toast.dismiss(item.id);
                     }}
-                    className="px-2 py-1 text-2xs font-semibold bg-surface-raised hover:bg-surface-overlay border border-border text-foreground rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary"
+                    className="px-2 py-1 text-xs font-semibold bg-surface-raised hover:bg-surface-overlay border border-border text-foreground rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary"
                   >
                     {item.action.label}
                   </button>
@@ -106,7 +105,7 @@ export function ToastContainer() {
             {duration > 0 && (
               <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-border/40 overflow-hidden">
                 <div
-                  className={`h-full ${accent.progress}`}
+                  className={`h-full origin-left ${accent.progress}`}
                   style={{
                     animation: `toast-progress ${duration}ms linear forwards`,
                   }}
@@ -120,10 +119,10 @@ export function ToastContainer() {
       <style jsx global>{`
         @keyframes toast-progress {
           from {
-            width: 100%;
+            transform: scaleX(1);
           }
           to {
-            width: 0%;
+            transform: scaleX(0);
           }
         }
       `}</style>

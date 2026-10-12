@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     DB_AGENT_PASSWORD: str = ""              # set (>= 16 chars) to run the db_agent's SQL as a read-only role instead of the application's account
     DB_AGENT_ROLE: str = "agent_readonly"
     DB_AGENT_TABLES: list[str] = ["knowledge_documents"]  # tables (schema public) the db_agent may SELECT from; nothing else is reachable
+    # Company data (schema aw, scripts/load_adventureworks.py): which roles may ask about which domain. Administrators may ask about all of them.
+    DB_AGENT_DOMAIN_ROLES: dict[str, list[str]] = {
+        "hr": ["hr", "executive"],
+        "sales": ["sales", "executive", "analyst"],
+        "purchasing": ["purchasing", "executive", "analyst"],
+        "production": ["production", "executive", "analyst"],
+    }
+    DB_AGENT_MAX_ROWS: int = 200               # rows of a result that are kept (the rest only in row_count)
 
     # --- Agent long-term memory (mem0) ---
     MEM0_VECTOR_STORE: str = "memory"        # memory = in-process Qdrant (lost on restart; tests/dev) | pgvector = the PostgreSQL above (persistent)
@@ -110,6 +118,30 @@ class Settings(BaseSettings):
     RERANK_TEXT_MODE: str = "content"       # content | titled_raw (section title + raw text, no ingestion prefix) | window (the best-matching window of raw text) | passage (the matching passage, see RAG_PASSAGE_SEARCH)
     RAG_HNSW_EF_SEARCH: int = 0             # hnsw.ef_search for the vector queries (0 = server default 40)
     RAG_HNSW_ITERATIVE: str = ""            # "" | relaxed_order | strict_order: pgvector >= 0.8 keeps scanning when a category/tenant filter starves the result
+    # Coding agent (off by default): edits a CLONE of CODING_REPO_URL inside the network-less code-sandbox and, after a person with an approver role
+    # approves the diff, pushes a branch and opens a pull request. It never merges and never touches the running code. See docs/CODING_AGENT.md.
+    CODING_AGENT_ENABLED: bool = False
+    CODING_AGENT_ROLES: list[str] = ["developer", "admin"]   # who may give it a task (authenticated mode)
+    CODING_MAX_STEPS: int = 40                                # model turns per task
+    CODING_MAX_USD: float = 2.0                               # LiteLLM's estimate; the task stops when it is reached
+    CODING_TIMEOUT_SECONDS: int = 900
+    # A real shell for the agent, inside the code sandbox only (no network, no secrets, writes to /work and /tmp, time / process / file limits, every
+    # command logged and recorded, dangerous commands refused, protected files restored). Off by default; the SANDBOX needs CODE_SANDBOX_ALLOW_SHELL=1 too.
+    CODING_ALLOW_SHELL: bool = False
+    CODING_SHELL_TIMEOUT_SECONDS: int = 120                   # per command (the sandbox caps it at 600)
+    CODING_SELF_REVIEW: bool = True                           # one extra model call reviews the finished diff; its findings are advice for the approver
+    CODING_PROTECTED_PATHS: list[str] = []                    # extra patterns the agent may not write, on top of coding_agent/policy.py
+    CODING_SANDBOX_URL: str = ""                              # http://code-sandbox:8081
+    CODING_SANDBOX_SECRET: str = ""                           # HMAC key shared with the code-sandbox container (>= 16 characters)
+    CODING_REPO_URL: str = ""                                 # https://github.com/<owner>/<repo>.git, OR a git folder this process can see (compose mounts it at /coding-repo)
+    CODING_REPO_BRANCH: str = ""                              # the base of the pull request (empty: main); for a local folder, empty = its current HEAD
+    CODING_LOCAL_ROOTS: list[str] = ["/coding-repo", "/repos"]  # folders the backend may offer as local repositories (mounted into the container); nothing outside them
+    CODING_LOCAL_SNAPSHOT: bool = True                        # local folder: start from the working tree, uncommitted changes included (false = HEAD only)
+    CODING_BRANCH_PREFIX: str = "agent/"
+    GITHUB_PR_TOKEN: str = ""                                 # fine-grained token: contents + pull requests on that repository only; stays in the backend
+    # Signed-in users retrieve the shared corpus (tenant 'public') plus their OWN tenant's documents; a document uploaded from the chat
+    # belongs to the uploader's tenant. False = the old behaviour (everyone reads everything unless RAG_TENANT_IDS says otherwise).
+    KNOWLEDGE_TENANT_ISOLATION: bool = True
     RAG_TENANT_IDS: Optional[list[str]] = None  # ponytail: hook only, restrict chunks to these tenants (None = all) until the gateway has an identity
 
     # Extra endpoints probed when the primary one is unreachable (container vs. local dev)
@@ -120,7 +152,10 @@ class Settings(BaseSettings):
     DATA_MAX_UNCOMPRESSED_MB: int = 300  # an Excel workbook / Parquet file may not unpack to more than this (decompression bombs)
     DATA_MAX_PARQUET_ROWS: int = 5_000_000  # a Parquet file with more rows is refused before it is read into memory
     DATA_MAX_ROWS: int = 100_000        # larger tables are randomly sampled (disclosed in the dashboard)
-    DATA_TABLE_ROWS: int = 5_000        # rows shipped to the browser data grid / client-side cross-filter
+    # Rows of the table that travel inside the dashboard spec: a preview, and what the grid shows if the server cannot page it.
+    # The grid itself pages through EVERY analysed row on the server (POST /api/analyze/rows: search, filters, sort, CSV export).
+    # Measured: 8.8k text-heavy rows = 3.6 MB of JSON, 50k = 20 MB, so the whole table is never shipped.
+    DATA_TABLE_ROWS: int = 2_000
     # Where LLM-written analysis code runs. Empty = a child process of the API (fine for development). With a URL it runs in
     # the network-less sandbox container (docker-compose service python-sandbox) and fails closed when that is unreachable.
     SANDBOX_URL: str = ""
@@ -139,6 +174,12 @@ class Settings(BaseSettings):
     # cannot approve their own). The approver sees the request in the approvals inbox but never the result: it goes back to the requester.
     HITL_REQUIRE_OTHER_APPROVER: bool = False
 
+    # --- Run checkpoints (src/orchestrator/checkpointing.py): every graph step of a request is saved so a run can be inspected,
+    # resumed or replayed from any step (python -m scripts.replay_run). OFF by default: it stores queries and answers in PostgreSQL.
+    CHECKPOINT_ENABLED: bool = False
+    CHECKPOINT_RETENTION_DAYS: int = 7        # runs older than this are deleted (checked at start and every 6 hours)
+    CHECKPOINT_MAX_FIELD_CHARS: int = 100_000  # a longer answer is cut in the saved copy (the uploaded file is never saved)
+
     # --- Gateway authentication (see src/shared/auth.py) ---
     AUTH_MODE: str = "off"              # off = anonymous single user (local dev) | jwt = every /api call needs a Bearer token
     AUTH_JWT_SECRET: str = ""           # HS256 shared secret (>= 32 random chars) ...
@@ -153,6 +194,14 @@ class Settings(BaseSettings):
     # Make the hash with `python -m scripts.make_user`. With an identity provider (AUTH_JWKS_URL) leave this empty.
     AUTH_USERS: list[dict[str, Any]] = []
     AUTH_TOKEN_TTL_MINUTES: int = 480   # lifetime of a token issued by /api/auth/login
+    # --- Single sign-on (OIDC authorization code + PKCE). The identity provider only proves WHO the user is; the gateway then issues
+    # its own token (needs AUTH_MODE=jwt with AUTH_JWT_SECRET, no AUTH_JWKS_URL) and an administrator grants tenant/roles in /admin ---
+    OIDC_ISSUER: str = ""               # e.g. https://login.example.com/realms/corp ; empty = SSO off
+    OIDC_CLIENT_ID: str = ""
+    OIDC_CLIENT_SECRET: str = ""
+    OIDC_REDIRECT_URI: str = ""         # PUBLIC url of the frontend route: https://<host>/api/auth/oidc/callback (registered at the provider)
+    OIDC_SCOPES: str = "openid profile email"
+    OIDC_USERNAME_CLAIM: str = "email"  # becomes the account name `sso:<value>`; falls back to preferred_username, then sub
     AUTH_SCRYPT_LOG2_N: int = 16        # password hash cost (N = 2**this, r=8, p=2: the OWASP minimum, 64 MiB per hash); older hashes are upgraded at sign-in
     # Self-service sign-up (POST /api/auth/register): OFF by default, an internal system normally gets its accounts from an
     # administrator. New accounts get NO roles (no approving, no knowledge upload) and the default tenant/department below.
@@ -175,6 +224,29 @@ class Settings(BaseSettings):
 
     # --- Knowledge base upload from the chat (POST /api/knowledge/upload) ---
     KNOWLEDGE_UPLOAD_ROLES: list[str] = ["admin"]  # roles allowed to add/replace documents (authenticated mode; anonymous dev may)
+    ADMIN_ROLES: list[str] = ["admin"]  # roles allowed to manage accounts in /api/admin (authenticated mode; anonymous dev may)
+    JOB_WORKER_ENABLED: bool = True   # each gateway replica runs a worker for the job queue (document ingestion with ?async=true)
+    JOB_POLL_SECONDS: float = 2.0
+    JOB_STALE_MINUTES: int = 30       # a running job older than this is taken to have lost its worker
+    JOB_MAX_ATTEMPTS: int = 2
+    JOB_RETENTION_DAYS: int = 7       # finished jobs are kept this long so their status can be read
+    METRICS_TOKEN: str = ""  # Bearer token Prometheus must send to GET /metrics; empty = open in dev, and /metrics is OFF (404) with APP_ENV=production
+    USAGE_BUDGET_USD_PER_USER_DAY: float = 0.0  # 0 = none; above it a user is MARKED over budget in the cost report (nothing is blocked)
+    # --- PEV loop: how often a rejected answer is tried again, and what a Verifier that cannot answer means
+    PEV_MAX_ATTEMPTS: int = 2          # the default for every agent: how many times the agent may produce an answer for one question (1 = a rejected answer is never tried again, 2 = one retry)
+    PEV_MAX_ATTEMPTS_BY_AGENT: dict[str, int] = {}  # e.g. {"rag_agent": 1, "search_agent": 1}: measure first (Monitoring shows retries per agent)
+    VERIFIER_FAIL_CLOSED: bool = True  # the Verifier itself failed (LLM down): the answer goes out marked "not verified" instead of silently passing
+    # --- answer quality: a sample of real answers is graded by a model in the background (table answer_reviews)
+    QUALITY_SAMPLE_RATE: float = 0.05  # share of answers graded; 0 = off
+    QUALITY_RETENTION_DAYS: int = 90   # graded answers and their text are deleted after this many days
+    # --- memory: what is remembered about a person, and where it is used
+    MEMORY_EXTRACT_MODE: str = "intent"  # intent = only messages that state something about the person or ask to remember it; all = every message (one LLM call each)
+    MEMORY_IN_ANSWERS: bool = True       # remembered facts also reach the answering agents (RAG, search, data), not only the planner
+    FOLLOWUP_REWRITE: bool = True        # a short follow-up question is rewritten into a standalone one (from the chat history) for agents that do not do it themselves
+    USAGE_BUDGET_HARD: bool = False  # with a budget set, a user who has spent it today is REFUSED (429) on chat and analysis until midnight
+    ORG_ENFORCE_REGISTRY: bool = False  # an administrator may only put an account in a tenant/department created in the console (the pending tenant excepted)
+    ALERTMANAGER_URL: str = ""        # e.g. http://alertmanager:9093: the console then lists the alerts firing right now
+    BACKUP_STATUS_DIR: str = ""              # the backup folder mounted read-only into the backend: the console shows the newest file and its age
     KNOWLEDGE_MAX_FILE_MB: int = 25
     KNOWLEDGE_MAX_CHUNKS: int = 2000    # one document may not produce more chunks than this (embedding cost)
     KNOWLEDGE_MAX_UNCOMPRESSED_MB: int = 200   # a DOCX/PPTX may not unpack to more than this (decompression bombs)
@@ -203,6 +275,9 @@ class Settings(BaseSettings):
     # they may hold salary, HR or contract text you do not want stored there (the calls are still traced, without their content).
     LANGFUSE_MASK_PII: bool = True
     LANGFUSE_LOG_LLM_MESSAGES: bool = True
+    # AUTH_MODE=off makes every caller an anonymous administrator. It is meant for localhost: a request from a PUBLIC internet address is refused
+    # (403) unless this is true. Private/LAN/docker addresses and loopback are always fine.
+    ALLOW_ANONYMOUS_REMOTE: bool = False
     APP_ENV: str = "development"       # production: refuses AUTH_MODE=off and hides /docs, /redoc, /openapi.json
     EXPOSE_API_DOCS: bool = False     # show the API docs even in production (behind your own proxy rules)
     # Browser origins allowed to call the gateway (set as JSON list in .env for other deployments)

@@ -21,19 +21,21 @@ identity-aware proxy (oauth2-proxy, an API gateway, ...) in front instead. ``scr
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import hmac
 import logging
 import secrets
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterator, Optional
 
 import jwt
 from fastapi import HTTPException, Request
 
 from src.config import settings
+from src.shared import policy as department_policy
 from src.shared.logger import get_logger
 from src.shared.messages import msg
 
@@ -57,6 +59,12 @@ class Principal:
     display_name: str = ""  # shown in the UI; the ``name`` claim of a built-in sign-in token, empty otherwise
     token_id: str = ""      # the token's ``jti`` (what a sign-out revokes); empty for a token without one
     token_exp: int = 0      # the token's ``exp``: how long a revocation has to be remembered
+    allowed_agents: Optional[frozenset[str]] = None  # from the department's policy: None = every agent
+    upload_override: Optional[bool] = None            # from the department's policy: True grants the knowledge upload, False denies it, None = by role
+
+    def can_use_agent(self, agent: str) -> bool:
+        """Administrators and the anonymous dev user are never restricted; everybody else by their department's policy."""
+        return self.allowed_agents is None or agent in self.allowed_agents or self.can_admin
 
     def session(self, client_session_id: str) -> str:
         """The session key used everywhere behind the gateway: bound to the user when authenticated."""
@@ -75,8 +83,22 @@ class Principal:
 
     @property
     def can_manage_knowledge(self) -> bool:
-        """Anonymous dev mode may change the knowledge base; with authentication only ``KNOWLEDGE_UPLOAD_ROLES`` may."""
-        return not self.authenticated or bool(self.roles & set(settings.KNOWLEDGE_UPLOAD_ROLES))
+        """Anonymous dev mode may change the knowledge base; with authentication the ``KNOWLEDGE_UPLOAD_ROLES`` may, unless the department's
+        policy denies it (``upload_override`` False); a policy that grants it (True) lets the department's members add documents without the
+        role. Administrators are bound by the roles only: a policy never takes the upload away from them."""
+        if not self.authenticated:
+            return True
+        by_role = bool(self.roles & set(settings.KNOWLEDGE_UPLOAD_ROLES))
+        if self.can_admin:
+            return by_role
+        if self.upload_override is False:
+            return False
+        return by_role or self.upload_override is True
+
+    @property
+    def can_admin(self) -> bool:
+        """Anonymous dev mode may manage accounts; with authentication only ``ADMIN_ROLES`` may."""
+        return not self.authenticated or bool(self.roles & set(settings.ADMIN_ROLES))
 
 
 _current: ContextVar[Optional[Principal]] = ContextVar("current_principal", default=None)
@@ -111,7 +133,14 @@ def knowledge_tenants() -> Optional[list[str]]:
     principal = _current.get()
     if principal is not None and principal.unassigned:
         return [principal.tenant_id]
-    return settings.RAG_TENANT_IDS
+    if settings.RAG_TENANT_IDS is not None:  # an explicit allow-list from the operator wins
+        return settings.RAG_TENANT_IDS
+    if principal is not None and principal.authenticated and settings.KNOWLEDGE_TENANT_ISOLATION:
+        return sorted({SHARED_TENANT, principal.tenant_id})  # the shared corpus and the caller's own tenant, never another tenant's
+    return None
+
+
+SHARED_TENANT = "public"  # tenant_id of every chunk ingested from the dataset folder: readable by everyone signed in
 
 
 def memory_user_id(session_id: str) -> str:
@@ -364,9 +393,22 @@ async def _is_revoked(redis_client: Any, claims: dict[str, Any]) -> bool:
     return bool(values[0]) and int(claims.get("iat") or 0) < int(values[0])
 
 
+def _is_public_address(host: str) -> bool:
+    """True for a routable internet address. Loopback, private (docker, LAN) and link-local callers, and anything that is not an IP
+    (a test client, a unix socket), are 'local'."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_global
+
+
 async def authenticate(request: Request) -> Principal:
     """FastAPI dependency for every protected route."""
     if settings.AUTH_MODE != "jwt":
+        if not settings.ALLOW_ANONYMOUS_REMOTE and _is_public_address(request.client.host if request.client else ""):
+            logger.warning("Refused an anonymous request from the public address %s (AUTH_MODE=off is for local use)", request.client.host)
+            raise HTTPException(status_code=403, detail=msg("auth.anonymous_remote"))
         principal = Principal("anonymous", settings.RLS_TENANT_ID, settings.RLS_DEPARTMENT_ID, frozenset({"admin"}), authenticated=False)
     else:
         scheme, _, token = request.headers.get("Authorization", "").partition(" ")
@@ -381,5 +423,8 @@ async def authenticate(request: Request) -> Principal:
             logger.info("Rejected a revoked token (signed out, or the password changed since)")
             raise HTTPException(status_code=401, detail=msg("auth.invalid"), headers={"WWW-Authenticate": "Bearer"})
         principal = _principal_from_claims(claims)
+        policy = await department_policy.resolve(principal.tenant_id, principal.department_id)
+        if policy.allowed_agents is not None or policy.can_upload_knowledge is not None:
+            principal = replace(principal, allowed_agents=policy.allowed_agents, upload_override=policy.can_upload_knowledge)
     _current.set(principal)
     return principal

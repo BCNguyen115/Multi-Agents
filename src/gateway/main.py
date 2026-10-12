@@ -15,13 +15,15 @@ Usage:
 """
 
 import asyncio
+import hmac
 import json
+import time
 import logging
 import os
 import uuid
 import warnings
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, Literal, Optional
+from typing import Annotated, Any, AsyncGenerator, Literal, Optional
 
 from src.shared.telemetry import disable_telemetry
 disable_telemetry()
@@ -42,8 +44,8 @@ warnings.filterwarnings(
 )
 
 import openai
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, Path
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, Path
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -56,8 +58,17 @@ from src.agents.rag_agent.agent import RAGAgent
 from src.agents.rag_agent.knowledge import KnowledgeStore
 from src.agents.search_agent.agent import SearchAgent
 from src.config import settings
+from src.gateway.admin import router as admin_router
+from src.gateway.admin_ops import router as admin_ops_router
+from src.gateway.jobs import router as jobs_router
+from src.gateway.sso import router as sso_router
 from src.gateway.conversations import router as conversations_router
+from src.gateway.dashboards import router as dashboards_router
 from src.gateway.feedback import router as feedback_router
+from src.gateway.memory import router as memory_router
+from src.gateway.coding import router as coding_router
+from src.agents.coding_agent import repos as coding_repos
+from src.agents.coding_agent.agent import configure as configure_coding_agent
 from src.gateway.knowledge import describe_upload, router as knowledge_router
 from src.gateway.schemas import (  # noqa: F401  (re-exported: tests and callers use them as main.<Name>)
     AnalyzeResponse,
@@ -66,6 +77,8 @@ from src.gateway.schemas import (  # noqa: F401  (re-exported: tests and callers
     ChatRequest,
     ChatResponse,
     FilterRequest,
+    TableQuery,
+    TableRowsRequest,
     KnowledgeUploadResponse,
     LoginRequest,
     ChangePasswordRequest,
@@ -95,7 +108,8 @@ from src.shared.auth import (
     verify_user_row,
 )
 from src.shared.user_store import create_user, get_user, set_password
-from src.shared.db_roles import ensure_readonly_role, readonly_dsn
+from src.shared.db_roles import ensure_readonly_role, grant_schema_read, readonly_dsn
+from src.agents.db_agent.schema_catalog import SchemaCatalog
 from src.shared.llm_client import LLMClient
 from src.shared.logger import get_logger
 from src.shared.mcp_client import MCPClient
@@ -103,8 +117,8 @@ from src.shared.memory_manager import MemoryManager
 from src.shared.migrations import upgrade_to_head
 from src.shared.postgres_client import PostgresClient
 from src.shared.history_summary import persist_turn
-from src.shared import audit
-from src.shared.auth import needs_rehash, revoke_token, revoke_user_sessions
+from src.shared import audit, health, jobs, metrics, oidc, policy, quality, usage
+from src.shared.auth import current_principal, needs_rehash, revoke_token, revoke_user_sessions
 from src.shared.rate_limit import check_failures, clear_failures, enforce as enforce_rate_limit, record_failure
 from src.shared.redis_client import RedisClient
 from src.shared.csv_sanitizer import DatasetReadError, clean_csv_content
@@ -161,6 +175,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await pg_client.connect()
         audit.configure(pg_client)
+        usage.configure(pg_client)
+        quality.configure(pg_client)  # online grading of sampled answers (QUALITY_SAMPLE_RATE)
+        policy.configure(pg_client)  # what each department may use (agents, knowledge upload), read on every authenticated request
+        usage.install()  # one LiteLLM callback records every LLM call for the cost report
     except Exception as exc:
         logger.error(
             "PostgreSQL connection failed during startup: %s", exc,
@@ -187,6 +205,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.DB_AGENT_PASSWORD:
         # Fail closed: if the read-only role was asked for and cannot be set up, do not quietly fall back to the admin account.
         await ensure_readonly_role(pg_client, settings.DB_AGENT_ROLE, settings.DB_AGENT_PASSWORD, settings.DB_AGENT_TABLES)
+        await grant_schema_read(pg_client, settings.DB_AGENT_ROLE, "aw")  # the company data (scripts/load_adventureworks.py), when it has been loaded
         db_pg_client = PostgresClient(dsn=readonly_dsn(settings.POSTGRES_URL, settings.DB_AGENT_ROLE, settings.DB_AGENT_PASSWORD), ensure_pgvector=False)
         await db_pg_client.connect(min_size=1, max_size=5)
         db_mcp_client = MCPClient(pg_client=db_pg_client, scoped=True)  # PostgreSQL's own RLS policies see the caller's tenant/department
@@ -234,10 +253,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     # Build DatabaseAgent
+    db_catalog = await SchemaCatalog.load(pg_client)  # empty when no company data was loaded: the agent then answers about the knowledge-base tables only
     db_agent: DatabaseAgent = DatabaseAgent(
         mcp_client=db_mcp_client,
         llm_client=llm_client,
         model=settings.OPENROUTER_MODEL,
+        catalog=db_catalog,
+        summary_model=settings.FAST_LLM_MODEL,
     )
 
     # Build IntegrationAgent
@@ -261,6 +283,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry.register(db_agent)
     registry.register(integration_agent)
     registry.register(search_agent)
+    coding_agent = configure_coding_agent(llm_client)  # None unless CODING_AGENT_ENABLED and fully configured
+    if coding_agent is not None:
+        coding_agent.attach(pg_client)
+        registry.register(coding_agent)
+
+    # Run checkpoints (debugging: scripts/replay_run.py). A debugging aid must never stop the chat, so a failure only turns it off.
+    checkpointer, checkpoint_pool, purge_task = None, None, None
+    if settings.CHECKPOINT_ENABLED:
+        try:
+            from src.orchestrator.checkpointing import open_checkpointer, purge_forever
+
+            checkpointer, checkpoint_pool = await open_checkpointer(settings.POSTGRES_URL, settings.CHECKPOINT_MAX_FIELD_CHARS)
+            purge_task = asyncio.create_task(purge_forever(checkpointer, checkpoint_pool, settings.CHECKPOINT_RETENTION_DAYS))
+            logger.info("Run checkpoints on (kept %d days)", settings.CHECKPOINT_RETENTION_DAYS, extra={"session_id": "SYSTEM"})
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Run checkpoints are OFF, could not start them: %s", exc or type(exc).__name__, extra={"session_id": "SYSTEM"})
 
     # Build Orchestrator with LangGraph, MemoryManager & LLMClient
     orchestrator = Orchestrator(
@@ -269,7 +307,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         llm_client=llm_client,
         memory_manager=memory_manager,
         redis_client=redis_client,  # pending HITL approvals survive a restart and work across replicas
+        checkpointer=checkpointer,
     )
+    app.state.orchestrator = orchestrator  # the dashboards router re-analyses a saved file with it
+    app.state.llm_client = llm_client  # the admin health page reports whether Langfuse tracing is on
+    job_task = asyncio.create_task(jobs.worker_forever(pg_client)) if settings.JOB_WORKER_ENABLED else None  # every replica works the queue
 
     logger.info("Startup complete — system ready (4-Layer Framework active)", extra={"session_id": "SYSTEM"})
 
@@ -277,6 +319,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # ---- SHUTDOWN ----
     logger.info("Shutting down — disconnecting resources…", extra={"session_id": "SYSTEM"})
+    if job_task is not None:
+        job_task.cancel()
+    if purge_task is not None:
+        purge_task.cancel()
+    if checkpoint_pool is not None:
+        await checkpoint_pool.close()
     await mcp_client.close()
     llm_client.shutdown()
     await pg_client.disconnect()
@@ -299,17 +347,54 @@ app: FastAPI = FastAPI(
 app.state.pg_client = pg_client  # the conversations router reads it from here
 app.state.redis_client = redis_client  # `authenticate` asks it for revoked tokens
 app.include_router(conversations_router)
+app.include_router(dashboards_router)
+app.include_router(admin_router)
+app.include_router(admin_ops_router)
+app.include_router(sso_router)
+app.include_router(jobs_router)
 app.include_router(knowledge_router)
 app.include_router(feedback_router)
+app.include_router(memory_router)
+app.include_router(coding_router)
+
+
+@app.middleware("http")
+async def observe_requests(request: Request, call_next: Any) -> Response:
+    """Count and time every request for Prometheus, by route template (never by URL, so ids do not multiply the series)."""
+    started = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        route = getattr(request.scope.get("route"), "path", "unmatched")
+        if route != "/metrics":
+            metrics.record_request(request.method, route, status, time.perf_counter() - started)
+
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics(request: Request) -> Response:
+    """For Prometheus on the internal network. With APP_ENV=production it exists only when METRICS_TOKEN is set, and then needs it."""
+    token = settings.METRICS_TOKEN
+    if not token and settings.APP_ENV == "production":
+        raise HTTPException(status_code=404)
+    if token and not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {token}"):
+        raise HTTPException(status_code=401)
+    return Response(metrics.render(), media_type=metrics.CONTENT_TYPE)
 
 
 async def limit_chat(request: Request, principal: Principal = Depends(authenticate)) -> None:
     await enforce_rate_limit(redis_client, principal, request, "chat", settings.RATE_LIMIT_CHAT_PER_MINUTE)
     await enforce_rate_limit(redis_client, principal, request, "chat-day", settings.RATE_LIMIT_CHAT_PER_DAY, window=86400)
+    await usage.enforce_budget(principal)
 
 
 async def limit_analyze(request: Request, principal: Principal = Depends(authenticate)) -> None:
+    if not principal.can_use_agent("data_agent"):  # analysing a file is the data agent's work: the department's policy applies here too
+        raise HTTPException(status_code=403, detail=msg("forbidden.agent", agent="data_agent"))
     await enforce_rate_limit(redis_client, principal, request, "analyze", settings.RATE_LIMIT_ANALYZE_PER_MINUTE)
+    await usage.enforce_budget(principal)
 
 
 @app.middleware("http")
@@ -372,6 +457,7 @@ async def chat_stream(request: ChatRequest, raw_request: Request, principal: Pri
 
     # Dynamic Nonce Delimiter Packaging
     wrapped_query, nonce = wrap_user_input(query)
+    coding_repos.selected_repo.set(request.coding_repo_id or "")  # which repository a Coding task is for (the coding agent reads it)
 
     logger.info(
         "Incoming /api/chat/stream request (query len=%d, nonce=%s)",
@@ -596,6 +682,7 @@ async def chat(request: ChatRequest, principal: Principal = Depends(authenticate
 
     # Dynamic Nonce Delimiter Packaging
     wrapped_query, nonce = wrap_user_input(query)
+    coding_repos.selected_repo.set(request.coding_repo_id or "")  # which repository a Coding task is for (the coding agent reads it)
 
     request_id: str = str(uuid.uuid4())
     logger.info(
@@ -947,6 +1034,9 @@ def _who(principal: Principal) -> dict[str, Any]:
         "name": principal.display_name,
         "two_person_approval": principal.authenticated and settings.HITL_REQUIRE_OTHER_APPROVER,  # the UI then shows the approvals inbox
         "access_pending": principal.unassigned,  # a fresh self-registration: chat works, documents and data come after an administrator grants access
+        "can_admin": principal.can_admin,  # the UI then offers the account administration page
+        "can_code": bool(settings.CODING_AGENT_ENABLED and principal.roles & set(settings.CODING_AGENT_ROLES)),  # the UI then offers the Coding mode
+        "allowed_agents": sorted(principal.allowed_agents) if principal.allowed_agents is not None and not principal.can_admin else None,  # None = every agent
     }
 
 
@@ -971,12 +1061,15 @@ async def _registered_user(username: str, password: str) -> Optional[dict[str, A
     except Exception as exc:  # noqa: BLE001 - a database hiccup must read as "wrong credentials", not as a 500
         logger.warning("Could not look up registered users: %s", exc)
         row = None
+    if row is not None and row.get("disabled"):
+        row = None  # a disabled account reads as wrong credentials (still one scrypt run, nothing to tell apart)
     return row if await asyncio.to_thread(verify_user_row, password, row) else None
 
 
 @app.get("/api/auth/config", summary="What the sign-in screen may offer (no secrets, no token needed)")
 async def auth_config() -> dict[str, bool]:
-    return {"login_enabled": login_enabled(), "registration_enabled": registration_enabled()}
+    sso = oidc.sso_enabled()
+    return {"login_enabled": login_enabled() or sso, "registration_enabled": registration_enabled(), "sso_enabled": sso}
 
 
 @app.post("/api/auth/register", response_model=LoginResponse, summary="Create an account and sign in (only with AUTH_ALLOW_REGISTRATION)")
@@ -1015,6 +1108,8 @@ async def reset_password(body: ResetPasswordRequest, request: Request) -> LoginR
     except Exception as exc:  # noqa: BLE001 - a database hiccup reads as "wrong key", never as a 500 that tells more
         logger.warning("Could not look up the account for a reset: %s", exc)
         user = None
+    if user is not None and user.get("disabled"):
+        user = None  # a disabled account cannot get back in through a reset either
     if not await asyncio.to_thread(verify_recovery_key, body.recovery_key, user) or user is None:
         await record_failure(redis_client, "reset", body.username)
         logger.warning("Failed password reset for %r from %s", body.username[:64], request.client.host if request.client else "unknown")
@@ -1094,6 +1189,39 @@ async def whoami(principal: Principal = Depends(authenticate)) -> dict[str, Any]
     return _who(principal)
 
 
+async def _ingest_document(principal: Principal, scoped_session: str, filename: str, data: bytes, category: Optional[str]) -> dict[str, Any]:
+    """Chunk, embed and store one uploaded document (the request and the job queue both end up here); raises ``UploadError`` for a bad file."""
+    result = await ingest_upload(
+        knowledge_embedder, filename, data, category=category, dataset_dir=settings.KNOWLEDGE_DIR,
+        known_categories=await knowledge_store.known_categories(scoped_session), max_chunks=settings.KNOWLEDGE_MAX_CHUNKS,
+        session_id=scoped_session, llm_client=llm_client,
+        tenant_id=principal.tenant_id if principal.authenticated and settings.KNOWLEDGE_TENANT_ISOLATION else "public",
+    )
+    knowledge_store.invalidate_categories()  # a new category must be recognisable in questions straight away
+    await audit.record("kb.upload", result["doc_key"], result["status"], {"filename": result["filename"], "category": result["category"], "chunks": result.get("chunks")}, principal=principal)
+    logger.info(
+        "Knowledge upload by user=%s tenant=%s: %s -> %s (%s)", principal.user_id, principal.tenant_id, result["filename"], result["doc_key"], result["status"],
+        extra={"session_id": scoped_session},
+    )
+    return result
+
+
+@jobs.register("kb.ingest")
+async def _ingest_job(payload: dict[str, Any], data: Optional[bytes]) -> dict[str, Any]:
+    """The queued form of POST /api/knowledge/upload; runs as the user who queued it (``current_principal``)."""
+    principal = current_principal()
+    if knowledge_embedder is None or knowledge_store is None or data is None or principal is None:
+        raise jobs.JobError(msg("service.starting"))
+    try:
+        result = await _ingest_document(principal, payload["session_id"], payload["filename"], data, payload.get("category"))
+    except UploadError as exc:
+        raise jobs.JobError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise jobs.JobError(msg("upload.failed")) from exc
+    fields = {k: v for k, v in result.items() if k in KnowledgeUploadResponse.model_fields and k not in {"session_id", "message"}}
+    return {**fields, "message": describe_upload(result)}
+
+
 @app.post(
     "/api/knowledge/upload",
     dependencies=[Depends(limit_analyze)],
@@ -1105,6 +1233,7 @@ async def upload_knowledge(
     session_id: str = Form(default_factory=lambda: str(uuid.uuid4()), description="Session correlation ID"),
     category: Optional[str] = Form(None, description="Document category (nda, msa, ...); inferred when omitted"),
     principal: Principal = Depends(authenticate),
+    run_async: Annotated[bool, Query(alias="async", description="Queue the ingestion and answer 202 with a job id (GET /api/jobs/{id}) instead of waiting for it")] = False,
 ) -> KnowledgeUploadResponse:
     """Chunk by section (200-600 characters), embed and store a document exactly like the folder ingestion does."""
     scoped_session: str = principal.session(session_id)
@@ -1124,24 +1253,17 @@ async def upload_knowledge(
         if len(buffer) > limit_bytes:
             raise HTTPException(status_code=413, detail=msg("file.too_big", mb=settings.KNOWLEDGE_MAX_FILE_MB))
 
+    if run_async:  # the parsing, embedding and writing happen in the job queue; the caller polls GET /api/jobs/{id}
+        job_id = await jobs.enqueue(pg_client, "kb.ingest", principal, {"filename": file.filename or "", "category": category, "session_id": scoped_session}, bytes(buffer))
+        return JSONResponse(status_code=202, content={"job_id": job_id, "status": "queued", "session_id": session_id})
+
     try:
-        result = await ingest_upload(
-            knowledge_embedder, file.filename or "", bytes(buffer), category=category, dataset_dir=settings.KNOWLEDGE_DIR,
-            known_categories=await knowledge_store.known_categories(scoped_session), max_chunks=settings.KNOWLEDGE_MAX_CHUNKS,
-            session_id=scoped_session, llm_client=llm_client,
-        )
+        result = await _ingest_document(principal, scoped_session, file.filename or "", bytes(buffer), category)
     except UploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - embedding API / database failure: nothing was half-written (one transaction)
         logger.error("Knowledge upload failed: %s", exc, extra={"session_id": scoped_session})
         raise HTTPException(status_code=502, detail=msg("upload.failed")) from exc
-
-    knowledge_store.invalidate_categories()  # a new category must be recognisable in questions straight away
-    await audit.record("kb.upload", result["doc_key"], result["status"], {"filename": result["filename"], "category": result["category"], "chunks": result.get("chunks")}, principal=principal)
-    logger.info(
-        "Knowledge upload by user=%s tenant=%s: %s -> %s (%s)", principal.user_id, principal.tenant_id, result["filename"], result["doc_key"], result["status"],
-        extra={"session_id": scoped_session},
-    )
     return KnowledgeUploadResponse(session_id=session_id, message=describe_upload(result), **{k: v for k, v in result.items() if k in KnowledgeUploadResponse.model_fields})
 
 
@@ -1159,6 +1281,39 @@ async def filter_dashboard(request: FilterRequest, principal: Principal = Depend
         raise HTTPException(status_code=422, detail=msg("filter.invalid", reason=exc)) from exc
 
 
+def _data_agent(method: str):
+    agent = orchestrator.registry.lookup("data_agent") if orchestrator is not None else None
+    if agent is None or not hasattr(agent, method):
+        raise HTTPException(status_code=503, detail=msg("service.starting"))
+    return agent
+
+
+@app.post("/api/analyze/rows", summary="One page of the dashboard grid: every row of the upload, searched, filtered and sorted")
+async def table_rows(request: TableRowsRequest, principal: Principal = Depends(authenticate)) -> dict[str, Any]:
+    """The grid's rows never travel whole: the page it shows is asked for here, with the search/filters/sort applied to ALL rows."""
+    agent = _data_agent("table_page")
+    try:
+        return await agent.table_page(
+            principal.session(request.session_id), request.start, request.limit, request.model_dump(exclude={"session_id", "start", "limit"})
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail=msg("analyze.no_active")) from None
+    except (ValueError, TypeError) as exc:  # unknown column / unsupported filter
+        raise HTTPException(status_code=422, detail=msg("filter.invalid", reason=exc)) from exc
+
+
+@app.post("/api/analyze/export", summary="Every row matching the grid's search, filters and sort, as CSV")
+async def table_export(request: TableQuery, principal: Principal = Depends(authenticate)) -> Response:
+    agent = _data_agent("table_csv")
+    try:
+        csv_text = await agent.table_csv(principal.session(request.session_id), request.model_dump(exclude={"session_id"}))
+    except LookupError:
+        raise HTTPException(status_code=404, detail=msg("analyze.no_active")) from None
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=msg("filter.invalid", reason=exc)) from exc
+    return Response(content=csv_text.encode("utf-8"), media_type="text/csv; charset=utf-8")
+
+
 @app.get("/health", summary="Health check")
 async def health_check() -> dict[str, str]:
     """Simple health-check endpoint.
@@ -1173,13 +1328,8 @@ _READY_TIMEOUT_SECONDS: float = 2.0
 
 
 async def _probe(check) -> str:
-    """"ok" or a short reason; never raises and never waits longer than the readiness timeout."""
-    try:
-        await asyncio.wait_for(check(), timeout=_READY_TIMEOUT_SECONDS)
-        return "ok"
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Readiness check failed: %s: %s", type(exc).__name__, exc)  # the detail stays in the log, not in the answer
-        return type(exc).__name__
+    """"ok" or a short reason; never raises and never waits longer than the readiness timeout (the probes live in src/shared/health.py)."""
+    return await health.probe(check, _READY_TIMEOUT_SECONDS)
 
 
 @app.get("/ready", summary="Readiness: can this instance serve requests right now?")
@@ -1191,19 +1341,13 @@ async def readiness() -> JSONResponse:
     """
 
     async def postgres() -> None:
-        await pg_client.fetch("SELECT 1")
+        await health.check_postgres(pg_client)
 
     async def redis() -> None:
-        if redis_client.client is None:
-            raise ConnectionError("not connected")
-        await redis_client.client.ping()
+        await health.check_redis(redis_client)
 
     async def reranker() -> None:
-        import httpx
-
-        url = settings.RERANKER_ENDPOINT.rsplit("/", 1)[0] + "/health"
-        async with httpx.AsyncClient(timeout=_READY_TIMEOUT_SECONDS) as http:
-            (await http.get(url)).raise_for_status()
+        await health.check_reranker(_READY_TIMEOUT_SECONDS)
 
     names = ("postgres", "redis", "reranker")
     results = await asyncio.gather(*(_probe(c) for c in (postgres, redis, reranker)))

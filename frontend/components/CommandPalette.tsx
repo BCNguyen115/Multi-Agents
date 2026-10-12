@@ -9,6 +9,7 @@ import {
   FileDown,
   Presentation,
   Cpu,
+  Code2,
   Database,
   Cloud,
   Globe,
@@ -18,6 +19,8 @@ import {
   X,
 } from 'lucide-react';
 import { ChatSession } from './Sidebar';
+import { useAuth } from '../context/AuthContext';
+import { agentModeAllowed } from '../lib/agents';
 import { isDefaultChatTitle, t, useLang } from '../lib/i18n';
 
 export interface CommandPaletteProps {
@@ -56,6 +59,7 @@ export function CommandPalette({
   onExportPPTX,
 }: CommandPaletteProps) {
   const [lang] = useLang();
+  const { me } = useAuth();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -170,6 +174,17 @@ export function CommandPalette({
           onClose();
         },
       },
+      ...(me?.can_code ? [{
+        id: 'agent-coding',
+        category: 'Agents' as const,
+        title: t(lang, 'cmd.agentCoding'),
+        subtitle: t(lang, 'cmd.agentCodingHint'),
+        icon: <Code2 className="w-4 h-4 text-accent-verifier" />,
+        action: () => {
+          onSelectAgent('Coding Agent');
+          onClose();
+        },
+      }] : []),
       {
         id: 'agent-db',
         category: 'Agents',
@@ -198,9 +213,13 @@ export function CommandPalette({
       });
     });
 
-    return list;
+    // an agent the department's policy does not allow is not offered (the server refuses it anyway)
+    const modeOfCommand: Record<string, string> = { 'agent-data': 'Data Agent', 'agent-rag': 'RAG Agent', 'agent-search': 'Search Agent', 'agent-db': 'Database Agent', 'agent-coding': 'Coding Agent' };
+    return list.filter((item) => !(item.id in modeOfCommand) || agentModeAllowed(me?.allowed_agents, modeOfCommand[item.id]));
   }, [
     lang,
+    me?.allowed_agents,
+    me?.can_code,
     sessions,
     onNewChat,
     onClose,
@@ -272,7 +291,7 @@ export function CommandPalette({
       role="dialog"
       aria-modal="true"
       aria-label={t(lang, 'cmd.dialog')}
-      className="fixed inset-0 z-[9990] flex items-start justify-center pt-20 px-4 select-none animate-fade-in"
+      className="fixed inset-0 z-palette flex items-start justify-center pt-20 px-4 select-none animate-fade-in"
     >
       {/* Backdrop: Dark scrim with blur completely separates the foreground from the page behind */}
       <div
@@ -311,7 +330,7 @@ export function CommandPalette({
               <X className="w-4 h-4" />
             </button>
           ) : (
-            <kbd className="px-1.5 py-0.5 text-2xs font-mono text-foreground-secondary bg-surface-raised border border-border rounded-md">
+            <kbd className="px-1.5 py-0.5 text-xs font-mono text-foreground-secondary bg-surface-raised border border-border rounded-md">
               ESC
             </kbd>
           )}
@@ -351,7 +370,7 @@ export function CommandPalette({
                         onMouseEnter={() => setSelectedIndex(thisIdx)}
                         className={`group flex items-center justify-between px-3 py-2.5 rounded-xl text-xs transition-colors cursor-pointer ${
                           isSelected
-                            ? 'bg-accent-primary text-white shadow-xs'
+                            ? 'bg-accent-fill text-white shadow-xs'
                             : 'text-foreground hover:bg-surface-raised'
                         }`}
                       >
@@ -392,7 +411,7 @@ export function CommandPalette({
                         <div className="flex items-center gap-2 shrink-0">
                           {cmd.shortcut && (
                             <kbd
-                              className={`px-1.5 py-0.5 text-2xs font-mono rounded-md ${
+                              className={`px-1.5 py-0.5 text-xs font-mono rounded-md ${
                                 isSelected
                                   ? 'bg-white/20 text-white border border-white/30'
                                   : 'bg-surface-raised border border-border text-foreground-secondary'
@@ -413,7 +432,7 @@ export function CommandPalette({
         </div>
 
         {/* Footer Hotkey Legend */}
-        <div className="px-4 py-2.5 bg-surface-raised/80 border-t border-border flex items-center justify-between text-2xs font-mono text-foreground-muted">
+        <div className="px-4 py-2.5 bg-surface-raised/80 border-t border-border flex items-center justify-between text-xs font-mono text-foreground-muted">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
               <kbd className="px-1 py-0.5 rounded bg-surface border border-border text-foreground-secondary">↑</kbd>

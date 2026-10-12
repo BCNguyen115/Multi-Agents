@@ -1,0 +1,29 @@
+# Scheduled PostgreSQL backups on top of the normal stack:
+#   docker compose -f docker-compose.yml -f docker-compose.backup.yml up -d db-backup
+# Dumps go to ./backups (BACKUP_DIR), every BACKUP_EVERY_HOURS (24), kept BACKUP_KEEP_DAYS (14). Copy that folder off the machine:
+# a backup on the same disk does not survive the disk. Restore: deploy/backup/restore.sh <dump> (see the script).
+services:
+  backend:
+    # the console's Monitoring page shows the newest dump and its age: the backup folder, read-only (BACKUP_STATUS_DIR is the path INSIDE the container)
+    environment:
+      BACKUP_STATUS_DIR: /backups
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups:ro
+
+  db-backup:
+    image: ${POSTGRES_IMAGE:-ankane/pgvector:latest}   # the same image as the server, so pg_dump matches its version
+    container_name: agent_db_backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-agentdb}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      BACKUP_EVERY_HOURS: ${BACKUP_EVERY_HOURS:-24}
+    entrypoint: ["/bin/sh", "-c", "while true; do /backup.sh || echo 'backup FAILED'; sleep $$((BACKUP_EVERY_HOURS * 3600)); done"]
+    volumes:
+      - ./deploy/backup/backup.sh:/backup.sh:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
