@@ -358,6 +358,7 @@ def test_a_failed_publish_releases_the_claim_so_it_can_be_retried(wired):
 
 # ------------------------------------------------------------------------------------------------- the agent
 def test_asking_only_queues_a_job_and_only_for_allowed_roles(monkeypatch):
+    monkeypatch.setattr(settings, "CODING_REPO_URL", "https://github.com/o/r.git")  # the default repository: not every environment has one in its .env
     queued: list = []
 
     async def enqueue(pg, kind, principal, payload, data=None):

@@ -230,15 +230,25 @@ jobs:
 
   orchestration-eval-live:
     # How often the REAL planner model picks the right agent (all of dataset/routing_eval.json, the via=llm cases included), gated at
-    # --min-routing. Weekly and by hand: it makes ~40 short OpenRouter calls (a few cents). Does nothing without the secret (forks).
-    # The deterministic half (rules + trajectories) already ran in `backend`. Not yet run on GitHub: only its command was run locally.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # --min-routing 0.85 (measured 0.95 on 2026-10-12). It makes ~40 short OpenRouter calls (a few cents), so like `rag-eval` it runs on
+    # every push, pull request, manual run and the weekly schedule, except where GitHub gives no repository secret (pull requests from
+    # forks and Dependabot's): those are left out, and anything else with the secret missing FAILS in the first step instead of
+    # passing without having tested anything. The deterministic half (rules + trajectories) already ran in `backend`.
+    if: >-
+      github.actor != 'dependabot[bot]'
+      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       LANGFUSE_ENABLED: "false"
     steps:
+      - name: The live routing eval needs OPENROUTER_API_KEY (Settings > Secrets and variables > Actions)
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::OPENROUTER_API_KEY is not set: the live planner cannot be called without it. Add it as a repository secret."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -253,9 +263,7 @@ jobs:
       - name: Install (pinned versions from requirements.lock)
         run: pip install -r requirements-dev.txt -c requirements.lock
       - name: Routing accuracy of the real planner model
-        run: |
-          if [ -z "$OPENROUTER_API_KEY" ]; then echo "OPENROUTER_API_KEY is not set: skipped"; exit 0; fi
-          python -m scripts.run_orchestration_eval --live --only routing --min-routing 0.85 --report reports/orchestration_eval_live
+        run: python -m scripts.run_orchestration_eval --live --only routing --min-routing 0.85 --report reports/orchestration_eval_live
       - uses: actions/upload-artifact@v4
         if: always()
         with:

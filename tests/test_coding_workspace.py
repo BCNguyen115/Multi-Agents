@@ -133,7 +133,7 @@ def test_an_existing_file_is_never_changed_blind(ws):
         assert "read src/app.py completely" in ws.call(tool, args)["error"]
     assert ws.call("git_diff", {})["files"] == []
     assert "error" not in ws.call("write_file", {"path": "src/brand_new.py", "content": "x = 1\n"})  # a new file needs no reading
-    ws.call("read_file", {"path": "./SRC/app.py"})  # './' and case do not matter
+    ws.call("read_file", {"path": "./src/app.py"})  # './' does not matter (letter case is the file system's business: Linux tells src/ and SRC/ apart)
     assert "error" not in ws.call("edit_file", {"path": "src/app.py", "old_string": "a + b", "new_string": "b + a"})
 
 

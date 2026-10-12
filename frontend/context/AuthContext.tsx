@@ -152,6 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ]);
       if (cancelled) return;
       if (current === undefined && attempt < SESSION_CHECK_ATTEMPTS) {
+        if (attempt === 1) setLoading(false); // show the page as a guest at once (nothing waits for a backend that is not there); the check goes on quietly
         timer = setTimeout(() => void check(attempt + 1), SESSION_CHECK_DELAY_MS);
         return;
       }
